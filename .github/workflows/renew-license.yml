@@ -1,0 +1,34 @@
+name: Продлить лицензию
+
+on:
+  workflow_dispatch:
+    inputs:
+      license_id:
+        description: 'ID лицензии (из Summary при выпуске)'
+        required: true
+      days:
+        description: 'На сколько дней продлить'
+        required: false
+        default: '30'
+      amount:
+        description: 'Сумма к оплате, ₸ (необязательно — попадёт в текст для клиента)'
+        required: false
+        default: ''
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Продление лицензии
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OWNER_KASPI_PHONE: ${{ secrets.OWNER_KASPI_PHONE }}
+          LICENSE_ID: ${{ inputs.license_id }}
+          DAYS: ${{ inputs.days }}
+          AMOUNT: ${{ inputs.amount }}
+        run: node tools/license-renew.mjs

@@ -1,0 +1,32 @@
+name: Отозвать лицензию
+
+on:
+  workflow_dispatch:
+    inputs:
+      license_id:
+        description: 'ID лицензии для отзыва (из артефакта/лога выпуска)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  revoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Обновление списка отзыва
+        env:
+          LICENSE_PRIVATE_KEY: ${{ secrets.LICENSE_PRIVATE_KEY }}
+          LICENSE_ID: ${{ inputs.license_id }}
+        run: node tools/license-revoke.mjs
+      - name: Коммит crl.json
+        run: |
+          git config user.name "license-bot"
+          git config user.email "license-bot@users.noreply.github.com"
+          git add crl.json revoked.json
+          git commit -m "revoke ${{ inputs.license_id }}" || echo "нет изменений"
+          git push

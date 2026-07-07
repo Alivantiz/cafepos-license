@@ -1,0 +1,43 @@
+name: Выпустить лицензию
+
+on:
+  workflow_dispatch:
+    inputs:
+      customer:
+        description: 'Клиент (название кафе)'
+        required: true
+      machine:
+        description: 'Код компьютера из приложения (пусто = без привязки)'
+        required: false
+        default: ''
+      days:
+        description: 'Срок действия, дней (0 = бессрочно)'
+        required: false
+        default: '365'
+      terminals:
+        description: 'Лимит касс'
+        required: false
+        default: '1'
+
+jobs:
+  issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Выпуск лицензии
+        env:
+          LICENSE_PRIVATE_KEY: ${{ secrets.LICENSE_PRIVATE_KEY }}
+          CUSTOMER: ${{ inputs.customer }}
+          MACHINE: ${{ inputs.machine }}
+          DAYS: ${{ inputs.days }}
+          TERMINALS: ${{ inputs.terminals }}
+        run: node tools/license-issue.mjs
+      - name: Загрузка .lic как артефакта
+        uses: actions/upload-artifact@v4
+        with:
+          name: license
+          path: out/*.lic
+          retention-days: 7
