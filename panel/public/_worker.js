@@ -142,6 +142,7 @@ const PAGE = `<!DOCTYPE html>
   input,button,textarea{font-family:inherit}
   input[type=number]::-webkit-inner-spin-button{opacity:.4}
   button{cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
 
   @keyframes toastIn{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
   @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
@@ -407,7 +408,7 @@ const PAGE = `<!DOCTYPE html>
   <div class="drow">
     <button id="isCopyBtn" class="sec" onclick="copyIssue()" style="display:none">Скопировать текст</button>
     <button class="ghost" onclick="dlgIssue.close()">Закрыть</button>
-    <button class="pri" onclick="doIssue()">Выпустить</button>
+    <button id="doIssueBtn" class="pri" onclick="doIssue()">Выпустить</button>
   </div>
 </dialog>
 
@@ -425,7 +426,7 @@ const PAGE = `<!DOCTYPE html>
   <div class="drow">
     <button id="rnCopyBtn" class="sec" onclick="copyMsg()" style="display:none">Скопировать текст</button>
     <button class="ghost" onclick="dlg.close()">Закрыть</button>
-    <button class="pri" onclick="doRenew()">Продлить</button>
+    <button id="doRenewBtn" class="pri" onclick="doRenew()">Продлить</button>
   </div>
 </dialog>
 
@@ -685,9 +686,11 @@ function openIssue(){
   $('isCust').value = ''; $('isDays').value = 30; $('isTerm').value = 1
   $('isMsg').value = ''; $('isMsg').style.display = 'none'
   $('isCopyBtn').style.display = 'none'
+  $('doIssueBtn').disabled = false
   dlgIssue.showModal(); $('isCust').focus()
 }
 async function doIssue(){
+  $('doIssueBtn').disabled = true
   try {
     const d = await api('issue', { customer: $('isCust').value, days: Number($('isDays').value), terminals: Number($('isTerm').value) })
     toast('Выпущена: ' + d.id)
@@ -697,7 +700,7 @@ async function doIssue(){
     $('isMsg').style.display = 'block'
     $('isCopyBtn').style.display = ''
     load()
-  } catch(e){ toast(e.message, true) }
+  } catch(e){ toast(e.message, true); $('doIssueBtn').disabled = false }
 }
 function copyIssue(){ navigator.clipboard.writeText($('isMsg').value); toast('Скопировано') }
 
@@ -709,10 +712,12 @@ function openRenew(id){
   $('dlgDays').value = 30
   $('dlgMsg').value = ''; $('dlgMsg').style.display = 'none'
   $('rnCopyBtn').style.display = 'none'
+  $('doRenewBtn').disabled = false
   dlg.showModal()
 }
 async function doRenew(){
   const days = Number($('dlgDays').value)
+  $('doRenewBtn').disabled = true
   try {
     const d = await api('renew', { id: renewId, days })
     toast('Продлено до ' + fmtDate(d.expires_at))
@@ -722,7 +727,7 @@ async function doRenew(){
     $('dlgMsg').style.display = 'block'
     $('rnCopyBtn').style.display = ''
     load()
-  } catch(e){ toast(e.message, true) }
+  } catch(e){ toast(e.message, true); $('doRenewBtn').disabled = false }
 }
 function copyMsg(){ navigator.clipboard.writeText($('dlgMsg').value); toast('Скопировано') }
 
