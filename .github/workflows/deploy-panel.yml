@@ -1,0 +1,25 @@
+name: Деплой панели подписок
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'panel/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Смоук-тест панели
+        run: node panel/test.js
+      - name: Деплой на Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: panel
+          command: pages deploy public --project-name imag-license-panel

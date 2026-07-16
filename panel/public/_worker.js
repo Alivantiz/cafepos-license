@@ -104,6 +104,18 @@ export default {
         return json({ ok: true })
       }
 
+      if (pathname === '/api/notes') {
+        const { id, notes } = await request.json()
+        if (!id) return json({ error: 'Нужен id' }, 400)
+        const patch = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({ notes: (notes || '').trim() || null })
+        })
+        if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+        return json({ ok: true })
+      }
+
       return json({ error: 'Неизвестный путь' }, 404)
     } catch (e) {
       return json({ error: String(e?.message ?? e) }, 500)
@@ -242,9 +254,13 @@ const PAGE = `<!DOCTYPE html>
   .trow input[type=checkbox],.rcard input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand);cursor:pointer}
   .cust-cell{min-width:0}
   .cust-name{font-weight:600;font-size:14px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .cust-id{font-family:"IBM Plex Mono";font-size:10.5px;color:var(--mut2);margin-top:3px;cursor:pointer;
+  .cust-id-row{display:flex;align-items:center;gap:6px;margin-top:3px;min-width:0}
+  .cust-id{font-family:"IBM Plex Mono";font-size:10.5px;color:var(--mut2);cursor:pointer;min-width:0;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .cust-id:hover{color:var(--brand)}
+  .note-ic{font-size:11px;color:var(--mut2);cursor:pointer;opacity:.5;flex-shrink:0}
+  .note-ic:hover{opacity:1;color:var(--brand)}
+  .note-ic.has{opacity:1;color:var(--warn)}
   .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:4px 10px;
     border-radius:999px;white-space:nowrap}
   .pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)}
@@ -266,7 +282,7 @@ const PAGE = `<!DOCTYPE html>
   .rcard .top input{margin-top:2px;flex-shrink:0}
   .rcard .name-wrap{min-width:0;flex:1}
   .rcard .name{font-weight:600;font-size:15px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rcard .idl{font-family:"IBM Plex Mono";font-size:10.5px;color:var(--mut2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rcard .idl{font-family:"IBM Plex Mono";font-size:10.5px;color:var(--mut2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .rcard .meta{display:flex;flex-wrap:wrap;gap:5px 16px;margin:11px 0 12px;padding-left:28px;font-size:12.5px;color:var(--mut2)}
   .rcard .meta b{color:var(--mut);font-weight:600}
   .rcard .actrow{display:flex;gap:8px;padding-left:28px}
@@ -347,7 +363,7 @@ const PAGE = `<!DOCTYPE html>
     </nav>
     <div class="topbar-right">
       <button id="themeBtn" class="icon-btn" onclick="toggleTheme()" title="Сменить тему">☀</button>
-      <button class="btn desktop-only" onclick="load()">Обновить</button>
+      <button id="refreshBtn" class="btn desktop-only" onclick="load()">Обновить</button>
       <button class="btn pri" onclick="openIssue()">+ Выпустить</button>
     </div>
   </header>
@@ -519,6 +535,13 @@ function toggleSelectAll(on, ids){
 function onSelectAllChange(cb){ toggleSelectAll(cb.checked, lastShownIds) }
 function clearSelection(){ selected.clear(); render() }
 function copyId(id){ navigator.clipboard.writeText(id); toast('ID скопирован') }
+async function editNotes(id){
+  const r = rows.find(x => x.id === id)
+  const val = prompt('Заметка для ' + ((r && r.customer) || id) + ':', (r && r.notes) || '')
+  if (val === null) return
+  try { await api('notes', { id, notes: val }); toast('Заметка сохранена'); load() }
+  catch(e){ toast(e.message, true) }
+}
 
 const MONTHS_RU = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек']
 function chartData(){
@@ -636,11 +659,14 @@ function rowHtml(r){
   const st = statusInfo(r), sn = seenInfo(r)
   const sel = selected.has(r.id)
   const expText = r.expires_at ? fmtDate(r.expires_at) : (r.revoked ? '—' : 'бессрочно')
-  const nameAttr = r.notes ? ' title="' + esc(r.notes) + '"' : ''
+  const noteTitle = r.notes ? esc(r.notes) : 'Добавить заметку'
   return '<div class="grid-row trow' + (sel ? ' sel' : '') + '">' +
     '<div><input type="checkbox" data-id="' + r.id + '" ' + (sel ? 'checked' : '') + ' onchange="toggleSelect(this.dataset.id, this.checked)" /></div>' +
-    '<div class="cust-cell"><div class="cust-name"' + nameAttr + '>' + esc(r.customer || '(без имени)') + '</div>' +
-      '<div class="cust-id" data-id="' + r.id + '" title="Скопировать ID" onclick="copyId(this.dataset.id)">' + r.id + '</div></div>' +
+    '<div class="cust-cell"><div class="cust-name">' + esc(r.customer || '(без имени)') + '</div>' +
+      '<div class="cust-id-row">' +
+        '<span class="cust-id" data-id="' + r.id + '" title="Скопировать ID" onclick="copyId(this.dataset.id)">' + r.id + '</span>' +
+        '<span class="note-ic' + (r.notes ? ' has' : '') + '" data-id="' + r.id + '" title="' + noteTitle + '" onclick="editNotes(this.dataset.id)">✎</span>' +
+      '</div></div>' +
     '<div><span class="pill ' + st.kind + '">' + st.text + '</span></div>' +
     '<div style="color:' + sn.color + ';font-size:12.5px">' + sn.text + '</div>' +
     '<div class="term">' + (r.terminals ?? 1) + '</div>' +
@@ -657,10 +683,13 @@ function cardHtml(r){
   const st = statusInfo(r), sn = seenInfo(r)
   const sel = selected.has(r.id)
   const expText = r.expires_at ? fmtDate(r.expires_at) : (r.revoked ? '—' : 'бессрочно')
+  const noteTitle = r.notes ? esc(r.notes) : 'Добавить заметку'
   return '<div class="rcard' + (sel ? ' sel' : '') + '">' +
     '<div class="top"><input type="checkbox" data-id="' + r.id + '" ' + (sel ? 'checked' : '') + ' onchange="toggleSelect(this.dataset.id, this.checked)" />' +
       '<div class="name-wrap"><div class="name">' + esc(r.customer || '(без имени)') + '</div>' +
-      '<div class="idl">' + r.id + '</div></div>' +
+      '<div class="cust-id-row"><span class="idl">' + r.id + '</span>' +
+        '<span class="note-ic' + (r.notes ? ' has' : '') + '" data-id="' + r.id + '" title="' + noteTitle + '" onclick="editNotes(this.dataset.id)">✎</span>' +
+      '</div></div>' +
       '<span class="pill ' + st.kind + '">' + st.text + '</span></div>' +
     '<div class="meta">' +
       '<span>Касс: <b>' + (r.terminals ?? 1) + '</b></span>' +
@@ -677,8 +706,11 @@ function cardHtml(r){
 }
 
 async function load(){
+  const btn = $('refreshBtn')
+  btn.disabled = true; btn.textContent = 'Обновление…'
   try { const d = await api('list'); rows = d.rows; kaspiPhone = d.kaspiPhone; render() }
   catch(e){ toast(e.message, true) }
+  finally { btn.disabled = false; btn.textContent = 'Обновить' }
 }
 
 const dlgIssue = $('dlgIssue')
