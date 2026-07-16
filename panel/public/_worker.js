@@ -240,6 +240,7 @@ const PAGE = `<!DOCTYPE html>
   #bulkbar button{height:34px;padding:0 13px;border-radius:8px;font-size:12.5px;font-weight:700;border:1px solid var(--b2);background:var(--panel);color:var(--fg)}
   #bulkbar button.pri{background:var(--brand);border-color:var(--brand);color:var(--accent-fg)}
   #bulkbar button.bad{color:var(--bad);font-weight:600}
+  #bulkbar button.ok{color:var(--ok);font-weight:600}
   #bulkbar button.plain{background:transparent;color:var(--mut);font-weight:600}
 
   .tablewrap{background:var(--panel);border:1px solid var(--b);border-radius:15px;overflow:hidden}
@@ -643,11 +644,15 @@ function render(){
   }
 
   if (selected.size > 0) {
+    const selRows = [...selected].map(id => rows.find(r => r.id === id)).filter(Boolean)
+    const allRevoked = selRows.length > 0 && selRows.every(r => r.revoked)
     $('bulkbar').style.display = 'flex'
     $('bulkbar').innerHTML =
       '<span class="lbl">Выбрано: ' + selected.size + '</span><div class="sp"></div>' +
       '<button class="pri" onclick="bulkRenew()">Продлить на 30 дн</button>' +
-      '<button class="bad" onclick="bulkRevoke()">Отозвать</button>' +
+      (allRevoked
+        ? '<button class="ok" onclick="bulkSetRevoked(false)">Вернуть</button>'
+        : '<button class="bad" onclick="bulkSetRevoked(true)">Отозвать</button>') +
       '<button class="plain" onclick="clearSelection()">Снять</button>'
   } else {
     $('bulkbar').style.display = 'none'
@@ -777,12 +782,13 @@ async function bulkRenew(){
   toast(ok === ids.length ? ('Продлено: ' + ok) : ('Продлено: ' + ok + ', ошибок: ' + (ids.length - ok)), ok < ids.length)
   clearSelection(); load()
 }
-async function bulkRevoke(){
+async function bulkSetRevoked(flag){
   const ids = [...selected]; if (!ids.length) return
-  if (!confirm('Отозвать ' + ids.length + ' лицензий?')) return
-  const res = await Promise.allSettled(ids.map(id => api('revoke', { id, revoked: true })))
+  if (flag && !confirm('Отозвать ' + ids.length + ' лицензий?')) return
+  const res = await Promise.allSettled(ids.map(id => api('revoke', { id, revoked: flag })))
   const ok = res.filter(r => r.status === 'fulfilled').length
-  toast(ok === ids.length ? ('Отозвано: ' + ok) : ('Отозвано: ' + ok + ', ошибок: ' + (ids.length - ok)), ok < ids.length)
+  const verb = flag ? 'Отозвано' : 'Возвращено'
+  toast(ok === ids.length ? (verb + ': ' + ok) : (verb + ': ' + ok + ', ошибок: ' + (ids.length - ok)), ok < ids.length)
   clearSelection(); load()
 }
 
