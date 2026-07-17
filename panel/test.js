@@ -86,12 +86,19 @@ async function testClientScript() {
   global.confirm = () => true
   global.fetch = async (url) => ({ ok: true, status: 200, json: async () => {
     const u = String(url)
-    if (u.includes('/api/db/tables')) return { tables: [{ name: 'licenses', columns: [
-      { name: 'id', type: 'string', format: 'uuid', pk: true },
-      { name: 'customer', type: 'string', format: 'text', pk: false },
-      { name: 'terminals', type: 'integer', format: 'integer', pk: false }
-    ] }] }
-    if (u.includes('/api/db/rows')) return { rows: [{ id: 'row1', customer: 'X', terminals: 2 }], total: 1 }
+    if (u.includes('/api/db/tables')) return { tables: [
+      { name: 'barcodes', columns: [
+        { name: 'id', type: 'integer', format: 'bigint', pk: true },
+        { name: 'barcode', type: 'string', format: 'text', pk: false },
+        { name: 'name', type: 'string', format: 'text', pk: false }
+      ] },
+      { name: 'licenses', columns: [
+        { name: 'id', type: 'string', format: 'uuid', pk: true },
+        { name: 'customer', type: 'string', format: 'text', pk: false },
+        { name: 'terminals', type: 'integer', format: 'integer', pk: false }
+      ] }
+    ] }
+    if (u.includes('/api/db/rows')) return { rows: [{ id: 1, barcode: '4870001234567', name: 'Товар' }], total: 1 }
     return { rows: global.__TEST_ROWS__, kaspiPhone: '' }
   } })
 
@@ -164,11 +171,11 @@ async function testClientScript() {
   assert.strictEqual(res.afterRevokedFilterCount, '1 из 4', 'revoked filter should narrow to the one revoked row')
   assert.strictEqual(res.afterToggleBackCount, '4 из 4', 'clicking the active filter again should reset to all')
 
-  assert.strictEqual(res.dbTablesLen, 1, 'switchView(db) should load the table list')
-  assert.strictEqual(res.dbTableName, 'licenses', 'licenses should be picked as the default table')
+  assert.strictEqual(res.dbTablesLen, 2, 'switchView(db) should load the table list')
+  assert.strictEqual(res.dbTableName, 'barcodes', 'a barcode-looking table should be picked by default')
   assert.strictEqual(res.dbPkName, 'id', 'pk should be detected from the <pk/> column flag')
-  assert.ok(res.dbGridHtml.includes('customer'), 'db grid header should include column names')
-  assert.ok(res.dbGridHtml.includes('row1'), 'db grid body should include loaded row values')
+  assert.ok(res.dbGridHtml.includes('barcode'), 'db grid header should include column names')
+  assert.ok(res.dbGridHtml.includes('4870001234567'), 'db grid body should include loaded row values')
   assert.strictEqual(res.dbCountText, '1 из 1', 'db count should reflect loaded rows and total')
   assert.strictEqual(res.dbViewShown, '', 'db view should be visible after switchView(db)')
   assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when db view is active')

@@ -971,13 +971,21 @@ async function loadDbTables(){
     dbTables = d.tables || []
     if (!dbTables.length){ toast('В базе нет таблиц', true); return }
     $('dbTable').innerHTML = dbTables.map(t => '<option value="' + esc(t.name) + '">' + esc(t.name) + '</option>').join('')
-    dbTable = dbTables.some(t => t.name === 'licenses') ? 'licenses' : dbTables[0].name
+    // По умолчанию: последняя открытая таблица, иначе похожая на базу
+    // штрихкодов/товаров, иначе licenses, иначе первая по алфавиту.
+    const saved = localStorage.getItem('panel_db_table')
+    const goods = dbTables.find(t => /barcode|shtrih|product|tovar|item|good|catalog|menu/i.test(t.name))
+    dbTable = (saved && dbTables.some(t => t.name === saved) && saved) ||
+      (goods && goods.name) ||
+      (dbTables.some(t => t.name === 'licenses') && 'licenses') ||
+      dbTables[0].name
     $('dbTable').value = dbTable
     await loadDbRows()
   } catch(e){ toast(e.message, true) }
 }
 function pickDbTable(name){
   dbTable = name
+  localStorage.setItem('panel_db_table', name)
   dbSort = { col: null, dir: 'asc' }
   $('dbq').value = ''
   loadDbRows()
