@@ -13,12 +13,19 @@ const sb = (env) => ({
   }
 })
 
+// Отдельный проект Supabase — тот же, что у монитора зала/мультикассы.
+// Там живёт общий словарь штрихкодов (mon_barcodes), не в проекте лицензий.
+const sb2 = (env) => ({
+  url: (env.MONITOR_SUPABASE_URL || '').trim().replace(/\/$/, ''),
+  headers: {
+    apikey: env.MONITOR_SUPABASE_SERVICE_ROLE_KEY,
+    Authorization: `Bearer ${env.MONITOR_SUPABASE_SERVICE_ROLE_KEY}`,
+    'Content-Type': 'application/json'
+  }
+})
+
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
-
-// Имена таблиц/колонок вкладки «База» подставляются в URL PostgREST —
-// пускаем только простые идентификаторы, чтобы не собрать инъекцию в запрос.
-const ident = (s) => typeof s === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)
 
 export default {
   async fetch(request, env) {
@@ -120,87 +127,86 @@ export default {
         return json({ ok: true })
       }
 
-      // --- Вкладка «База»: просмотр и правка произвольных таблиц общей базы ---
-
-      if (pathname === '/api/db/tables') {
-        // PostgREST отдаёт OpenAPI-описание схемы на корне /rest/v1/ — из него
-        // берём список таблиц, их колонки и первичные ключи (метка <pk/>).
-        const r = await fetch(`${db.url}/rest/v1/`, { headers: db.headers })
-        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-        const spec = await r.json()
-        const tables = Object.entries(spec.definitions || {}).map(([name, def]) => ({
-          name,
-          columns: Object.entries(def.properties || {}).map(([col, p]) => ({
-            name: col,
-            type: p.type || 'string',
-            format: String(p.format || '').split(' ')[0],
-            pk: /<pk\s*\/>/.test(p.description || '')
-          }))
-        })).sort((a, b) => a.name.localeCompare(b.name))
-        return json({ tables })
-      }
-
-      if (pathname === '/api/db/rows') {
-        const { table, limit, offset, order, dir } = await request.json()
-        if (!ident(table)) return json({ error: 'Некорректное имя таблицы' }, 400)
-        const lim = Math.min(500, Math.max(1, Number(limit) || 100))
-        const off = Math.max(0, Number(offset) || 0)
-        let qs = `select=*&limit=${lim}&offset=${off}`
-        if (order !== undefined && order !== null && order !== '') {
-          if (!ident(order)) return json({ error: 'Некорректная колонка сортировки' }, 400)
-          qs += `&order=${order}.${dir === 'desc' ? 'desc' : 'asc'}`
+      // --- Вкладка «Штрихкоды»: общий словарь mon_barcodes (проект монитора) ---
+      if (pathname.startsWith('/api/catalog/')) {
+        const db2 = sb2(env)
+        if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
+          return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
         }
-        const r = await fetch(`${db.url}/rest/v1/${table}?${qs}`, {
-          headers: { ...db.headers, Prefer: 'count=exact' }
-        })
-        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-        const total = Number((r.headers.get('content-range') || '').split('/')[1])
-        return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
-      }
 
-      if (pathname === '/api/db/insert') {
-        const { table, values } = await request.json()
-        if (!ident(table)) return json({ error: 'Некорректное имя таблицы' }, 400)
-        if (!values || typeof values !== 'object' || Array.isArray(values) || !Object.keys(values).length) {
-          return json({ error: 'Нет данных для вставки' }, 400)
+        if (pathname === '/api/catalog/pending') {
+          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?status=eq.pending&order=updated_at.desc&limit=200`, { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          return json({ rows: await r.json() })
         }
-        const r = await fetch(`${db.url}/rest/v1/${table}`, {
-          method: 'POST',
-          headers: { ...db.headers, Prefer: 'return=representation' },
-          body: JSON.stringify(values)
-        })
-        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-        const [row] = await r.json()
-        return json({ ok: true, row })
-      }
 
-      if (pathname === '/api/db/update') {
-        const { table, pk, pkValue, values } = await request.json()
-        if (!ident(table) || !ident(pk)) return json({ error: 'Некорректные имена таблицы/ключа' }, 400)
-        if (pkValue === undefined || pkValue === null || pkValue === '') return json({ error: 'Нет значения первичного ключа' }, 400)
-        if (!values || typeof values !== 'object' || Array.isArray(values)) return json({ error: 'Нет данных' }, 400)
-        const body = { ...values }
-        delete body[pk]
-        if (!Object.keys(body).length) return json({ error: 'Нет изменений' }, 400)
-        const r = await fetch(`${db.url}/rest/v1/${table}?${pk}=eq.${encodeURIComponent(pkValue)}`, {
-          method: 'PATCH',
-          headers: { ...db.headers, Prefer: 'return=minimal' },
-          body: JSON.stringify(body)
-        })
-        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-        return json({ ok: true })
-      }
+        if (pathname === '/api/catalog/list') {
+          const { q } = await request.json()
+          const term = String(q || '').trim()
+          let qs = 'status=eq.approved&order=updated_at.desc&limit=200'
+          if (term) qs += `&or=(barcode.ilike.*${encodeURIComponent(term)}*,name.ilike.*${encodeURIComponent(term)}*)`
+          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const all = await r.json()
+          // Разные магазины могут одобрить один и тот же штрихкод под свою
+          // цену — в очереди на одобрение это видно как варианты (полезно),
+          // а в итоговом каталоге дублей одного штрихкода быть не должно:
+          // оставляем самую свежую запись (order=updated_at.desc — первая).
+          const seen = new Set()
+          const rows = all.filter(row => (seen.has(row.barcode) ? false : (seen.add(row.barcode), true)))
+          return json({ rows })
+        }
 
-      if (pathname === '/api/db/delete') {
-        const { table, pk, pkValue } = await request.json()
-        if (!ident(table) || !ident(pk)) return json({ error: 'Некорректные имена таблицы/ключа' }, 400)
-        if (pkValue === undefined || pkValue === null || pkValue === '') return json({ error: 'Нет значения первичного ключа' }, 400)
-        const r = await fetch(`${db.url}/rest/v1/${table}?${pk}=eq.${encodeURIComponent(pkValue)}`, {
-          method: 'DELETE',
-          headers: { ...db.headers, Prefer: 'return=minimal' }
-        })
-        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-        return json({ ok: true })
+        if (pathname === '/api/catalog/approve') {
+          const { venue_id, barcode } = await request.json()
+          if (!venue_id || !barcode) return json({ error: 'Нужны venue_id и barcode' }, 400)
+          const patch = await fetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ status: 'approved' })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        if (pathname === '/api/catalog/reject' || pathname === '/api/catalog/delete') {
+          const { venue_id, barcode } = await request.json()
+          if (!venue_id || !barcode) return json({ error: 'Нужны venue_id и barcode' }, 400)
+          const del = await fetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
+            method: 'DELETE',
+            headers: { ...db2.headers, Prefer: 'return=minimal' }
+          })
+          if (!del.ok) return json({ error: `Supabase: ${del.status} ${await del.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        if (pathname === '/api/catalog/upsert') {
+          const { venue_id, barcode, name, category, price, unit } = await request.json()
+          if (!barcode || !String(barcode).trim()) return json({ error: 'Укажите штрихкод' }, 400)
+          if (!name || !String(name).trim()) return json({ error: 'Укажите название' }, 400)
+          const n = price === '' || price === null || price === undefined ? null : Number(price)
+          if (n !== null && !Number.isFinite(n)) return json({ error: 'Некорректная цена' }, 400)
+          const body = {
+            venue_id: (venue_id && String(venue_id).trim()) || 'panel-owner',
+            barcode: String(barcode).trim(),
+            name: String(name).trim(),
+            category: String(category || '').trim() || null,
+            price: n,
+            unit: String(unit || '').trim() || null,
+            status: 'approved',
+            updated_at: new Date().toISOString()
+          }
+          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?on_conflict=venue_id,barcode`, {
+            method: 'POST',
+            headers: { ...db2.headers, Prefer: 'resolution=merge-duplicates,return=representation' },
+            body: JSON.stringify(body)
+          })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const [row] = await r.json()
+          return json({ ok: true, row })
+        }
+
+        return json({ error: 'Неизвестный путь' }, 404)
       }
 
       return json({ error: 'Неизвестный путь' }, 404)
@@ -381,28 +387,8 @@ const PAGE = `<!DOCTYPE html>
 
   .empty{padding:56px 0;text-align:center;color:var(--mut2);font-size:14px}
 
-  .dbselect{height:42px;padding:0 12px;background:var(--panel);border:1px solid var(--b);border-radius:11px;
-    color:var(--fg);font-size:14px;outline:none;max-width:240px}
-  .dbselect:focus{border-color:var(--brand)}
-  .dbscroll{overflow-x:auto}
-  .dbtable{width:100%;border-collapse:collapse}
-  .dbtable th{height:44px;padding:0 12px;background:var(--bg2);border-bottom:1px solid var(--b);text-align:left;white-space:nowrap}
-  .dbtable th button.h{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
-    background:none;border:none;text-align:left;white-space:nowrap}
-  .dbtable td{padding:9px 12px;border-bottom:1px solid var(--b);white-space:nowrap;vertical-align:middle}
-  .dbtable .cv{display:inline-block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-    vertical-align:middle;font-family:"IBM Plex Mono";font-size:11.5px;color:var(--fg)}
-  .dbtable .null{color:var(--mut2);font-size:11.5px}
-  .dbtable .rowedit{width:26px;height:26px;border-radius:7px;background:var(--panel2);border:1px solid var(--b2);color:var(--mut);font-size:12px}
-  .dbtable .rowedit:hover{border-color:var(--brand);color:var(--brand)}
-  .dbmore{padding:12px;text-align:center;border-top:1px solid var(--b)}
-  #dlgDb{width:560px;max-height:82vh;overflow:auto}
-  #dbFields label .t{color:var(--mut2);font-weight:400;text-transform:none;letter-spacing:0}
-  #dbFields textarea{width:100%;min-height:70px;background:var(--bg2);border:1px solid var(--b2);border-radius:10px;
-    padding:10px 13px;color:var(--fg);font-family:"IBM Plex Mono";font-size:12px;outline:none;margin-bottom:14px;resize:vertical}
-  #dbFields textarea:focus{border-color:var(--brand)}
-  #dbFields input[readonly],#dbFields textarea[readonly]{opacity:.55}
-  #dbDelBtn{color:var(--bad);margin-right:auto}
+  #catDelBtn{color:var(--bad);margin-right:auto}
+  #catPrice::-webkit-inner-spin-button{opacity:.4}
 
   dialog{width:440px;max-width:calc(100vw - 40px);background:var(--panel);border:1px solid var(--b2);
     border-radius:16px;padding:24px;color:var(--fg);box-shadow:0 8px 30px rgba(0,0,0,.35);animation:dlgIn .2s ease}
@@ -469,7 +455,7 @@ const PAGE = `<!DOCTYPE html>
     </div>
     <nav class="tabs-deco">
       <button id="navSubs" class="active" onclick="switchView('subs')">Подписки</button>
-      <button id="navDb" onclick="switchView('db')">База</button>
+      <button id="navCat" onclick="switchView('cat')">Штрихкоды</button>
     </nav>
     <div class="topbar-right">
       <button id="themeBtn" class="icon-btn" onclick="toggleTheme()" title="Сменить тему">☀</button>
@@ -514,29 +500,51 @@ const PAGE = `<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="viewDb" style="display:none">
+  <div id="viewCat" style="display:none">
     <div class="titlerow">
       <div>
-        <h1>Общая база</h1>
-        <div class="sub">Просмотр и правка таблиц Supabase — изменения применяются сразу</div>
+        <h1>Штрихкоды</h1>
+        <div class="sub">Общий словарь товаров — кассы дополняют сами, здесь одобряете, правите и добавляете свои</div>
       </div>
     </div>
+
+    <div class="titlerow" style="margin-bottom:14px">
+      <div><h1 style="font-size:18px">На одобрении</h1></div>
+    </div>
+    <div id="catBulkbar" style="display:none"></div>
+    <div class="tablewrap" style="margin-bottom:28px">
+      <div class="grid-row thead" style="grid-template-columns:44px 1fr 1.6fr 1fr 90px 90px 150px">
+        <div><input type="checkbox" id="catPendAll" onchange="toggleCatPendAll(this.checked)" /></div>
+        <div class="h">Штрихкод</div>
+        <div class="h">Название</div>
+        <div class="h">Категория</div>
+        <div class="h right">Цена</div>
+        <div class="h center">Ед.</div>
+        <div class="h right">Действия</div>
+      </div>
+      <div id="catPendBody"></div>
+      <div id="catPendEmpty" class="empty" style="display:none">Нет заявок на одобрение</div>
+    </div>
+
     <div class="filterbar">
-      <select id="dbTable" class="dbselect" onchange="pickDbTable(this.value)"></select>
+      <div style="margin-right:auto"><h1 style="font-size:18px">Каталог</h1></div>
       <div class="searchwrap">
         <span class="ic">⌕</span>
-        <input id="dbq" type="search" oninput="renderDb()" placeholder="Фильтр по загруженным строкам…" />
+        <input id="catq" type="search" oninput="loadCatList()" placeholder="Поиск по штрихкоду или названию…" />
       </div>
-      <div class="count" id="dbCount"></div>
-      <button class="btn" onclick="loadDbRows()">Обновить</button>
-      <button class="btn pri" onclick="openDbEdit(null)">+ Строка</button>
+      <button class="btn pri" onclick="openCatEdit(null)">+ Штрихкод</button>
     </div>
     <div class="tablewrap">
-      <div class="dbscroll">
-        <table class="dbtable" id="dbGrid"></table>
+      <div class="grid-row thead" style="grid-template-columns:1fr 1.6fr 1fr 90px 90px 60px">
+        <div class="h">Штрихкод</div>
+        <div class="h">Название</div>
+        <div class="h">Категория</div>
+        <div class="h right">Цена</div>
+        <div class="h center">Ед.</div>
+        <div class="h right"></div>
       </div>
-      <div id="dbEmpty" class="empty" style="display:none">Нет строк</div>
-      <div id="dbMore" class="dbmore" style="display:none"><button class="btn" onclick="loadDbRows(true)">Показать ещё</button></div>
+      <div id="catBody"></div>
+      <div id="catEmpty" class="empty" style="display:none">Ничего не найдено</div>
     </div>
   </div>
   </main>
@@ -566,14 +574,28 @@ const PAGE = `<!DOCTYPE html>
   </div>
 </dialog>
 
-<dialog id="dlgDb">
-  <h3 id="dlgDbTitle">Строка</h3>
-  <div class="dsub" id="dlgDbSub"></div>
-  <div id="dbFields"></div>
+<dialog id="dlgCat">
+  <h3 id="dlgCatTitle">Штрихкод</h3>
+  <label>Штрихкод</label>
+  <input id="catBarcode" placeholder="4870000000000" />
+  <label>Название</label>
+  <input id="catName" placeholder="Название товара" />
+  <div class="drow2">
+    <div class="fld">
+      <label>Категория</label>
+      <input id="catCategory" placeholder="необязательно" />
+    </div>
+    <div class="fld">
+      <label>Ед.</label>
+      <input id="catUnit" placeholder="шт / кг…" />
+    </div>
+  </div>
+  <label>Цена</label>
+  <input id="catPrice" type="number" min="0" step="0.01" placeholder="необязательно" />
   <div class="drow">
-    <button id="dbDelBtn" class="ghost" onclick="deleteDbRow()">Удалить</button>
-    <button class="ghost" onclick="dlgDb.close()">Отмена</button>
-    <button id="dbSaveBtn" class="pri" onclick="saveDbRow()">Сохранить</button>
+    <button id="catDelBtn" class="ghost" onclick="deleteCatRow()">Удалить</button>
+    <button class="ghost" onclick="dlgCat.close()">Отмена</button>
+    <button id="catSaveBtn" class="pri" onclick="saveCatRow()">Сохранить</button>
   </div>
 </dialog>
 
@@ -940,185 +962,160 @@ async function bulkSetRevoked(flag){
   clearSelection(); load()
 }
 
-// --- Вкладка «База»: просмотр и правка произвольных таблиц Supabase ---
+// --- Вкладка «Штрихкоды»: общий словарь mon_barcodes (проект монитора) ---
 let view = 'subs'
-let dbTables = [], dbTable = '', dbRows = [], dbTotal = null
-let dbSort = { col: null, dir: 'asc' }, dbEditIndex = null
-const DB_PAGE = 100
+let catPending = [], catRows = [], catSelected = new Set(), catEditKey = null
 
 async function switchView(v){
   view = v
   $('viewSubs').style.display = v === 'subs' ? '' : 'none'
-  $('viewDb').style.display = v === 'db' ? '' : 'none'
+  $('viewCat').style.display = v === 'cat' ? '' : 'none'
   $('navSubs').className = v === 'subs' ? 'active' : ''
-  $('navDb').className = v === 'db' ? 'active' : ''
-  if (v === 'db' && !dbTables.length) await loadDbTables()
+  $('navCat').className = v === 'cat' ? 'active' : ''
+  if (v === 'cat') await Promise.all([loadCatPending(), loadCatList()])
 }
 
-function dbMeta(){ return dbTables.find(t => t.name === dbTable) }
-function dbPk(){
-  const t = dbMeta(); if (!t) return null
-  const pk = t.columns.find(c => c.pk)
-  if (pk) return pk.name
-  return t.columns.some(c => c.name === 'id') ? 'id' : null
-}
-const isJsonCol = c => c.type === 'object' || c.type === 'array' || (c.format || '').startsWith('json')
-const cellRaw = v => v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))
+const catKey = r => r.venue_id + '\\u0000' + r.barcode
 
-async function loadDbTables(){
-  try {
-    const d = await api('db/tables')
-    dbTables = d.tables || []
-    if (!dbTables.length){ toast('В базе нет таблиц', true); return }
-    $('dbTable').innerHTML = dbTables.map(t => '<option value="' + esc(t.name) + '">' + esc(t.name) + '</option>').join('')
-    // По умолчанию: последняя открытая таблица, иначе похожая на базу
-    // штрихкодов/товаров, иначе licenses, иначе первая по алфавиту.
-    const saved = localStorage.getItem('panel_db_table')
-    const goods = dbTables.find(t => /barcode|shtrih|product|tovar|item|good|catalog|menu/i.test(t.name))
-    dbTable = (saved && dbTables.some(t => t.name === saved) && saved) ||
-      (goods && goods.name) ||
-      (dbTables.some(t => t.name === 'licenses') && 'licenses') ||
-      dbTables[0].name
-    $('dbTable').value = dbTable
-    await loadDbRows()
-  } catch(e){ toast(e.message, true) }
+async function loadCatPending(){
+  try { const d = await api('catalog/pending'); catPending = d.rows || []; renderCatPending() }
+  catch(e){ toast(e.message, true) }
 }
-function pickDbTable(name){
-  dbTable = name
-  localStorage.setItem('panel_db_table', name)
-  dbSort = { col: null, dir: 'asc' }
-  $('dbq').value = ''
-  loadDbRows()
+function toggleCatSel(key, on){
+  if (on) catSelected.add(key); else catSelected.delete(key)
+  renderCatPending()
 }
-async function loadDbRows(more){
-  if (!dbTable) return
-  const offset = more === true ? dbRows.length : 0
-  try {
-    const d = await api('db/rows', { table: dbTable, limit: DB_PAGE, offset, order: dbSort.col, dir: dbSort.dir })
-    dbRows = more === true ? dbRows.concat(d.rows) : d.rows
-    dbTotal = d.total
-    renderDb()
-  } catch(e){ toast(e.message, true) }
+function toggleCatPendAll(on){
+  catPending.forEach(r => { const k = catKey(r); if (on) catSelected.add(k); else catSelected.delete(k) })
+  renderCatPending()
 }
-function toggleDbSort(col){
-  if (dbSort.col === col) dbSort.dir = dbSort.dir === 'asc' ? 'desc' : 'asc'
-  else dbSort = { col, dir: 'asc' }
-  loadDbRows()
+function renderCatPending(){
+  const keys = catPending.map(catKey)
+  ;[...catSelected].forEach(k => { if (!keys.includes(k)) catSelected.delete(k) })
+  $('catPendAll').checked = keys.length > 0 && keys.every(k => catSelected.has(k))
+
+  if (!catPending.length){
+    $('catPendBody').innerHTML = ''
+    $('catPendEmpty').style.display = 'block'
+  } else {
+    $('catPendEmpty').style.display = 'none'
+    $('catPendBody').innerHTML = catPending.map(r => {
+      const k = catKey(r), sel = catSelected.has(k)
+      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 1fr 1.6fr 1fr 90px 90px 150px">' +
+        '<div><input type="checkbox" data-k="' + esc(k) + '" ' + (sel ? 'checked' : '') + ' onchange="toggleCatSel(this.dataset.k, this.checked)" /></div>' +
+        '<div class="cust-id">' + esc(r.barcode) + '</div>' +
+        '<div class="cust-name">' + esc(r.name || '') + '</div>' +
+        '<div class="exp">' + esc(r.category || '—') + '</div>' +
+        '<div class="exp" style="text-align:right">' + (r.price != null ? r.price : '—') + '</div>' +
+        '<div class="term">' + esc(r.unit || '—') + '</div>' +
+        '<div class="acts">' +
+          '<button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="approveCat(this.dataset.vid,this.dataset.bc)">Одобрить</button>' +
+          '<button class="revoke" data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="rejectCat(this.dataset.vid,this.dataset.bc)">Отклонить</button>' +
+        '</div>' +
+      '</div>'
+    }).join('')
+  }
+
+  if (catSelected.size > 0){
+    $('catBulkbar').style.display = 'flex'
+    $('catBulkbar').innerHTML =
+      '<span class="lbl">Выбрано: ' + catSelected.size + '</span><div class="sp"></div>' +
+      '<button class="pri" onclick="bulkApproveCat()">Одобрить выбранные</button>' +
+      '<button class="bad" onclick="bulkRejectCat()">Отклонить выбранные</button>' +
+      '<button class="plain" onclick="catSelected.clear();renderCatPending()">Снять</button>'
+  } else {
+    $('catBulkbar').style.display = 'none'
+    $('catBulkbar').innerHTML = ''
+  }
 }
-function cellHtml(v){
-  if (v === null || v === undefined) return '<span class="null">∅</span>'
-  const s = esc(cellRaw(v))
-  return '<span class="cv" title="' + s + '">' + s + '</span>'
+async function approveCat(venue_id, barcode){
+  try { await api('catalog/approve', { venue_id, barcode }); toast('Одобрено'); loadCatPending(); loadCatList() }
+  catch(e){ toast(e.message, true) }
 }
-function renderDb(){
-  const t = dbMeta()
-  if (!t){ $('dbGrid').innerHTML = ''; $('dbCount').textContent = ''; return }
-  const q = $('dbq').value.trim().toLowerCase()
-  const shown = []
-  dbRows.forEach((r, i) => {
-    if (!q || t.columns.some(c => cellRaw(r[c.name]).toLowerCase().includes(q))) shown.push(i)
-  })
-  $('dbCount').textContent = shown.length + ' из ' + (dbTotal ?? dbRows.length)
-  const pk = dbPk()
-  const head = '<tr><th></th>' + t.columns.map(c => {
-    const arrow = dbSort.col === c.name ? (dbSort.dir === 'asc' ? ' ↑' : ' ↓') : ''
-    return '<th><button class="h" data-col="' + esc(c.name) + '" onclick="toggleDbSort(this.dataset.col)">' +
-      esc(c.name) + (c.pk ? ' 🔑' : '') + arrow + '</button></th>'
-  }).join('') + '</tr>'
-  const body = shown.map(i => {
-    const r = dbRows[i]
-    return '<tr>' +
-      '<td>' + (pk ? '<button class="rowedit" data-i="' + i + '" onclick="openDbEdit(Number(this.dataset.i))" title="Редактировать">✎</button>' : '') + '</td>' +
-      t.columns.map(c => '<td>' + cellHtml(r[c.name]) + '</td>').join('') +
-    '</tr>'
-  }).join('')
-  $('dbGrid').innerHTML = '<thead>' + head + '</thead><tbody>' + body + '</tbody>'
-  $('dbEmpty').style.display = shown.length ? 'none' : 'block'
-  $('dbMore').style.display = (dbTotal !== null && dbRows.length < dbTotal) ? '' : 'none'
+async function rejectCat(venue_id, barcode){
+  try { await api('catalog/reject', { venue_id, barcode }); toast('Отклонено'); loadCatPending() }
+  catch(e){ toast(e.message, true) }
+}
+async function bulkApproveCat(){
+  const items = catPending.filter(r => catSelected.has(catKey(r))); if (!items.length) return
+  const res = await Promise.allSettled(items.map(r => api('catalog/approve', { venue_id: r.venue_id, barcode: r.barcode })))
+  const ok = res.filter(r => r.status === 'fulfilled').length
+  toast(ok === items.length ? ('Одобрено: ' + ok) : ('Одобрено: ' + ok + ', ошибок: ' + (items.length - ok)), ok < items.length)
+  catSelected.clear(); loadCatPending(); loadCatList()
+}
+async function bulkRejectCat(){
+  const items = catPending.filter(r => catSelected.has(catKey(r))); if (!items.length) return
+  if (!confirm('Отклонить ' + items.length + ' заявок?')) return
+  const res = await Promise.allSettled(items.map(r => api('catalog/reject', { venue_id: r.venue_id, barcode: r.barcode })))
+  const ok = res.filter(r => r.status === 'fulfilled').length
+  toast(ok === items.length ? ('Отклонено: ' + ok) : ('Отклонено: ' + ok + ', ошибок: ' + (items.length - ok)), ok < items.length)
+  catSelected.clear(); loadCatPending()
 }
 
-const dlgDb = $('dlgDb')
-function dbFieldHtml(c, row){
-  const val = row ? cellRaw(row[c.name]) : ''
-  const ro = row && c.pk
-  const hint = c.type + (c.format ? ' · ' + c.format : '') + (c.pk ? ' · PK' : '')
-  const attrs = ' id="dbf_' + esc(c.name) + '"' + (ro ? ' readonly' : '')
-  return '<label>' + esc(c.name) + ' <span class="t">' + esc(hint) + '</span></label>' +
-    (isJsonCol(c) || val.length > 60
-      ? '<textarea' + attrs + '>' + esc(val) + '</textarea>'
-      : '<input' + attrs + ' value="' + esc(val) + '" placeholder="∅ (пусто = NULL)" />')
+async function loadCatList(){
+  try { const d = await api('catalog/list', { q: $('catq').value }); catRows = d.rows || []; renderCatList() }
+  catch(e){ toast(e.message, true) }
 }
-function openDbEdit(i){
-  const t = dbMeta(); if (!t) return
-  const pk = dbPk()
-  if (i !== null && !pk){ toast('У таблицы нет первичного ключа — правка недоступна', true); return }
-  dbEditIndex = i
-  const row = i === null ? null : dbRows[i]
-  $('dlgDbTitle').textContent = i === null ? 'Новая строка' : 'Строка ' + cellRaw(row[pk])
-  $('dlgDbSub').textContent = 'Таблица ' + dbTable + (i === null
-    ? ' — пустые поля не отправляются, сработают значения по умолчанию'
-    : ' — пустое поле сохранится как NULL')
-  $('dbFields').innerHTML = t.columns.map(c => dbFieldHtml(c, row)).join('')
-  $('dbDelBtn').style.display = i === null ? 'none' : ''
-  $('dbSaveBtn').disabled = false
-  dlgDb.showModal()
+function renderCatList(){
+  if (!catRows.length){
+    $('catBody').innerHTML = ''
+    $('catEmpty').style.display = 'block'
+  } else {
+    $('catEmpty').style.display = 'none'
+    $('catBody').innerHTML = catRows.map(r =>
+      '<div class="grid-row trow" style="grid-template-columns:1fr 1.6fr 1fr 90px 90px 60px">' +
+        '<div class="cust-id">' + esc(r.barcode) + '</div>' +
+        '<div class="cust-name">' + esc(r.name || '') + '</div>' +
+        '<div class="exp">' + esc(r.category || '—') + '</div>' +
+        '<div class="exp" style="text-align:right">' + (r.price != null ? r.price : '—') + '</div>' +
+        '<div class="term">' + esc(r.unit || '—') + '</div>' +
+        '<div class="acts"><button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="openCatEditFromRow(this.dataset.vid,this.dataset.bc)">✎</button></div>' +
+      '</div>'
+    ).join('')
+  }
 }
-function parseCell(raw, c){
-  if (raw === '') return { value: null }
-  if (c.type === 'integer' || c.type === 'number'){
-    const n = Number(raw)
-    return Number.isFinite(n) ? { value: n } : { err: 'не число' }
-  }
-  if (c.type === 'boolean'){
-    if (raw === 'true' || raw === '1') return { value: true }
-    if (raw === 'false' || raw === '0') return { value: false }
-    return { err: 'нужно true или false' }
-  }
-  if (isJsonCol(c)){
-    try { return { value: JSON.parse(raw) } } catch(e){ return { err: 'некорректный JSON' } }
-  }
-  return { value: raw }
+function findCatRow(venue_id, barcode){ return catRows.find(r => r.venue_id === venue_id && r.barcode === barcode) }
+function openCatEditFromRow(venue_id, barcode){ openCatEdit(findCatRow(venue_id, barcode)) }
+
+const dlgCat = $('dlgCat')
+function openCatEdit(row){
+  catEditKey = row ? { venue_id: row.venue_id, barcode: row.barcode } : null
+  $('dlgCatTitle').textContent = row ? 'Правка штрихкода' : 'Новый штрихкод'
+  $('catBarcode').value = row ? row.barcode : ''
+  $('catBarcode').readOnly = !!row
+  $('catName').value = row ? (row.name || '') : ''
+  $('catCategory').value = row ? (row.category || '') : ''
+  $('catPrice').value = row && row.price != null ? row.price : ''
+  $('catUnit').value = row ? (row.unit || '') : ''
+  $('catDelBtn').style.display = row ? '' : 'none'
+  $('catSaveBtn').disabled = false
+  dlgCat.showModal()
+  $('catBarcode').focus()
 }
-async function saveDbRow(){
-  const t = dbMeta(); if (!t) return
-  const pk = dbPk()
-  const values = {}
-  for (const c of t.columns){
-    const el = $('dbf_' + c.name); if (!el) continue
-    const raw = el.value
-    if (dbEditIndex === null){
-      if (raw === '') continue
-    } else {
-      if (c.name === pk) continue
-      if (raw === cellRaw(dbRows[dbEditIndex][c.name])) continue
-    }
-    const p = parseCell(raw, c)
-    if (p.err){ toast(c.name + ': ' + p.err, true); return }
-    values[c.name] = p.value
-  }
-  if (!Object.keys(values).length){
-    toast(dbEditIndex === null ? 'Заполните хотя бы одно поле' : 'Нет изменений', true)
-    return
-  }
-  $('dbSaveBtn').disabled = true
+async function saveCatRow(){
+  $('catSaveBtn').disabled = true
   try {
-    if (dbEditIndex === null) await api('db/insert', { table: dbTable, values })
-    else await api('db/update', { table: dbTable, pk, pkValue: dbRows[dbEditIndex][pk], values })
+    await api('catalog/upsert', {
+      venue_id: catEditKey ? catEditKey.venue_id : undefined,
+      barcode: $('catBarcode').value,
+      name: $('catName').value,
+      category: $('catCategory').value,
+      price: $('catPrice').value,
+      unit: $('catUnit').value
+    })
     toast('Сохранено')
-    dlgDb.close()
-    loadDbRows()
-  } catch(e){ toast(e.message, true); $('dbSaveBtn').disabled = false }
+    dlgCat.close()
+    loadCatList()
+  } catch(e){ toast(e.message, true); $('catSaveBtn').disabled = false }
 }
-async function deleteDbRow(){
-  const pk = dbPk()
-  if (!pk || dbEditIndex === null) return
-  const pkValue = dbRows[dbEditIndex][pk]
-  if (!confirm('Удалить строку ' + pk + ' = ' + cellRaw(pkValue) + ' из таблицы «' + dbTable + '»? Действие необратимо.')) return
+async function deleteCatRow(){
+  if (!catEditKey) return
+  if (!confirm('Удалить штрихкод ' + $('catBarcode').value + ' из каталога?')) return
   try {
-    await api('db/delete', { table: dbTable, pk, pkValue })
+    await api('catalog/delete', catEditKey)
     toast('Удалено')
-    dlgDb.close()
-    loadDbRows()
+    dlgCat.close()
+    loadCatList()
   } catch(e){ toast(e.message, true) }
 }
 
@@ -1129,7 +1126,7 @@ function boot(){
   $('app').style.display = has ? '' : 'none'
   if (has) load()
 }
-;[dlgIssue, dlg, dlgDb].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
+;[dlgIssue, dlg, dlgCat].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
 boot()
 </script>
 </body>

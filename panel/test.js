@@ -42,24 +42,28 @@ async function testServerRoutes() {
 
   const authed = (path, body) => worker.fetch(new Request('https://x.test' + path, {
     method: 'POST', headers: { 'x-panel-key': 'secret' }, body: JSON.stringify(body || {})
-  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k',
+       MONITOR_SUPABASE_URL: 'https://mon.test', MONITOR_SUPABASE_SERVICE_ROLE_KEY: 'mk' })
 
-  const noSecrets = await worker.fetch(new Request('https://x.test/api/db/tables', {
+  const noMonitorSecrets = await worker.fetch(new Request('https://x.test/api/catalog/pending', {
     method: 'POST', headers: { 'x-panel-key': 'secret' }
   }), { PANEL_PASSWORD: 'secret' })
-  assert.strictEqual(noSecrets.status, 500, 'db route without Supabase secrets should 500')
+  assert.strictEqual(noMonitorSecrets.status, 500, 'catalog route without monitor Supabase secrets should 500')
 
-  const badTable = await authed('/api/db/rows', { table: 'x; drop' })
-  assert.strictEqual(badTable.status, 400, 'non-identifier table name should 400')
+  const noBarcode = await authed('/api/catalog/upsert', { name: 'Товар' })
+  assert.strictEqual(noBarcode.status, 400, 'upsert without barcode should 400')
 
-  const badPk = await authed('/api/db/update', { table: 'licenses', pk: 'id=1', pkValue: 'a', values: { customer: 'x' } })
-  assert.strictEqual(badPk.status, 400, 'non-identifier pk name should 400')
+  const noName = await authed('/api/catalog/upsert', { barcode: '123' })
+  assert.strictEqual(noName.status, 400, 'upsert without name should 400')
 
-  const noPkValue = await authed('/api/db/delete', { table: 'licenses', pk: 'id' })
-  assert.strictEqual(noPkValue.status, 400, 'delete without pkValue should 400')
+  const badPrice = await authed('/api/catalog/upsert', { barcode: '123', name: 'Товар', price: 'abc' })
+  assert.strictEqual(badPrice.status, 400, 'non-numeric price should 400')
 
-  const emptyInsert = await authed('/api/db/insert', { table: 'licenses', values: {} })
-  assert.strictEqual(emptyInsert.status, 400, 'insert without values should 400')
+  const noKeyApprove = await authed('/api/catalog/approve', { barcode: '123' })
+  assert.strictEqual(noKeyApprove.status, 400, 'approve without venue_id should 400')
+
+  const noKeyReject = await authed('/api/catalog/reject', { venue_id: 'v1' })
+  assert.strictEqual(noKeyReject.status, 400, 'reject without barcode should 400')
 
   console.log('server routes: OK')
 }
@@ -86,19 +90,12 @@ async function testClientScript() {
   global.confirm = () => true
   global.fetch = async (url) => ({ ok: true, status: 200, json: async () => {
     const u = String(url)
-    if (u.includes('/api/db/tables')) return { tables: [
-      { name: 'barcodes', columns: [
-        { name: 'id', type: 'integer', format: 'bigint', pk: true },
-        { name: 'barcode', type: 'string', format: 'text', pk: false },
-        { name: 'name', type: 'string', format: 'text', pk: false }
-      ] },
-      { name: 'licenses', columns: [
-        { name: 'id', type: 'string', format: 'uuid', pk: true },
-        { name: 'customer', type: 'string', format: 'text', pk: false },
-        { name: 'terminals', type: 'integer', format: 'integer', pk: false }
-      ] }
+    if (u.includes('/api/catalog/pending')) return { rows: [
+      { venue_id: 'venue-1', barcode: '4870001234567', name: 'Кола 0.5', category: 'Напитки', price: 350, unit: 'шт', status: 'pending' }
     ] }
-    if (u.includes('/api/db/rows')) return { rows: [{ id: 1, barcode: '4870001234567', name: 'Товар' }], total: 1 }
+    if (u.includes('/api/catalog/list')) return { rows: [
+      { venue_id: 'panel-owner', barcode: '4870009999999', name: 'Хлеб', category: null, price: 200, unit: 'шт', status: 'approved' }
+    ] }
     return { rows: global.__TEST_ROWS__, kaspiPhone: '' }
   } })
 
@@ -112,8 +109,9 @@ async function testClientScript() {
   ;['pw', 'login', 'app', 'themeBtn', 'q', 'stats', 'tabs', 'count', 'bulkbar', 'thead', 'tbody', 'cards', 'empty',
     'dlgIssue', 'dlg', 'isCust', 'isDays', 'isTerm', 'isMsg', 'isCopyBtn', 'dlgTitle', 'dlgDays', 'dlgMsg', 'rnCopyBtn',
     'doIssueBtn', 'doRenewBtn', 'refreshBtn',
-    'navSubs', 'navDb', 'viewSubs', 'viewDb', 'dbTable', 'dbq', 'dbCount', 'dbGrid', 'dbEmpty', 'dbMore',
-    'dlgDb', 'dlgDbTitle', 'dlgDbSub', 'dbFields', 'dbDelBtn', 'dbSaveBtn'].forEach(id => document.getElementById(id))
+    'navSubs', 'navCat', 'viewSubs', 'viewCat', 'catq', 'catBulkbar', 'catPendAll', 'catPendBody', 'catPendEmpty',
+    'catBody', 'catEmpty', 'dlgCat', 'dlgCatTitle', 'catBarcode', 'catName', 'catCategory', 'catUnit', 'catPrice',
+    'catDelBtn', 'catSaveBtn'].forEach(id => document.getElementById(id))
 
   const day = 86400000, now = Date.now()
   global.__TEST_ROWS__ = [
@@ -143,16 +141,17 @@ async function testClientScript() {
   global.__RESULT__.afterRevokedFilterCount = document.getElementById('count').textContent
   setFilter('revoked')
   global.__RESULT__.afterToggleBackCount = document.getElementById('count').textContent
-  await switchView('db')
-  global.__RESULT__.dbTablesLen = dbTables.length
-  global.__RESULT__.dbTableName = dbTable
-  global.__RESULT__.dbPkName = dbPk()
-  global.__RESULT__.dbGridHtml = document.getElementById('dbGrid').innerHTML
-  global.__RESULT__.dbCountText = document.getElementById('dbCount').textContent
-  global.__RESULT__.dbViewShown = document.getElementById('viewDb').style.display
+  await switchView('cat')
+  global.__RESULT__.catPendingLen = catPending.length
+  global.__RESULT__.catRowsLen = catRows.length
+  global.__RESULT__.catPendBodyHtml = document.getElementById('catPendBody').innerHTML
+  global.__RESULT__.catBodyHtml = document.getElementById('catBody').innerHTML
+  global.__RESULT__.catViewShown = document.getElementById('viewCat').style.display
   global.__RESULT__.subsViewHidden = document.getElementById('viewSubs').style.display
+  toggleCatPendAll(true)
+  global.__RESULT__.catSelectedAfterAll = catSelected.size
   await switchView('subs')
-  global.__RESULT__.dbViewHiddenBack = document.getElementById('viewDb').style.display
+  global.__RESULT__.catViewHiddenBack = document.getElementById('viewCat').style.display
 })()
 `
   eval(mainScript + driver)
@@ -171,15 +170,14 @@ async function testClientScript() {
   assert.strictEqual(res.afterRevokedFilterCount, '1 из 4', 'revoked filter should narrow to the one revoked row')
   assert.strictEqual(res.afterToggleBackCount, '4 из 4', 'clicking the active filter again should reset to all')
 
-  assert.strictEqual(res.dbTablesLen, 2, 'switchView(db) should load the table list')
-  assert.strictEqual(res.dbTableName, 'barcodes', 'a barcode-looking table should be picked by default')
-  assert.strictEqual(res.dbPkName, 'id', 'pk should be detected from the <pk/> column flag')
-  assert.ok(res.dbGridHtml.includes('barcode'), 'db grid header should include column names')
-  assert.ok(res.dbGridHtml.includes('4870001234567'), 'db grid body should include loaded row values')
-  assert.strictEqual(res.dbCountText, '1 из 1', 'db count should reflect loaded rows and total')
-  assert.strictEqual(res.dbViewShown, '', 'db view should be visible after switchView(db)')
-  assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when db view is active')
-  assert.strictEqual(res.dbViewHiddenBack, 'none', 'switching back should hide the db view')
+  assert.strictEqual(res.catPendingLen, 1, 'switchView(cat) should load the pending queue')
+  assert.strictEqual(res.catRowsLen, 1, 'switchView(cat) should load the approved catalog')
+  assert.ok(res.catPendBodyHtml.includes('4870001234567'), 'pending queue should show the submitted barcode')
+  assert.ok(res.catBodyHtml.includes('4870009999999'), 'catalog list should show the approved barcode')
+  assert.strictEqual(res.catViewShown, '', 'catalog view should be visible after switchView(cat)')
+  assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when catalog view is active')
+  assert.strictEqual(res.catSelectedAfterAll, 1, 'select-all on the pending queue should select every row')
+  assert.strictEqual(res.catViewHiddenBack, 'none', 'switching back should hide the catalog view')
 
   console.log('client script: OK')
 }
