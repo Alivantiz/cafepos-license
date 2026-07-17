@@ -1,0 +1,23 @@
+name: Деплой keepalive-воркера
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'keepalive-worker/**'
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Проверка синтаксиса
+        run: node --check keepalive-worker/src/index.mjs
+      - name: Деплой Worker с cron-триггером
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: keepalive-worker
+          command: deploy

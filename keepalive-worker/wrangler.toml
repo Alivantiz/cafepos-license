@@ -1,0 +1,15 @@
+# Крошечный Worker-автопинг: раз в день дёргает /api/keepalive панели,
+# чтобы оба бесплатных Supabase-проекта (лицензии + монитор) не заснули
+# от 7 дней неактивности. В отличие от cron GitHub Actions, cron-триггер
+# Cloudflare не отключается за неактивность репозитория — тикает, пока
+# существует аккаунт.
+name = "imag-keepalive"
+main = "src/index.mjs"
+compatibility_date = "2026-07-01"
+
+[vars]
+PANEL_URL = "https://imag-license-panel.pages.dev"
+
+[triggers]
+# Минуты смещены относительно GitHub-пинга (03:17 UTC) — два независимых пинга в день
+crons = ["47 15 * * *"]

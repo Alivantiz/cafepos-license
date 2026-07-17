@@ -68,11 +68,17 @@ Dashboard проекта → **Settings → Environment variables → Production
 
 - при входе в панель сразу грузится очередь модерации штрихкодов (бейдж
   «N» на вкладке) — активность получают **оба** проекта, а не только лицензии;
-- workflow «Автопинг Supabase» раз в день дёргает `GET /api/keepalive`
-  панели — она делает лёгкий запрос в оба проекта. Endpoint без пароля,
-  наружу отдаёт только `{ok, licenses, monitor}`. Адрес панели по умолчанию
-  `https://imag-license-panel.pages.dev`, переопределяется repo-переменной
-  `PANEL_URL` (Settings → Variables).
+- `GET /api/keepalive` панели делает лёгкий запрос в оба проекта. Endpoint
+  без пароля, наружу отдаёт только `{ok, licenses, monitor}`. Его дёргают
+  два независимых пинга:
+  - **Worker `imag-keepalive`** (`keepalive-worker/`, cron 15:47 UTC) —
+    основной: cron-триггер Cloudflare не отключается за неактивность,
+    работает пока жив аккаунт. Деплоится workflow «Деплой keepalive-воркера»
+    при изменении `keepalive-worker/**`.
+  - workflow «Автопинг Supabase» (cron 03:17 UTC) — дублирующий; GitHub
+    ставит расписания на паузу после ~60 дней без коммитов. Адрес панели по
+    умолчанию `https://imag-license-panel.pages.dev`, переопределяется
+    repo-переменной `PANEL_URL` (Settings → Variables).
 
 ## Ограничения (осознанные)
 
