@@ -16,6 +16,10 @@ const sb = (env) => ({
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
+// Имена таблиц/колонок вкладки «База» подставляются в URL PostgREST —
+// пускаем только простые идентификаторы, чтобы не собрать инъекцию в запрос.
+const ident = (s) => typeof s === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url)
@@ -116,6 +120,89 @@ export default {
         return json({ ok: true })
       }
 
+      // --- Вкладка «База»: просмотр и правка произвольных таблиц общей базы ---
+
+      if (pathname === '/api/db/tables') {
+        // PostgREST отдаёт OpenAPI-описание схемы на корне /rest/v1/ — из него
+        // берём список таблиц, их колонки и первичные ключи (метка <pk/>).
+        const r = await fetch(`${db.url}/rest/v1/`, { headers: db.headers })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        const spec = await r.json()
+        const tables = Object.entries(spec.definitions || {}).map(([name, def]) => ({
+          name,
+          columns: Object.entries(def.properties || {}).map(([col, p]) => ({
+            name: col,
+            type: p.type || 'string',
+            format: String(p.format || '').split(' ')[0],
+            pk: /<pk\s*\/>/.test(p.description || '')
+          }))
+        })).sort((a, b) => a.name.localeCompare(b.name))
+        return json({ tables })
+      }
+
+      if (pathname === '/api/db/rows') {
+        const { table, limit, offset, order, dir } = await request.json()
+        if (!ident(table)) return json({ error: 'Некорректное имя таблицы' }, 400)
+        const lim = Math.min(500, Math.max(1, Number(limit) || 100))
+        const off = Math.max(0, Number(offset) || 0)
+        let qs = `select=*&limit=${lim}&offset=${off}`
+        if (order !== undefined && order !== null && order !== '') {
+          if (!ident(order)) return json({ error: 'Некорректная колонка сортировки' }, 400)
+          qs += `&order=${order}.${dir === 'desc' ? 'desc' : 'asc'}`
+        }
+        const r = await fetch(`${db.url}/rest/v1/${table}?${qs}`, {
+          headers: { ...db.headers, Prefer: 'count=exact' }
+        })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        const total = Number((r.headers.get('content-range') || '').split('/')[1])
+        return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
+      }
+
+      if (pathname === '/api/db/insert') {
+        const { table, values } = await request.json()
+        if (!ident(table)) return json({ error: 'Некорректное имя таблицы' }, 400)
+        if (!values || typeof values !== 'object' || Array.isArray(values) || !Object.keys(values).length) {
+          return json({ error: 'Нет данных для вставки' }, 400)
+        }
+        const r = await fetch(`${db.url}/rest/v1/${table}`, {
+          method: 'POST',
+          headers: { ...db.headers, Prefer: 'return=representation' },
+          body: JSON.stringify(values)
+        })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        const [row] = await r.json()
+        return json({ ok: true, row })
+      }
+
+      if (pathname === '/api/db/update') {
+        const { table, pk, pkValue, values } = await request.json()
+        if (!ident(table) || !ident(pk)) return json({ error: 'Некорректные имена таблицы/ключа' }, 400)
+        if (pkValue === undefined || pkValue === null || pkValue === '') return json({ error: 'Нет значения первичного ключа' }, 400)
+        if (!values || typeof values !== 'object' || Array.isArray(values)) return json({ error: 'Нет данных' }, 400)
+        const body = { ...values }
+        delete body[pk]
+        if (!Object.keys(body).length) return json({ error: 'Нет изменений' }, 400)
+        const r = await fetch(`${db.url}/rest/v1/${table}?${pk}=eq.${encodeURIComponent(pkValue)}`, {
+          method: 'PATCH',
+          headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify(body)
+        })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        return json({ ok: true })
+      }
+
+      if (pathname === '/api/db/delete') {
+        const { table, pk, pkValue } = await request.json()
+        if (!ident(table) || !ident(pk)) return json({ error: 'Некорректные имена таблицы/ключа' }, 400)
+        if (pkValue === undefined || pkValue === null || pkValue === '') return json({ error: 'Нет значения первичного ключа' }, 400)
+        const r = await fetch(`${db.url}/rest/v1/${table}?${pk}=eq.${encodeURIComponent(pkValue)}`, {
+          method: 'DELETE',
+          headers: { ...db.headers, Prefer: 'return=minimal' }
+        })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        return json({ ok: true })
+      }
+
       return json({ error: 'Неизвестный путь' }, 404)
     } catch (e) {
       return json({ error: String(e?.message ?? e) }, 500)
@@ -179,8 +266,8 @@ const PAGE = `<!DOCTYPE html>
   .logo-name{font-family:"Space Grotesk";font-weight:700;font-size:17px;letter-spacing:-.01em;color:var(--fg);line-height:1.2}
   .logo-sub{font-size:10.5px;color:var(--mut2);letter-spacing:.04em;text-transform:uppercase}
   .tabs-deco{display:flex;gap:2px;margin-left:8px}
-  .tabs-deco span{padding:7px 13px;border-radius:8px;font-size:13px;font-weight:500;color:var(--mut2)}
-  .tabs-deco span.active{font-weight:600;color:var(--fg);background:var(--panel2)}
+  .tabs-deco button{padding:7px 13px;border-radius:8px;font-size:13px;font-weight:500;color:var(--mut2);background:transparent;border:none}
+  .tabs-deco button.active{font-weight:600;color:var(--fg);background:var(--panel2)}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:9px}
   .icon-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9px;
     background:var(--panel);border:1px solid var(--b2);color:var(--mut);font-size:15px}
@@ -294,6 +381,29 @@ const PAGE = `<!DOCTYPE html>
 
   .empty{padding:56px 0;text-align:center;color:var(--mut2);font-size:14px}
 
+  .dbselect{height:42px;padding:0 12px;background:var(--panel);border:1px solid var(--b);border-radius:11px;
+    color:var(--fg);font-size:14px;outline:none;max-width:240px}
+  .dbselect:focus{border-color:var(--brand)}
+  .dbscroll{overflow-x:auto}
+  .dbtable{width:100%;border-collapse:collapse}
+  .dbtable th{height:44px;padding:0 12px;background:var(--bg2);border-bottom:1px solid var(--b);text-align:left;white-space:nowrap}
+  .dbtable th button.h{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+    background:none;border:none;text-align:left;white-space:nowrap}
+  .dbtable td{padding:9px 12px;border-bottom:1px solid var(--b);white-space:nowrap;vertical-align:middle}
+  .dbtable .cv{display:inline-block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    vertical-align:middle;font-family:"IBM Plex Mono";font-size:11.5px;color:var(--fg)}
+  .dbtable .null{color:var(--mut2);font-size:11.5px}
+  .dbtable .rowedit{width:26px;height:26px;border-radius:7px;background:var(--panel2);border:1px solid var(--b2);color:var(--mut);font-size:12px}
+  .dbtable .rowedit:hover{border-color:var(--brand);color:var(--brand)}
+  .dbmore{padding:12px;text-align:center;border-top:1px solid var(--b)}
+  #dlgDb{width:560px;max-height:82vh;overflow:auto}
+  #dbFields label .t{color:var(--mut2);font-weight:400;text-transform:none;letter-spacing:0}
+  #dbFields textarea{width:100%;min-height:70px;background:var(--bg2);border:1px solid var(--b2);border-radius:10px;
+    padding:10px 13px;color:var(--fg);font-family:"IBM Plex Mono";font-size:12px;outline:none;margin-bottom:14px;resize:vertical}
+  #dbFields textarea:focus{border-color:var(--brand)}
+  #dbFields input[readonly],#dbFields textarea[readonly]{opacity:.55}
+  #dbDelBtn{color:var(--bad);margin-right:auto}
+
   dialog{width:440px;max-width:calc(100vw - 40px);background:var(--panel);border:1px solid var(--b2);
     border-radius:16px;padding:24px;color:var(--fg);box-shadow:0 8px 30px rgba(0,0,0,.35);animation:dlgIn .2s ease}
   dialog::backdrop{background:rgba(0,0,0,.72);animation:ovIn .15s ease}
@@ -357,10 +467,9 @@ const PAGE = `<!DOCTYPE html>
         <div class="logo-sub">Касса · подписки</div>
       </div>
     </div>
-    <nav class="tabs-deco desktop-only">
-      <span class="active">Подписки</span>
-      <span aria-disabled="true">Клиенты</span>
-      <span aria-disabled="true">Оплаты</span>
+    <nav class="tabs-deco">
+      <button id="navSubs" class="active" onclick="switchView('subs')">Подписки</button>
+      <button id="navDb" onclick="switchView('db')">База</button>
     </nav>
     <div class="topbar-right">
       <button id="themeBtn" class="icon-btn" onclick="toggleTheme()" title="Сменить тему">☀</button>
@@ -370,6 +479,7 @@ const PAGE = `<!DOCTYPE html>
   </header>
 
   <main class="wrap">
+  <div id="viewSubs">
     <div class="titlerow">
       <div>
         <h1>Подписки</h1>
@@ -402,6 +512,33 @@ const PAGE = `<!DOCTYPE html>
       <div class="card-view" id="cards"></div>
       <div id="empty" class="empty" style="display:none">Ничего не найдено</div>
     </div>
+  </div>
+
+  <div id="viewDb" style="display:none">
+    <div class="titlerow">
+      <div>
+        <h1>Общая база</h1>
+        <div class="sub">Просмотр и правка таблиц Supabase — изменения применяются сразу</div>
+      </div>
+    </div>
+    <div class="filterbar">
+      <select id="dbTable" class="dbselect" onchange="pickDbTable(this.value)"></select>
+      <div class="searchwrap">
+        <span class="ic">⌕</span>
+        <input id="dbq" type="search" oninput="renderDb()" placeholder="Фильтр по загруженным строкам…" />
+      </div>
+      <div class="count" id="dbCount"></div>
+      <button class="btn" onclick="loadDbRows()">Обновить</button>
+      <button class="btn pri" onclick="openDbEdit(null)">+ Строка</button>
+    </div>
+    <div class="tablewrap">
+      <div class="dbscroll">
+        <table class="dbtable" id="dbGrid"></table>
+      </div>
+      <div id="dbEmpty" class="empty" style="display:none">Нет строк</div>
+      <div id="dbMore" class="dbmore" style="display:none"><button class="btn" onclick="loadDbRows(true)">Показать ещё</button></div>
+    </div>
+  </div>
   </main>
 </div>
 
@@ -426,6 +563,17 @@ const PAGE = `<!DOCTYPE html>
     <button id="isCopyBtn" class="sec" onclick="copyIssue()" style="display:none">Скопировать текст</button>
     <button class="ghost" onclick="dlgIssue.close()">Закрыть</button>
     <button id="doIssueBtn" class="pri" onclick="doIssue()">Выпустить</button>
+  </div>
+</dialog>
+
+<dialog id="dlgDb">
+  <h3 id="dlgDbTitle">Строка</h3>
+  <div class="dsub" id="dlgDbSub"></div>
+  <div id="dbFields"></div>
+  <div class="drow">
+    <button id="dbDelBtn" class="ghost" onclick="deleteDbRow()">Удалить</button>
+    <button class="ghost" onclick="dlgDb.close()">Отмена</button>
+    <button id="dbSaveBtn" class="pri" onclick="saveDbRow()">Сохранить</button>
   </div>
 </dialog>
 
@@ -792,6 +940,180 @@ async function bulkSetRevoked(flag){
   clearSelection(); load()
 }
 
+// --- Вкладка «База»: просмотр и правка произвольных таблиц Supabase ---
+let view = 'subs'
+let dbTables = [], dbTable = '', dbRows = [], dbTotal = null
+let dbSort = { col: null, dir: 'asc' }, dbEditIndex = null
+const DB_PAGE = 100
+
+async function switchView(v){
+  view = v
+  $('viewSubs').style.display = v === 'subs' ? '' : 'none'
+  $('viewDb').style.display = v === 'db' ? '' : 'none'
+  $('navSubs').className = v === 'subs' ? 'active' : ''
+  $('navDb').className = v === 'db' ? 'active' : ''
+  if (v === 'db' && !dbTables.length) await loadDbTables()
+}
+
+function dbMeta(){ return dbTables.find(t => t.name === dbTable) }
+function dbPk(){
+  const t = dbMeta(); if (!t) return null
+  const pk = t.columns.find(c => c.pk)
+  if (pk) return pk.name
+  return t.columns.some(c => c.name === 'id') ? 'id' : null
+}
+const isJsonCol = c => c.type === 'object' || c.type === 'array' || (c.format || '').startsWith('json')
+const cellRaw = v => v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))
+
+async function loadDbTables(){
+  try {
+    const d = await api('db/tables')
+    dbTables = d.tables || []
+    if (!dbTables.length){ toast('В базе нет таблиц', true); return }
+    $('dbTable').innerHTML = dbTables.map(t => '<option value="' + esc(t.name) + '">' + esc(t.name) + '</option>').join('')
+    dbTable = dbTables.some(t => t.name === 'licenses') ? 'licenses' : dbTables[0].name
+    $('dbTable').value = dbTable
+    await loadDbRows()
+  } catch(e){ toast(e.message, true) }
+}
+function pickDbTable(name){
+  dbTable = name
+  dbSort = { col: null, dir: 'asc' }
+  $('dbq').value = ''
+  loadDbRows()
+}
+async function loadDbRows(more){
+  if (!dbTable) return
+  const offset = more === true ? dbRows.length : 0
+  try {
+    const d = await api('db/rows', { table: dbTable, limit: DB_PAGE, offset, order: dbSort.col, dir: dbSort.dir })
+    dbRows = more === true ? dbRows.concat(d.rows) : d.rows
+    dbTotal = d.total
+    renderDb()
+  } catch(e){ toast(e.message, true) }
+}
+function toggleDbSort(col){
+  if (dbSort.col === col) dbSort.dir = dbSort.dir === 'asc' ? 'desc' : 'asc'
+  else dbSort = { col, dir: 'asc' }
+  loadDbRows()
+}
+function cellHtml(v){
+  if (v === null || v === undefined) return '<span class="null">∅</span>'
+  const s = esc(cellRaw(v))
+  return '<span class="cv" title="' + s + '">' + s + '</span>'
+}
+function renderDb(){
+  const t = dbMeta()
+  if (!t){ $('dbGrid').innerHTML = ''; $('dbCount').textContent = ''; return }
+  const q = $('dbq').value.trim().toLowerCase()
+  const shown = []
+  dbRows.forEach((r, i) => {
+    if (!q || t.columns.some(c => cellRaw(r[c.name]).toLowerCase().includes(q))) shown.push(i)
+  })
+  $('dbCount').textContent = shown.length + ' из ' + (dbTotal ?? dbRows.length)
+  const pk = dbPk()
+  const head = '<tr><th></th>' + t.columns.map(c => {
+    const arrow = dbSort.col === c.name ? (dbSort.dir === 'asc' ? ' ↑' : ' ↓') : ''
+    return '<th><button class="h" data-col="' + esc(c.name) + '" onclick="toggleDbSort(this.dataset.col)">' +
+      esc(c.name) + (c.pk ? ' 🔑' : '') + arrow + '</button></th>'
+  }).join('') + '</tr>'
+  const body = shown.map(i => {
+    const r = dbRows[i]
+    return '<tr>' +
+      '<td>' + (pk ? '<button class="rowedit" data-i="' + i + '" onclick="openDbEdit(Number(this.dataset.i))" title="Редактировать">✎</button>' : '') + '</td>' +
+      t.columns.map(c => '<td>' + cellHtml(r[c.name]) + '</td>').join('') +
+    '</tr>'
+  }).join('')
+  $('dbGrid').innerHTML = '<thead>' + head + '</thead><tbody>' + body + '</tbody>'
+  $('dbEmpty').style.display = shown.length ? 'none' : 'block'
+  $('dbMore').style.display = (dbTotal !== null && dbRows.length < dbTotal) ? '' : 'none'
+}
+
+const dlgDb = $('dlgDb')
+function dbFieldHtml(c, row){
+  const val = row ? cellRaw(row[c.name]) : ''
+  const ro = row && c.pk
+  const hint = c.type + (c.format ? ' · ' + c.format : '') + (c.pk ? ' · PK' : '')
+  const attrs = ' id="dbf_' + esc(c.name) + '"' + (ro ? ' readonly' : '')
+  return '<label>' + esc(c.name) + ' <span class="t">' + esc(hint) + '</span></label>' +
+    (isJsonCol(c) || val.length > 60
+      ? '<textarea' + attrs + '>' + esc(val) + '</textarea>'
+      : '<input' + attrs + ' value="' + esc(val) + '" placeholder="∅ (пусто = NULL)" />')
+}
+function openDbEdit(i){
+  const t = dbMeta(); if (!t) return
+  const pk = dbPk()
+  if (i !== null && !pk){ toast('У таблицы нет первичного ключа — правка недоступна', true); return }
+  dbEditIndex = i
+  const row = i === null ? null : dbRows[i]
+  $('dlgDbTitle').textContent = i === null ? 'Новая строка' : 'Строка ' + cellRaw(row[pk])
+  $('dlgDbSub').textContent = 'Таблица ' + dbTable + (i === null
+    ? ' — пустые поля не отправляются, сработают значения по умолчанию'
+    : ' — пустое поле сохранится как NULL')
+  $('dbFields').innerHTML = t.columns.map(c => dbFieldHtml(c, row)).join('')
+  $('dbDelBtn').style.display = i === null ? 'none' : ''
+  $('dbSaveBtn').disabled = false
+  dlgDb.showModal()
+}
+function parseCell(raw, c){
+  if (raw === '') return { value: null }
+  if (c.type === 'integer' || c.type === 'number'){
+    const n = Number(raw)
+    return Number.isFinite(n) ? { value: n } : { err: 'не число' }
+  }
+  if (c.type === 'boolean'){
+    if (raw === 'true' || raw === '1') return { value: true }
+    if (raw === 'false' || raw === '0') return { value: false }
+    return { err: 'нужно true или false' }
+  }
+  if (isJsonCol(c)){
+    try { return { value: JSON.parse(raw) } } catch(e){ return { err: 'некорректный JSON' } }
+  }
+  return { value: raw }
+}
+async function saveDbRow(){
+  const t = dbMeta(); if (!t) return
+  const pk = dbPk()
+  const values = {}
+  for (const c of t.columns){
+    const el = $('dbf_' + c.name); if (!el) continue
+    const raw = el.value
+    if (dbEditIndex === null){
+      if (raw === '') continue
+    } else {
+      if (c.name === pk) continue
+      if (raw === cellRaw(dbRows[dbEditIndex][c.name])) continue
+    }
+    const p = parseCell(raw, c)
+    if (p.err){ toast(c.name + ': ' + p.err, true); return }
+    values[c.name] = p.value
+  }
+  if (!Object.keys(values).length){
+    toast(dbEditIndex === null ? 'Заполните хотя бы одно поле' : 'Нет изменений', true)
+    return
+  }
+  $('dbSaveBtn').disabled = true
+  try {
+    if (dbEditIndex === null) await api('db/insert', { table: dbTable, values })
+    else await api('db/update', { table: dbTable, pk, pkValue: dbRows[dbEditIndex][pk], values })
+    toast('Сохранено')
+    dlgDb.close()
+    loadDbRows()
+  } catch(e){ toast(e.message, true); $('dbSaveBtn').disabled = false }
+}
+async function deleteDbRow(){
+  const pk = dbPk()
+  if (!pk || dbEditIndex === null) return
+  const pkValue = dbRows[dbEditIndex][pk]
+  if (!confirm('Удалить строку ' + pk + ' = ' + cellRaw(pkValue) + ' из таблицы «' + dbTable + '»? Действие необратимо.')) return
+  try {
+    await api('db/delete', { table: dbTable, pk, pkValue })
+    toast('Удалено')
+    dlgDb.close()
+    loadDbRows()
+  } catch(e){ toast(e.message, true) }
+}
+
 function boot(){
   applyTheme()
   const has = !!pw()
@@ -799,7 +1121,7 @@ function boot(){
   $('app').style.display = has ? '' : 'none'
   if (has) load()
 }
-;[dlgIssue, dlg].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
+;[dlgIssue, dlg, dlgDb].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
 boot()
 </script>
 </body>
