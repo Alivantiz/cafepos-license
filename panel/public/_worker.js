@@ -337,6 +337,7 @@ const PAGE = `<!DOCTYPE html>
   #bulkbar button.plain{background:transparent;color:var(--mut);font-weight:600}
 
   .tablewrap{background:var(--panel);border:1px solid var(--b);border-radius:15px;overflow:hidden}
+  .catscroll{overflow-x:auto}
   .grid-row{display:grid;grid-template-columns:44px 1.9fr 1.4fr 1.1fr 60px 1fr 150px;align-items:center;padding:0 16px}
   .thead{height:44px;border-bottom:1px solid var(--b);background:var(--bg2)}
   .thead .h{color:var(--mut);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;background:none;border:none}
@@ -512,8 +513,8 @@ const PAGE = `<!DOCTYPE html>
       <div><h1 style="font-size:18px">На одобрении</h1></div>
     </div>
     <div id="catBulkbar" style="display:none"></div>
-    <div class="tablewrap" style="margin-bottom:28px">
-      <div class="grid-row thead" style="grid-template-columns:44px 1fr 1.6fr 1fr 90px 90px 150px">
+    <div class="tablewrap catscroll" style="margin-bottom:28px">
+      <div class="grid-row thead" style="grid-template-columns:44px 130px 220px 130px 90px 70px 150px">
         <div><input type="checkbox" id="catPendAll" onchange="toggleCatPendAll(this.checked)" /></div>
         <div class="h">Штрихкод</div>
         <div class="h">Название</div>
@@ -534,8 +535,8 @@ const PAGE = `<!DOCTYPE html>
       </div>
       <button class="btn pri" onclick="openCatEdit(null)">+ Штрихкод</button>
     </div>
-    <div class="tablewrap">
-      <div class="grid-row thead" style="grid-template-columns:1fr 1.6fr 1fr 90px 90px 60px">
+    <div class="tablewrap catscroll">
+      <div class="grid-row thead" style="grid-template-columns:130px 220px 130px 90px 70px 60px">
         <div class="h">Штрихкод</div>
         <div class="h">Название</div>
         <div class="h">Категория</div>
@@ -1001,7 +1002,7 @@ function renderCatPending(){
     $('catPendEmpty').style.display = 'none'
     $('catPendBody').innerHTML = catPending.map(r => {
       const k = catKey(r), sel = catSelected.has(k)
-      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 1fr 1.6fr 1fr 90px 90px 150px">' +
+      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 130px 220px 130px 90px 70px 150px">' +
         '<div><input type="checkbox" data-k="' + esc(k) + '" ' + (sel ? 'checked' : '') + ' onchange="toggleCatSel(this.dataset.k, this.checked)" /></div>' +
         '<div class="cust-id">' + esc(r.barcode) + '</div>' +
         '<div class="cust-name">' + esc(r.name || '') + '</div>' +
@@ -1063,7 +1064,7 @@ function renderCatList(){
   } else {
     $('catEmpty').style.display = 'none'
     $('catBody').innerHTML = catRows.map(r =>
-      '<div class="grid-row trow" style="grid-template-columns:1fr 1.6fr 1fr 90px 90px 60px">' +
+      '<div class="grid-row trow" style="grid-template-columns:130px 220px 130px 90px 70px 60px">' +
         '<div class="cust-id">' + esc(r.barcode) + '</div>' +
         '<div class="cust-name">' + esc(r.name || '') + '</div>' +
         '<div class="exp">' + esc(r.category || '—') + '</div>' +
