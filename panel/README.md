@@ -61,6 +61,31 @@ Dashboard проекта → **Settings → Environment variables → Production
 Правишь `public/_worker.js` → снова `npx wrangler pages deploy public
 --project-name imag-license-panel`. Переменные сохраняются.
 
+## Обучаемое сопоставление названий (накладные, опечатки, сокращения)
+
+Однократная настройка: выполнить `sql/mon_matching.sql` в SQL Editor проекта
+`imag_monitoring`. Скрипт создаёт:
+
+- `mon_norm_name(text)` — нормализация («Мол.,3.2% (1л)» → «мол 3 2 1л»);
+- таблицу `mon_aliases` — выученные пары «грязное название → штрихкод»;
+- `mon_match_product(q, max_results)` — подбор карточки: сперва точный алиас
+  (`match_kind='alias'`, score=1), иначе топ похожих по триграммам pg_trgm
+  (`match_kind='fuzzy'`, score 0..1). Вызов:
+  `POST /rest/v1/rpc/mon_match_product {"q":"мол 3.2 1л"}`;
+- `mon_learn_alias(raw_name, p_barcode, p_source, p_by)` — обучение:
+  подтверждённое сопоставление запоминается (upsert), прямых прав записи в
+  `mon_aliases` у anon нет (security definer).
+
+Круг обучения для разбора накладных (делается на стороне кассы/ИИ):
+строка накладной → `mon_match_product` → если алиас, берём сразу; если fuzzy —
+человек/ИИ подтверждает → `mon_learn_alias` → в следующий раз строка матчится
+мгновенно. В панели при модерации кнопка **≈** у заявки показывает похожие
+карточки каталога (`/api/catalog/similar`) — видно дубли до одобрения; совпад
+по штрихкоду подсвечивается «тот же штрихкод!».
+
+Отдельно: `sql/mon_heartbeat_rls_fix.sql` — RLS-политики для
+`mon_heartbeat` (лечит 401/42501 на POST heartbeat с касс).
+
 ## Keepalive (чтобы Supabase не заснул)
 
 Бесплатные Supabase-проекты засыпают после 7 дней без API-активности.

@@ -71,6 +71,9 @@ async function testServerRoutes() {
   const noKeyReject = await authed('/api/catalog/reject', { venue_id: 'v1' })
   assert.strictEqual(noKeyReject.status, 400, 'reject without barcode should 400')
 
+  const noQuery = await authed('/api/catalog/similar', {})
+  assert.strictEqual(noQuery.status, 400, 'similar without query text should 400')
+
   console.log('server routes: OK')
 }
 
@@ -98,6 +101,10 @@ async function testClientScript() {
     const u = String(url)
     if (u.includes('/api/catalog/pending')) return { total: 1, rows: [
       { venue_id: 'venue-1', barcode: '4870001234567', name: 'Кола 0.5', category: 'Напитки', price: 350, unit: 'шт', status: 'pending' }
+    ] }
+    if (u.includes('/api/catalog/similar')) return { rows: [
+      { barcode: '4870005555555', name: 'Кола 0,5 ПЭТ', match_kind: 'fuzzy', score: 0.62 },
+      { barcode: '4870001234567', name: 'Кола 0.5', match_kind: 'fuzzy', score: 0.95 }
     ] }
     if (u.includes('/api/catalog/list')) return { total: 1, rows: [
       { venue_id: 'panel-owner', barcode: '4870009999999', name: 'Хлеб', category: null, price: 200, unit: 'шт', status: 'approved' }
@@ -160,6 +167,10 @@ async function testClientScript() {
   global.__RESULT__.subsViewHidden = document.getElementById('viewSubs').style.display
   toggleCatPendAll(true)
   global.__RESULT__.catSelectedAfterAll = catSelected.size
+  await showCatSimilar('venue-1', '4870001234567')
+  global.__RESULT__.simHtml = document.getElementById('catPendBody').innerHTML
+  await showCatSimilar('venue-1', '4870001234567')
+  global.__RESULT__.simHtmlAfterToggle = document.getElementById('catPendBody').innerHTML
   await switchView('subs')
   global.__RESULT__.catViewHiddenBack = document.getElementById('viewCat').style.display
 })()
@@ -191,6 +202,9 @@ async function testClientScript() {
   assert.strictEqual(res.catViewShown, '', 'catalog view should be visible after switchView(cat)')
   assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when catalog view is active')
   assert.strictEqual(res.catSelectedAfterAll, 1, 'select-all on the pending queue should select every row')
+  assert.ok(res.simHtml.includes('Кола 0,5 ПЭТ') && res.simHtml.includes('62%'), 'similar hint should list fuzzy matches with score')
+  assert.ok(res.simHtml.includes('тот же штрихкод'), 'similar hint should flag a match with the same barcode')
+  assert.ok(!res.simHtmlAfterToggle.includes('Похожие в каталоге'), 'second click should hide the similar hint')
   assert.strictEqual(res.catViewHiddenBack, 'none', 'switching back should hide the catalog view')
 
   console.log('client script: OK')

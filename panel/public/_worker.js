@@ -199,6 +199,22 @@ export default {
           return json({ ok: true })
         }
 
+        if (pathname === '/api/catalog/similar') {
+          // Подсказка «похожие карточки» при модерации: SQL-функция
+          // mon_match_product (sql/mon_matching.sql) — сперва выученный алиас,
+          // иначе топ похожих названий по триграммам.
+          const { q, limit } = await request.json()
+          const term = String(q || '').trim()
+          if (!term) return json({ error: 'Нужен текст для поиска' }, 400)
+          const r = await fetch(`${db2.url}/rest/v1/rpc/mon_match_product`, {
+            method: 'POST',
+            headers: db2.headers,
+            body: JSON.stringify({ q: term, max_results: Math.max(1, Math.min(10, Number(limit) || 5)) })
+          })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          return json({ rows: await r.json() })
+        }
+
         if (pathname === '/api/catalog/upsert') {
           const { venue_id, barcode, name, category, price, unit } = await request.json()
           if (!barcode || !String(barcode).trim()) return json({ error: 'Укажите штрихкод' }, 400)
@@ -295,6 +311,11 @@ const PAGE = `<!DOCTYPE html>
   .tabs-deco button.active{font-weight:600;color:var(--fg);background:var(--panel2)}
   .navbadge{margin-left:6px;font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;
     background:var(--warn);color:var(--accent-fg);font-variant-numeric:tabular-nums}
+  .simrow{padding:8px 16px 10px 60px;border-bottom:1px solid var(--b);background:var(--bg2);
+    font-size:12px;color:var(--mut2);line-height:2}
+  .simhit{display:inline-block;margin-right:6px;padding:2px 9px;border-radius:999px;
+    background:var(--panel2);border:1px solid var(--b2);color:var(--mut);font-size:11.5px}
+  .simhit.same{color:var(--warn);border-color:var(--warn);font-weight:600}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:9px}
   .icon-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9px;
     background:var(--panel);border:1px solid var(--b2);color:var(--mut);font-size:15px}
@@ -1000,11 +1021,41 @@ async function switchView(v){
 }
 
 const catKey = r => r.venue_id + '\\u0000' + r.barcode
+let catSimilar = {} // ключ заявки -> {loading:true} | {rows:[...], error?}
+
+async function showCatSimilar(vid, bc){
+  const r = catPending.find(x => x.venue_id === vid && x.barcode === bc)
+  if (!r) return
+  const k = catKey(r)
+  if (catSimilar[k]){ delete catSimilar[k]; renderCatPending(); return } // повторный клик — скрыть
+  catSimilar[k] = { loading: true }
+  renderCatPending()
+  try {
+    const d = await api('catalog/similar', { q: r.name })
+    catSimilar[k] = { rows: d.rows || [] }
+  } catch(e){
+    catSimilar[k] = { rows: [], error: e.message }
+  }
+  renderCatPending()
+}
+function simRowHtml(r, sim){
+  let inner
+  if (sim.loading) inner = 'Ищем похожие…'
+  else if (!sim.rows.length) inner = sim.error ? ('Ошибка: ' + esc(sim.error)) : 'Похожих в каталоге нет — это новый товар'
+  else inner = 'Похожие в каталоге: ' + sim.rows.map(s => {
+    const label = s.match_kind === 'alias' ? 'алиас' : Math.round((s.score || 0) * 100) + '%'
+    const dup = s.barcode === r.barcode
+    return '<span class="simhit' + (dup ? ' same' : '') + '" title="' + esc(s.barcode) + '">' +
+      esc(s.name) + ' · ' + label + (dup ? ' · тот же штрихкод!' : '') + '</span>'
+  }).join(' ')
+  return '<div class="simrow">' + inner + '</div>'
+}
 
 async function loadCatPending(){
   try {
     const d = await api('catalog/pending')
     catPending = d.rows || []; catPendTotal = d.total ?? null
+    catSimilar = {}
     $('catPendCount').textContent = catPendTotal !== null ? (catPending.length + ' из ' + catPendTotal) : ''
     const n = catPendTotal ?? catPending.length
     $('navCatBadge').style.display = n > 0 ? '' : 'none'
@@ -1031,8 +1082,8 @@ function renderCatPending(){
   } else {
     $('catPendEmpty').style.display = 'none'
     $('catPendBody').innerHTML = catPending.map(r => {
-      const k = catKey(r), sel = catSelected.has(k)
-      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 130px 220px 130px 90px 70px 150px">' +
+      const k = catKey(r), sel = catSelected.has(k), sim = catSimilar[k]
+      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 130px 220px 130px 90px 70px 190px">' +
         '<div><input type="checkbox" data-k="' + esc(k) + '" ' + (sel ? 'checked' : '') + ' onchange="toggleCatSel(this.dataset.k, this.checked)" /></div>' +
         '<div class="cust-id">' + esc(r.barcode) + '</div>' +
         '<div class="cust-name">' + esc(r.name || '') + '</div>' +
@@ -1040,10 +1091,11 @@ function renderCatPending(){
         '<div class="exp" style="text-align:right">' + (r.price != null ? r.price : '—') + '</div>' +
         '<div class="term">' + esc(r.unit || '—') + '</div>' +
         '<div class="acts">' +
+          '<button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="showCatSimilar(this.dataset.vid,this.dataset.bc)" title="Похожие карточки в каталоге">≈</button>' +
           '<button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="approveCat(this.dataset.vid,this.dataset.bc)">Одобрить</button>' +
           '<button class="revoke" data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="rejectCat(this.dataset.vid,this.dataset.bc)">Отклонить</button>' +
         '</div>' +
-      '</div>'
+      '</div>' + (sim ? simRowHtml(r, sim) : '')
     }).join('')
   }
 
