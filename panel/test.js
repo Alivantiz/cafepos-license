@@ -40,6 +40,12 @@ async function testServerRoutes() {
   const noAuth = await worker.fetch(new Request('https://x.test/api/list', { method: 'POST' }), { PANEL_PASSWORD: 'secret' })
   assert.strictEqual(noAuth.status, 401, 'missing x-panel-key should 401')
 
+  // keepalive доступен без пароля и методом GET; без секретов оба пинга падают → 502
+  const keepalive = await worker.fetch(new Request('https://x.test/api/keepalive'), { PANEL_PASSWORD: 'secret' })
+  assert.strictEqual(keepalive.status, 502, 'keepalive without Supabase secrets should 502')
+  const ka = await keepalive.json()
+  assert.deepStrictEqual(ka, { ok: false, licenses: false, monitor: false }, 'keepalive should report both projects down')
+
   const authed = (path, body) => worker.fetch(new Request('https://x.test' + path, {
     method: 'POST', headers: { 'x-panel-key': 'secret' }, body: JSON.stringify(body || {})
   }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k',
@@ -111,7 +117,7 @@ async function testClientScript() {
     'doIssueBtn', 'doRenewBtn', 'refreshBtn',
     'navSubs', 'navCat', 'viewSubs', 'viewCat', 'catq', 'catBulkbar', 'catPendAll', 'catPendBody', 'catPendEmpty',
     'catPendCount', 'catListCount', 'catBody', 'catEmpty', 'dlgCat', 'dlgCatTitle', 'catBarcode', 'catName',
-    'catCategory', 'catUnit', 'catPrice', 'catDelBtn', 'catSaveBtn'].forEach(id => document.getElementById(id))
+    'catCategory', 'catUnit', 'catPrice', 'catDelBtn', 'catSaveBtn', 'navCatBadge'].forEach(id => document.getElementById(id))
 
   const day = 86400000, now = Date.now()
   global.__TEST_ROWS__ = [
@@ -142,6 +148,8 @@ async function testClientScript() {
   setFilter('revoked')
   global.__RESULT__.afterToggleBackCount = document.getElementById('count').textContent
   await switchView('cat')
+  global.__RESULT__.navBadgeText = document.getElementById('navCatBadge').textContent
+  global.__RESULT__.navBadgeShown = document.getElementById('navCatBadge').style.display
   global.__RESULT__.catPendingLen = catPending.length
   global.__RESULT__.catRowsLen = catRows.length
   global.__RESULT__.catPendBodyHtml = document.getElementById('catPendBody').innerHTML
@@ -172,6 +180,8 @@ async function testClientScript() {
   assert.strictEqual(res.afterRevokedFilterCount, '1 из 4', 'revoked filter should narrow to the one revoked row')
   assert.strictEqual(res.afterToggleBackCount, '4 из 4', 'clicking the active filter again should reset to all')
 
+  assert.strictEqual(res.navBadgeText, 1, 'nav badge should show the pending-queue total')
+  assert.strictEqual(res.navBadgeShown, '', 'nav badge should be visible when the queue is non-empty')
   assert.strictEqual(res.catPendingLen, 1, 'switchView(cat) should load the pending queue')
   assert.strictEqual(res.catRowsLen, 1, 'switchView(cat) should load the approved catalog')
   assert.ok(res.catPendBodyHtml.includes('4870001234567'), 'pending queue should show the submitted barcode')

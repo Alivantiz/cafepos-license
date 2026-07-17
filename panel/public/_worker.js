@@ -37,6 +37,21 @@ export default {
 
     if (!pathname.startsWith('/api/')) return new Response('Not found', { status: 404 })
 
+    // Автопинг (GitHub Actions, раз в день): лёгкий запрос в оба Supabase-проекта,
+    // чтобы бесплатные проекты не заснули после 7 дней без активности. Доступен
+    // без пароля — наружу уходят только булевы статусы, данных в ответе нет.
+    if (pathname === '/api/keepalive') {
+      const ping = async (p) => {
+        if (!p.url) return false
+        try {
+          const r = await fetch(`${p.url}/rest/v1/`, { headers: p.headers })
+          return r.ok
+        } catch { return false }
+      }
+      const [licenses, monitor] = await Promise.all([ping(sb(env)), ping(sb2(env))])
+      return json({ ok: licenses && monitor, licenses, monitor }, licenses && monitor ? 200 : 502)
+    }
+
     // ponytail: простое сравнение пароля; при реальном риске перебора — Cloudflare Access
     if (!env.PANEL_PASSWORD || request.headers.get('x-panel-key') !== env.PANEL_PASSWORD) {
       return json({ error: 'Неверный пароль' }, 401)
@@ -278,6 +293,8 @@ const PAGE = `<!DOCTYPE html>
   .tabs-deco{display:flex;gap:2px;margin-left:8px}
   .tabs-deco button{padding:7px 13px;border-radius:8px;font-size:13px;font-weight:500;color:var(--mut2);background:transparent;border:none}
   .tabs-deco button.active{font-weight:600;color:var(--fg);background:var(--panel2)}
+  .navbadge{margin-left:6px;font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;
+    background:var(--warn);color:var(--accent-fg);font-variant-numeric:tabular-nums}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:9px}
   .icon-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9px;
     background:var(--panel);border:1px solid var(--b2);color:var(--mut);font-size:15px}
@@ -460,7 +477,7 @@ const PAGE = `<!DOCTYPE html>
     </div>
     <nav class="tabs-deco">
       <button id="navSubs" class="active" onclick="switchView('subs')">Подписки</button>
-      <button id="navCat" onclick="switchView('cat')">Штрихкоды</button>
+      <button id="navCat" onclick="switchView('cat')">Штрихкоды<span id="navCatBadge" class="navbadge" style="display:none"></span></button>
     </nav>
     <div class="topbar-right">
       <button id="themeBtn" class="icon-btn" onclick="toggleTheme()" title="Сменить тему">☀</button>
@@ -989,6 +1006,9 @@ async function loadCatPending(){
     const d = await api('catalog/pending')
     catPending = d.rows || []; catPendTotal = d.total ?? null
     $('catPendCount').textContent = catPendTotal !== null ? (catPending.length + ' из ' + catPendTotal) : ''
+    const n = catPendTotal ?? catPending.length
+    $('navCatBadge').style.display = n > 0 ? '' : 'none'
+    $('navCatBadge').textContent = n
     renderCatPending()
   } catch(e){ toast(e.message, true) }
 }
@@ -1139,7 +1159,9 @@ function boot(){
   const has = !!pw()
   $('login').style.display = has ? 'none' : 'flex'
   $('app').style.display = has ? '' : 'none'
-  if (has) load()
+  // Очередь модерации грузим сразу при входе: и бейдж «на модерации N» виден
+  // без перехода на вкладку, и проект монитора получает активность (не заснёт).
+  if (has){ load(); loadCatPending() }
 }
 ;[dlgIssue, dlg, dlgCat].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
 boot()

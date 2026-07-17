@@ -1,0 +1,29 @@
+name: Автопинг Supabase (keepalive)
+
+# Бесплатные Supabase-проекты засыпают после 7 дней без API-активности.
+# Раз в день дёргаем /api/keepalive панели — она делает лёгкий запрос в оба
+# проекта (лицензии + монитор/штрихкоды). Никаких секретов не нужно: ключи
+# живут в переменных окружения Cloudflare Pages, наружу уходят только статусы.
+#
+# Внимание: GitHub отключает расписания в репозиториях без коммитов ~60 дней —
+# если репозиторий надолго замирает, workflow надо будет включить заново
+# (Actions → включить) либо перенести пинг на Cloudflare Worker с cron-триггером.
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # ежедневно 03:17 UTC (время смещено от «круглых» минут — так стабильнее на GitHub)
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Пинг обоих Supabase-проектов через панель
+        env:
+          PANEL_URL: ${{ vars.PANEL_URL }}
+        run: |
+          url="${PANEL_URL:-https://imag-license-panel.pages.dev}/api/keepalive"
+          echo "GET $url"
+          resp=$(curl -fsS --max-time 30 --retry 3 --retry-delay 10 "$url")
+          echo "$resp"
+          echo "$resp" | grep -q '"ok":true' || { echo '::error::Один из Supabase-проектов не ответил'; exit 1; }

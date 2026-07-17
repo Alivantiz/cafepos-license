@@ -61,6 +61,19 @@ Dashboard проекта → **Settings → Environment variables → Production
 Правишь `public/_worker.js` → снова `npx wrangler pages deploy public
 --project-name imag-license-panel`. Переменные сохраняются.
 
+## Keepalive (чтобы Supabase не заснул)
+
+Бесплатные Supabase-проекты засыпают после 7 дней без API-активности.
+Страховка двойная:
+
+- при входе в панель сразу грузится очередь модерации штрихкодов (бейдж
+  «N» на вкладке) — активность получают **оба** проекта, а не только лицензии;
+- workflow «Автопинг Supabase» раз в день дёргает `GET /api/keepalive`
+  панели — она делает лёгкий запрос в оба проекта. Endpoint без пароля,
+  наружу отдаёт только `{ok, licenses, monitor}`. Адрес панели по умолчанию
+  `https://imag-license-panel.pages.dev`, переопределяется repo-переменной
+  `PANEL_URL` (Settings → Variables).
+
 ## Ограничения (осознанные)
 
 - **Отзыв действует на кодовые активации** (касса ловит `revoked` через
