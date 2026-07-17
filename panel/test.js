@@ -90,10 +90,10 @@ async function testClientScript() {
   global.confirm = () => true
   global.fetch = async (url) => ({ ok: true, status: 200, json: async () => {
     const u = String(url)
-    if (u.includes('/api/catalog/pending')) return { rows: [
+    if (u.includes('/api/catalog/pending')) return { total: 1, rows: [
       { venue_id: 'venue-1', barcode: '4870001234567', name: 'Кола 0.5', category: 'Напитки', price: 350, unit: 'шт', status: 'pending' }
     ] }
-    if (u.includes('/api/catalog/list')) return { rows: [
+    if (u.includes('/api/catalog/list')) return { total: 1, rows: [
       { venue_id: 'panel-owner', barcode: '4870009999999', name: 'Хлеб', category: null, price: 200, unit: 'шт', status: 'approved' }
     ] }
     return { rows: global.__TEST_ROWS__, kaspiPhone: '' }
@@ -110,8 +110,8 @@ async function testClientScript() {
     'dlgIssue', 'dlg', 'isCust', 'isDays', 'isTerm', 'isMsg', 'isCopyBtn', 'dlgTitle', 'dlgDays', 'dlgMsg', 'rnCopyBtn',
     'doIssueBtn', 'doRenewBtn', 'refreshBtn',
     'navSubs', 'navCat', 'viewSubs', 'viewCat', 'catq', 'catBulkbar', 'catPendAll', 'catPendBody', 'catPendEmpty',
-    'catBody', 'catEmpty', 'dlgCat', 'dlgCatTitle', 'catBarcode', 'catName', 'catCategory', 'catUnit', 'catPrice',
-    'catDelBtn', 'catSaveBtn'].forEach(id => document.getElementById(id))
+    'catPendCount', 'catListCount', 'catBody', 'catEmpty', 'dlgCat', 'dlgCatTitle', 'catBarcode', 'catName',
+    'catCategory', 'catUnit', 'catPrice', 'catDelBtn', 'catSaveBtn'].forEach(id => document.getElementById(id))
 
   const day = 86400000, now = Date.now()
   global.__TEST_ROWS__ = [
@@ -146,6 +146,8 @@ async function testClientScript() {
   global.__RESULT__.catRowsLen = catRows.length
   global.__RESULT__.catPendBodyHtml = document.getElementById('catPendBody').innerHTML
   global.__RESULT__.catBodyHtml = document.getElementById('catBody').innerHTML
+  global.__RESULT__.catPendCountText = document.getElementById('catPendCount').textContent
+  global.__RESULT__.catListCountText = document.getElementById('catListCount').textContent
   global.__RESULT__.catViewShown = document.getElementById('viewCat').style.display
   global.__RESULT__.subsViewHidden = document.getElementById('viewSubs').style.display
   toggleCatPendAll(true)
@@ -174,6 +176,8 @@ async function testClientScript() {
   assert.strictEqual(res.catRowsLen, 1, 'switchView(cat) should load the approved catalog')
   assert.ok(res.catPendBodyHtml.includes('4870001234567'), 'pending queue should show the submitted barcode')
   assert.ok(res.catBodyHtml.includes('4870009999999'), 'catalog list should show the approved barcode')
+  assert.strictEqual(res.catPendCountText, '1 из 1', 'pending count should reflect loaded rows and total')
+  assert.strictEqual(res.catListCountText, '1 из 1', 'catalog count should reflect loaded rows and total')
   assert.strictEqual(res.catViewShown, '', 'catalog view should be visible after switchView(cat)')
   assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when catalog view is active')
   assert.strictEqual(res.catSelectedAfterAll, 1, 'select-all on the pending queue should select every row')

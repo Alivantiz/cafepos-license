@@ -135,9 +135,12 @@ export default {
         }
 
         if (pathname === '/api/catalog/pending') {
-          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?status=eq.pending&order=updated_at.desc&limit=200`, { headers: db2.headers })
+          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?status=eq.pending&order=updated_at.desc&limit=200`, {
+            headers: { ...db2.headers, Prefer: 'count=exact' }
+          })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-          return json({ rows: await r.json() })
+          const total = Number((r.headers.get('content-range') || '').split('/')[1])
+          return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
         }
 
         if (pathname === '/api/catalog/list') {
@@ -145,8 +148,9 @@ export default {
           const term = String(q || '').trim()
           let qs = 'status=eq.approved&order=updated_at.desc&limit=200'
           if (term) qs += `&or=(barcode.ilike.*${encodeURIComponent(term)}*,name.ilike.*${encodeURIComponent(term)}*)`
-          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, { headers: db2.headers })
+          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, { headers: { ...db2.headers, Prefer: 'count=exact' } })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const total = Number((r.headers.get('content-range') || '').split('/')[1])
           const all = await r.json()
           // Разные магазины могут одобрить один и тот же штрихкод под свою
           // цену — в очереди на одобрение это видно как варианты (полезно),
@@ -154,7 +158,7 @@ export default {
           // оставляем самую свежую запись (order=updated_at.desc — первая).
           const seen = new Set()
           const rows = all.filter(row => (seen.has(row.barcode) ? false : (seen.add(row.barcode), true)))
-          return json({ rows })
+          return json({ rows, total: Number.isFinite(total) ? total : null })
         }
 
         if (pathname === '/api/catalog/approve') {
@@ -511,6 +515,7 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="titlerow" style="margin-bottom:14px">
       <div><h1 style="font-size:18px">На одобрении</h1></div>
+      <div class="count" id="catPendCount"></div>
     </div>
     <div id="catBulkbar" style="display:none"></div>
     <div class="tablewrap catscroll" style="margin-bottom:28px">
@@ -533,6 +538,7 @@ const PAGE = `<!DOCTYPE html>
         <span class="ic">⌕</span>
         <input id="catq" type="search" oninput="loadCatList()" placeholder="Поиск по штрихкоду или названию…" />
       </div>
+      <div class="count" id="catListCount"></div>
       <button class="btn pri" onclick="openCatEdit(null)">+ Штрихкод</button>
     </div>
     <div class="tablewrap catscroll">
@@ -965,7 +971,7 @@ async function bulkSetRevoked(flag){
 
 // --- Вкладка «Штрихкоды»: общий словарь mon_barcodes (проект монитора) ---
 let view = 'subs'
-let catPending = [], catRows = [], catSelected = new Set(), catEditKey = null
+let catPending = [], catPendTotal = null, catRows = [], catListTotal = null, catSelected = new Set(), catEditKey = null
 
 async function switchView(v){
   view = v
@@ -979,8 +985,12 @@ async function switchView(v){
 const catKey = r => r.venue_id + '\\u0000' + r.barcode
 
 async function loadCatPending(){
-  try { const d = await api('catalog/pending'); catPending = d.rows || []; renderCatPending() }
-  catch(e){ toast(e.message, true) }
+  try {
+    const d = await api('catalog/pending')
+    catPending = d.rows || []; catPendTotal = d.total ?? null
+    $('catPendCount').textContent = catPendTotal !== null ? (catPending.length + ' из ' + catPendTotal) : ''
+    renderCatPending()
+  } catch(e){ toast(e.message, true) }
 }
 function toggleCatSel(key, on){
   if (on) catSelected.add(key); else catSelected.delete(key)
@@ -1054,8 +1064,12 @@ async function bulkRejectCat(){
 }
 
 async function loadCatList(){
-  try { const d = await api('catalog/list', { q: $('catq').value }); catRows = d.rows || []; renderCatList() }
-  catch(e){ toast(e.message, true) }
+  try {
+    const d = await api('catalog/list', { q: $('catq').value })
+    catRows = d.rows || []; catListTotal = d.total ?? null
+    $('catListCount').textContent = catListTotal !== null ? (catRows.length + ' из ' + catListTotal) : ''
+    renderCatList()
+  } catch(e){ toast(e.message, true) }
 }
 function renderCatList(){
   if (!catRows.length){
