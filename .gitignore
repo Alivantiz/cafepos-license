@@ -1,1 +1,6 @@
 .wrangler/
+
+# Личные данные генератора ТС — никогда не коммитить
+ts-generator/секреты.json
+ts-generator/готовые-тс/*
+!ts-generator/готовые-тс/.gitkeep
