@@ -244,6 +244,50 @@ export default {
         return json({ error: 'Неизвестный путь' }, 404)
       }
 
+      // --- Вкладка «Приёмки»: разбор ИИ-распознаваний mon_ai_invoices (монитор) ---
+      if (pathname.startsWith('/api/invoices/')) {
+        const db2 = sb2(env)
+        if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
+          return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
+        }
+
+        if (pathname === '/api/invoices/pending') {
+          const r = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?reviewed_at=is.null&order=created_at.desc&limit=100`, {
+            headers: { ...db2.headers, Prefer: 'count=exact' }
+          })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const total = Number((r.headers.get('content-range') || '').split('/')[1])
+          return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
+        }
+
+        if (pathname === '/api/invoices/review') {
+          const { id } = await request.json()
+          if (!id) return json({ error: 'Нужен id' }, 400)
+          // «Разобрано»: ставим reviewed_at и стираем фото (image_b64=null);
+          // распознанный JSON остаётся навсегда.
+          const patch = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ reviewed_at: new Date().toISOString(), image_b64: null })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        if (pathname === '/api/invoices/delete') {
+          const { id } = await request.json()
+          if (!id) return json({ error: 'Нужен id' }, 400)
+          const del = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            headers: { ...db2.headers, Prefer: 'return=minimal' }
+          })
+          if (!del.ok) return json({ error: `Supabase: ${del.status} ${await del.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        return json({ error: 'Неизвестный путь' }, 404)
+      }
+
       return json({ error: 'Неизвестный путь' }, 404)
     } catch (e) {
       return json({ error: String(e?.message ?? e) }, 500)
@@ -499,6 +543,7 @@ const PAGE = `<!DOCTYPE html>
     <nav class="tabs-deco">
       <button id="navSubs" class="active" onclick="switchView('subs')">Подписки</button>
       <button id="navCat" onclick="switchView('cat')">Штрихкоды<span id="navCatBadge" class="navbadge" style="display:none"></span></button>
+      <button id="navInv" onclick="switchView('inv')">Приёмки<span id="navInvBadge" class="navbadge" style="display:none"></span></button>
     </nav>
     <div class="topbar-right">
       <button id="themeBtn" class="icon-btn" onclick="toggleTheme()" title="Сменить тему">☀</button>
@@ -591,6 +636,18 @@ const PAGE = `<!DOCTYPE html>
       <div id="catBody"></div>
       <div id="catEmpty" class="empty" style="display:none">Ничего не найдено</div>
     </div>
+  </div>
+
+  <div id="viewInv" style="display:none">
+    <div class="titlerow">
+      <div>
+        <h1>Приёмки (ИИ)</h1>
+        <div class="sub">Распознанные накладные на разбор. Сверьте фото с результатом, «Разобрано» — фото удалится, данные останутся. «×N» у позиции — распознанная фасовка (блок).</div>
+      </div>
+      <div class="count" id="invCount"></div>
+    </div>
+    <div id="invEmpty" class="empty" style="display:none">Нет накладных на разбор</div>
+    <div id="invList"></div>
   </div>
   </main>
 </div>
@@ -1015,9 +1072,57 @@ async function switchView(v){
   view = v
   $('viewSubs').style.display = v === 'subs' ? '' : 'none'
   $('viewCat').style.display = v === 'cat' ? '' : 'none'
+  $('viewInv').style.display = v === 'inv' ? '' : 'none'
   $('navSubs').className = v === 'subs' ? 'active' : ''
   $('navCat').className = v === 'cat' ? 'active' : ''
+  $('navInv').className = v === 'inv' ? 'active' : ''
   if (v === 'cat') await Promise.all([loadCatPending(), loadCatList()])
+  if (v === 'inv') await loadInv()
+}
+
+// ── Вкладка «Приёмки»: разбор ИИ-распознаваний накладных ──
+let invRows = []
+async function loadInv(){
+  try {
+    const d = await api('invoices/pending')
+    invRows = d.rows || []
+    const n = d.total ?? invRows.length
+    $('invCount').textContent = invRows.length + (d.total != null ? ' из ' + d.total : '')
+    $('navInvBadge').style.display = n > 0 ? '' : 'none'
+    $('navInvBadge').textContent = n
+    renderInv()
+  } catch(e){ toast(e.message, true) }
+}
+function renderInv(){
+  if (!invRows.length){ $('invList').innerHTML = ''; $('invEmpty').style.display = 'block'; return }
+  $('invEmpty').style.display = 'none'
+  $('invList').innerHTML = invRows.map(r => {
+    const photo = r.image_b64
+      ? '<img src="data:' + esc(r.image_mime || 'image/jpeg') + ';base64,' + r.image_b64 + '" style="max-width:260px;max-height:360px;border-radius:8px;object-fit:contain" />'
+      : '<div style="color:var(--muted,#888);font-size:13px">фото удалено</div>'
+    const items = (r.items || []).map(it =>
+      '<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px">' +
+        '<span>' + esc(it.name || '') + (it.pack_size && it.pack_size > 1 ? ' <b style="color:var(--pri,#6a5acd)">×' + it.pack_size + '</b>' : '') + '</span>' +
+        '<span style="white-space:nowrap;opacity:.8">' + esc(String(it.quantity ?? it.qty ?? '')) + (it.unit ? ' ' + esc(it.unit) : '') + (it.price != null ? ' · ' + it.price : '') + '</span>' +
+      '</div>').join('')
+    const dt = r.created_at ? new Date(r.created_at).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' }) : ''
+    return '<div style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:14px;margin-bottom:14px">' +
+      '<div style="margin-bottom:10px"><b>' + esc(r.supplier || 'Без поставщика') + '</b> · ' + (r.item_count || 0) + ' поз. · ' + esc(dt) + (r.model ? ' · <span style="opacity:.6">' + esc(r.model) + '</span>' : '') + '</div>' +
+      '<div style="display:flex;gap:16px;flex-wrap:wrap"><div>' + photo + '</div><div style="flex:1;min-width:220px">' + items + '</div></div>' +
+      '<div style="display:flex;gap:8px;margin-top:12px">' +
+        '<button class="btn pri" data-id="' + r.id + '" onclick="reviewInv(this.dataset.id)">Разобрано</button>' +
+        '<button class="btn ghost revoke" data-id="' + r.id + '" onclick="deleteInv(this.dataset.id)">Удалить</button>' +
+      '</div></div>'
+  }).join('')
+}
+async function reviewInv(id){
+  try { await api('invoices/review', { id: Number(id) }); toast('Разобрано — фото удалено'); await loadInv() }
+  catch(e){ toast(e.message, true) }
+}
+async function deleteInv(id){
+  if (!confirm('Удалить запись распознавания целиком?')) return
+  try { await api('invoices/delete', { id: Number(id) }); toast('Удалено'); await loadInv() }
+  catch(e){ toast(e.message, true) }
 }
 
 const catKey = r => r.venue_id + '\\u0000' + r.barcode
