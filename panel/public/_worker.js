@@ -159,18 +159,20 @@ export default {
         }
 
         if (pathname === '/api/catalog/list') {
-          const { q } = await request.json()
+          const { q, page } = await request.json()
           const term = String(q || '').trim()
-          let qs = 'status=eq.approved&order=updated_at.desc&limit=200'
+          const per = 200
+          const off = Math.max(0, Number(page) || 0) * per
+          // order=barcode.asc — стабильная пагинация (updated_at «плавает»),
+          // и одинаковые штрихкоды идут подряд, значит дубли схлопываются в пределах страницы.
+          let qs = `status=eq.approved&order=barcode.asc&limit=${per}&offset=${off}`
           if (term) qs += `&or=(barcode.ilike.*${encodeURIComponent(term)}*,name.ilike.*${encodeURIComponent(term)}*)`
           const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, { headers: { ...db2.headers, Prefer: 'count=exact' } })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           const total = Number((r.headers.get('content-range') || '').split('/')[1])
           const all = await r.json()
-          // Разные магазины могут одобрить один и тот же штрихкод под свою
-          // цену — в очереди на одобрение это видно как варианты (полезно),
-          // а в итоговом каталоге дублей одного штрихкода быть не должно:
-          // оставляем самую свежую запись (order=updated_at.desc — первая).
+          // Разные магазины могут завести один штрихкод под свою цену — в каталоге
+          // дублей одного штрихкода не показываем, оставляем первую запись.
           const seen = new Set()
           const rows = all.filter(row => (seen.has(row.barcode) ? false : (seen.add(row.barcode), true)))
           return json({ rows, total: Number.isFinite(total) ? total : null })
@@ -197,6 +199,25 @@ export default {
           })
           if (!del.ok) return json({ error: `Supabase: ${del.status} ${await del.text()}` }, 502)
           return json({ ok: true })
+        }
+
+        if (pathname === '/api/catalog/bulkCategory') {
+          // Массовая смена категории у выбранных карточек. Матч по barcode —
+          // применяется ко всем заведениям (как и категоризация SQL-скриптом).
+          // updated_at НЕ трогаем — не провоцируем ресинк на кассах.
+          const { barcodes, category } = await request.json()
+          const list = Array.isArray(barcodes) ? [...new Set(barcodes.map(b => String(b).trim()).filter(Boolean))] : []
+          if (!list.length) return json({ error: 'Не выбраны штрихкоды' }, 400)
+          if (list.length > 500) return json({ error: 'За раз не больше 500 штрихкодов' }, 400)
+          const cat = String(category || '').trim() || null
+          const inList = list.map(b => encodeURIComponent('"' + b.replace(/"/g, '') + '"')).join(',')
+          const patch = await fetch(`${db2.url}/rest/v1/mon_barcodes?barcode=in.(${inList})`, {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ category: cat })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true, count: list.length })
         }
 
         if (pathname === '/api/catalog/similar') {
@@ -412,15 +433,34 @@ const PAGE = `<!DOCTYPE html>
   .searchwrap input:focus{border-color:var(--brand)}
   .count{font-size:12.5px;color:var(--mut2);font-variant-numeric:tabular-nums;white-space:nowrap}
 
-  #bulkbar{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:11px 16px;
+  #bulkbar,#catBulkbar{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:11px 16px;
     background:oklch(0.76 0.16 62 / .1);border:1px solid var(--brand);border-radius:12px;animation:rise .18s ease}
-  #bulkbar .lbl{font-size:13px;font-weight:600;color:var(--fg)}
-  #bulkbar .sp{flex:1}
-  #bulkbar button{height:34px;padding:0 13px;border-radius:8px;font-size:12.5px;font-weight:700;border:1px solid var(--b2);background:var(--panel);color:var(--fg)}
-  #bulkbar button.pri{background:var(--brand);border-color:var(--brand);color:var(--accent-fg)}
-  #bulkbar button.bad{color:var(--bad);font-weight:600}
-  #bulkbar button.ok{color:var(--ok);font-weight:600}
-  #bulkbar button.plain{background:transparent;color:var(--mut);font-weight:600}
+  #bulkbar .lbl,#catBulkbar .lbl{font-size:13px;font-weight:600;color:var(--fg)}
+  #bulkbar .sp,#catBulkbar .sp{flex:1}
+  #bulkbar button,#catBulkbar button{height:34px;padding:0 13px;border-radius:8px;font-size:12.5px;font-weight:700;border:1px solid var(--b2);background:var(--panel);color:var(--fg);cursor:pointer}
+  #bulkbar button.pri,#catBulkbar button.pri{background:var(--brand);border-color:var(--brand);color:var(--accent-fg)}
+  #bulkbar button.bad,#catBulkbar button.bad{color:var(--bad);font-weight:600}
+  #bulkbar button.ok,#catBulkbar button.ok{color:var(--ok);font-weight:600}
+  #bulkbar button.plain,#catBulkbar button.plain{background:transparent;color:var(--mut);font-weight:600}
+
+  /* Плавающая панель массовых действий каталога — всегда видна при скролле. */
+  @keyframes riseX{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+  #catListBulkbar{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;
+    display:flex;align-items:center;gap:14px;padding:11px 15px 11px 18px;
+    background:color-mix(in srgb,var(--panel) 90%,transparent);backdrop-filter:blur(16px);
+    border:1px solid var(--brand);border-radius:14px;box-shadow:0 14px 44px rgba(0,0,0,.4);animation:riseX .18s ease}
+  #catListBulkbar .lbl{font-size:13px;font-weight:700;color:var(--fg);white-space:nowrap}
+  #catListBulkbar .sp{width:2px}
+  #catListBulkbar button{height:34px;padding:0 15px;border-radius:9px;font-size:12.5px;font-weight:700;
+    border:1px solid var(--b2);background:var(--panel2);color:var(--fg);cursor:pointer}
+  #catListBulkbar button.pri{background:var(--brand);border-color:var(--brand);color:var(--accent-fg)}
+  #catListBulkbar button.plain{background:transparent;border-color:transparent;color:var(--mut)}
+
+  .pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:16px}
+  .pager button{height:34px;padding:0 16px;border-radius:9px;background:var(--panel);border:1px solid var(--b2);
+    color:var(--fg);font-size:13px;font-weight:600;cursor:pointer}
+  .pager button:disabled{opacity:.4;cursor:default}
+  .pager .pinfo{font-size:12.5px;color:var(--mut2);font-variant-numeric:tabular-nums;white-space:nowrap}
 
   .tablewrap{background:var(--panel);border:1px solid var(--b);border-radius:15px;overflow:hidden}
   .catscroll{overflow-x:auto}
@@ -602,7 +642,7 @@ const PAGE = `<!DOCTYPE html>
     </div>
     <div id="catBulkbar" style="display:none"></div>
     <div class="tablewrap catscroll" style="margin-bottom:28px">
-      <div class="grid-row thead" style="grid-template-columns:44px 130px 220px 130px 90px 70px 150px">
+      <div class="grid-row thead" style="grid-template-columns:44px 130px 200px 120px 80px 60px 230px">
         <div><input type="checkbox" id="catPendAll" onchange="toggleCatPendAll(this.checked)" /></div>
         <div class="h">Штрихкод</div>
         <div class="h">Название</div>
@@ -619,13 +659,15 @@ const PAGE = `<!DOCTYPE html>
       <div style="margin-right:auto"><h1 style="font-size:18px">Каталог</h1></div>
       <div class="searchwrap">
         <span class="ic">⌕</span>
-        <input id="catq" type="search" oninput="loadCatList()" placeholder="Поиск по штрихкоду или названию…" />
+        <input id="catq" type="search" oninput="catPage=0;loadCatList()" placeholder="Поиск по штрихкоду или названию…" />
       </div>
       <div class="count" id="catListCount"></div>
       <button class="btn pri" onclick="openCatEdit(null)">+ Штрихкод</button>
     </div>
+    <div id="catListBulkbar" style="display:none"></div>
     <div class="tablewrap catscroll">
-      <div class="grid-row thead" style="grid-template-columns:130px 220px 130px 90px 70px 60px">
+      <div class="grid-row thead" style="grid-template-columns:44px 130px 220px 130px 90px 70px 60px">
+        <div><input type="checkbox" id="catListAll" onchange="toggleCatListAll(this.checked)" /></div>
         <div class="h">Штрихкод</div>
         <div class="h">Название</div>
         <div class="h">Категория</div>
@@ -636,6 +678,7 @@ const PAGE = `<!DOCTYPE html>
       <div id="catBody"></div>
       <div id="catEmpty" class="empty" style="display:none">Ничего не найдено</div>
     </div>
+    <div class="pager" id="catPager" style="display:none"></div>
   </div>
 
   <div id="viewInv" style="display:none">
@@ -685,7 +728,39 @@ const PAGE = `<!DOCTYPE html>
   <div class="drow2">
     <div class="fld">
       <label>Категория</label>
-      <input id="catCategory" placeholder="необязательно" />
+      <input id="catCategory" list="catCatList" placeholder="выбрать или вписать новую" />
+      <!-- Канонический список категорий (совпадает с sql/mon_matching-категоризацией).
+           datalist = выпадающий список существующих + свободный ввод новой.
+           ponytail: статичный список; если категории должны тянуться из БД живьём —
+           добавить эндпоинт /api/catalog/categories (distinct) и заполнять отсюда. -->
+      <datalist id="catCatList">
+        <option value="Кондитерка и сладости"></option>
+        <option value="Гигиена и косметика"></option>
+        <option value="Хозтовары и посуда"></option>
+        <option value="Молочка и яйца"></option>
+        <option value="Канцтовары"></option>
+        <option value="Одежда и бельё"></option>
+        <option value="Игрушки"></option>
+        <option value="Бакалея"></option>
+        <option value="Снеки"></option>
+        <option value="Мясо и колбасы"></option>
+        <option value="Чай и кофе"></option>
+        <option value="Бытовая химия"></option>
+        <option value="Соусы и специи"></option>
+        <option value="Алкоголь"></option>
+        <option value="Вода и соки"></option>
+        <option value="Напитки б/а"></option>
+        <option value="Электроника и аксессуары"></option>
+        <option value="Аксессуары"></option>
+        <option value="Хлеб и выпечка"></option>
+        <option value="Заморозка и мороженое"></option>
+        <option value="Табак и вейпы"></option>
+        <option value="Зоотовары"></option>
+        <option value="Детское питание"></option>
+        <option value="Рыба и морепродукты"></option>
+        <option value="Пиво"></option>
+        <option value="Консервы"></option>
+      </datalist>
     </div>
     <div class="fld">
       <label>Ед.</label>
@@ -698,6 +773,17 @@ const PAGE = `<!DOCTYPE html>
     <button id="catDelBtn" class="ghost" onclick="deleteCatRow()">Удалить</button>
     <button class="ghost" onclick="dlgCat.close()">Отмена</button>
     <button id="catSaveBtn" class="pri" onclick="saveCatRow()">Сохранить</button>
+  </div>
+</dialog>
+
+<dialog id="dlgBulkCat">
+  <h3>Категория для выбранных</h3>
+  <div class="dsub" id="dlgBulkCatCount"></div>
+  <label>Категория</label>
+  <input id="bulkCatCategory" list="catCatList" placeholder="выбрать, вписать новую или оставить пустой = снять" />
+  <div class="drow">
+    <button class="ghost" onclick="dlgBulkCat.close()">Отмена</button>
+    <button id="bulkCatSaveBtn" class="pri" onclick="applyBulkCat()">Применить</button>
   </div>
 </dialog>
 
@@ -1066,7 +1152,7 @@ async function bulkSetRevoked(flag){
 
 // --- Вкладка «Штрихкоды»: общий словарь mon_barcodes (проект монитора) ---
 let view = 'subs'
-let catPending = [], catPendTotal = null, catRows = [], catListTotal = null, catSelected = new Set(), catEditKey = null
+let catPending = [], catPendTotal = null, catRows = [], catListTotal = null, catPage = 0, catSelected = new Set(), catListSel = new Set(), catEditKey = null
 
 async function switchView(v){
   view = v
@@ -1125,7 +1211,7 @@ async function deleteInv(id){
   catch(e){ toast(e.message, true) }
 }
 
-const catKey = r => r.venue_id + '\\u0000' + r.barcode
+const catKey = r => r.venue_id + '::' + r.barcode  // разделитель печатный: ключ попадает в data-атрибут чекбокса, а NUL там ломается
 let catSimilar = {} // ключ заявки -> {loading:true} | {rows:[...], error?}
 
 async function showCatSimilar(vid, bc){
@@ -1188,7 +1274,7 @@ function renderCatPending(){
     $('catPendEmpty').style.display = 'none'
     $('catPendBody').innerHTML = catPending.map(r => {
       const k = catKey(r), sel = catSelected.has(k), sim = catSimilar[k]
-      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 130px 220px 130px 90px 70px 190px">' +
+      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 130px 200px 120px 80px 60px 230px">' +
         '<div><input type="checkbox" data-k="' + esc(k) + '" ' + (sel ? 'checked' : '') + ' onchange="toggleCatSel(this.dataset.k, this.checked)" /></div>' +
         '<div class="cust-id">' + esc(r.barcode) + '</div>' +
         '<div class="cust-name">' + esc(r.name || '') + '</div>' +
@@ -1197,6 +1283,7 @@ function renderCatPending(){
         '<div class="term">' + esc(r.unit || '—') + '</div>' +
         '<div class="acts">' +
           '<button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="showCatSimilar(this.dataset.vid,this.dataset.bc)" title="Похожие карточки в каталоге">≈</button>' +
+          '<button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="openCatEditPending(this.dataset.vid,this.dataset.bc)" title="Править перед одобрением">✎</button>' +
           '<button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="approveCat(this.dataset.vid,this.dataset.bc)">Одобрить</button>' +
           '<button class="revoke" data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="rejectCat(this.dataset.vid,this.dataset.bc)">Отклонить</button>' +
         '</div>' +
@@ -1242,20 +1329,38 @@ async function bulkRejectCat(){
 
 async function loadCatList(){
   try {
-    const d = await api('catalog/list', { q: $('catq').value })
+    const d = await api('catalog/list', { q: $('catq').value, page: catPage })
     catRows = d.rows || []; catListTotal = d.total ?? null
-    $('catListCount').textContent = catListTotal !== null ? (catRows.length + ' из ' + catListTotal) : ''
-    renderCatList()
+    $('catListCount').textContent = catListTotal !== null ? (catListTotal + ' всего') : ''
+    renderCatList(); renderCatPager()
   } catch(e){ toast(e.message, true) }
 }
+function renderCatPager(){
+  const per = 200, total = catListTotal || 0, pages = Math.max(1, Math.ceil(total / per))
+  const el = $('catPager'); if (!el) return
+  if (total <= per){ el.style.display = 'none'; el.innerHTML = ''; return }
+  el.style.display = 'flex'
+  const from = catPage * per + 1, to = Math.min((catPage + 1) * per, total)
+  el.innerHTML =
+    '<button ' + (catPage <= 0 ? 'disabled' : '') + ' onclick="gotoCatPage(' + (catPage - 1) + ')">← Назад</button>' +
+    '<span class="pinfo">' + from + '–' + to + ' из ' + total + '  •  стр ' + (catPage + 1) + ' / ' + pages + '</span>' +
+    '<button ' + (catPage >= pages - 1 ? 'disabled' : '') + ' onclick="gotoCatPage(' + (catPage + 1) + ')">Вперёд →</button>'
+}
+function gotoCatPage(p){ catPage = Math.max(0, p); loadCatList() }
+function catListKey(r){ return r.barcode }
 function renderCatList(){
+  const keys = catRows.map(catListKey)
+  // Выбор НЕ обрезаем по текущей странице — он копится между страницами,
+  // массовая смена применяется ко всем выбранным штрихкодам сразу.
   if (!catRows.length){
     $('catBody').innerHTML = ''
     $('catEmpty').style.display = 'block'
   } else {
     $('catEmpty').style.display = 'none'
-    $('catBody').innerHTML = catRows.map(r =>
-      '<div class="grid-row trow" style="grid-template-columns:130px 220px 130px 90px 70px 60px">' +
+    $('catBody').innerHTML = catRows.map(r => {
+      const k = catListKey(r), sel = catListSel.has(k)
+      return '<div class="grid-row trow' + (sel ? ' sel' : '') + '" style="grid-template-columns:44px 130px 220px 130px 90px 70px 60px">' +
+        '<div><input type="checkbox" data-k="' + esc(k) + '" ' + (sel ? 'checked' : '') + ' onchange="toggleCatListSel(this.dataset.k, this.checked)" /></div>' +
         '<div class="cust-id">' + esc(r.barcode) + '</div>' +
         '<div class="cust-name">' + esc(r.name || '') + '</div>' +
         '<div class="exp">' + esc(r.category || '—') + '</div>' +
@@ -1263,26 +1368,58 @@ function renderCatList(){
         '<div class="term">' + esc(r.unit || '—') + '</div>' +
         '<div class="acts"><button data-vid="' + esc(r.venue_id) + '" data-bc="' + esc(r.barcode) + '" onclick="openCatEditFromRow(this.dataset.vid,this.dataset.bc)">✎</button></div>' +
       '</div>'
-    ).join('')
+    }).join('')
   }
+  const all = $('catListAll'); if (all) all.checked = keys.length > 0 && keys.every(k => catListSel.has(k))
+  const bar = $('catListBulkbar')
+  if (catListSel.size > 0){
+    bar.style.display = 'flex'
+    bar.innerHTML = '<span class="lbl">Выбрано: ' + catListSel.size + '</span><div class="sp"></div>' +
+      '<button class="pri" onclick="openBulkCat()">Сменить категорию</button>' +
+      '<button class="plain" onclick="catListSel.clear();renderCatList()">Снять</button>'
+  } else { bar.style.display = 'none'; bar.innerHTML = '' }
+}
+function toggleCatListSel(k, on){ if (on) catListSel.add(k); else catListSel.delete(k); renderCatList() }
+function toggleCatListAll(on){ catRows.forEach(r => { const k = catListKey(r); if (on) catListSel.add(k); else catListSel.delete(k) }); renderCatList() }
+const dlgBulkCat = $('dlgBulkCat')
+function openBulkCat(){
+  if (!catListSel.size) return
+  $('dlgBulkCatCount').textContent = 'Товаров выбрано: ' + catListSel.size
+  $('bulkCatCategory').value = ''
+  $('bulkCatSaveBtn').disabled = false
+  dlgBulkCat.showModal()
+  $('bulkCatCategory').focus()
+}
+async function applyBulkCat(){
+  $('bulkCatSaveBtn').disabled = true
+  try {
+    const d = await api('catalog/bulkCategory', { barcodes: [...catListSel], category: $('bulkCatCategory').value })
+    toast('Категория проставлена: ' + (d.count ?? catListSel.size))
+    dlgBulkCat.close(); catListSel.clear(); loadCatList()
+  } catch(e){ toast(e.message, true); $('bulkCatSaveBtn').disabled = false }
 }
 function findCatRow(venue_id, barcode){ return catRows.find(r => r.venue_id === venue_id && r.barcode === barcode) }
 function openCatEditFromRow(venue_id, barcode){ openCatEdit(findCatRow(venue_id, barcode)) }
+function findPendRow(venue_id, barcode){ return catPending.find(r => r.venue_id === venue_id && r.barcode === barcode) }
+function openCatEditPending(venue_id, barcode){ openCatEdit(findPendRow(venue_id, barcode), true) }
 
 const dlgCat = $('dlgCat')
-function openCatEdit(row){
+// pending=true — правка карточки из очереди: сохранение через upsert её же и
+// одобряет (status='approved'), поэтому кнопка «Сохранить и одобрить».
+function openCatEdit(row, pending){
   catEditKey = row ? { venue_id: row.venue_id, barcode: row.barcode } : null
-  $('dlgCatTitle').textContent = row ? 'Правка штрихкода' : 'Новый штрихкод'
+  $('dlgCatTitle').textContent = pending ? 'Править перед одобрением' : (row ? 'Правка штрихкода' : 'Новый штрихкод')
   $('catBarcode').value = row ? row.barcode : ''
   $('catBarcode').readOnly = !!row
   $('catName').value = row ? (row.name || '') : ''
   $('catCategory').value = row ? (row.category || '') : ''
   $('catPrice').value = row && row.price != null ? row.price : ''
   $('catUnit').value = row ? (row.unit || '') : ''
-  $('catDelBtn').style.display = row ? '' : 'none'
+  $('catDelBtn').style.display = row && !pending ? '' : 'none'
+  $('catSaveBtn').textContent = pending ? 'Сохранить и одобрить' : 'Сохранить'
   $('catSaveBtn').disabled = false
   dlgCat.showModal()
-  $('catBarcode').focus()
+  $('catName').focus()
 }
 async function saveCatRow(){
   $('catSaveBtn').disabled = true
@@ -1297,7 +1434,7 @@ async function saveCatRow(){
     })
     toast('Сохранено')
     dlgCat.close()
-    loadCatList()
+    loadCatList(); loadCatPending()   // обновляем и каталог, и очередь (правка из очереди её одобряет)
   } catch(e){ toast(e.message, true); $('catSaveBtn').disabled = false }
 }
 async function deleteCatRow(){
@@ -1320,7 +1457,10 @@ function boot(){
   // без перехода на вкладку, и проект монитора получает активность (не заснёт).
   if (has){ load(); loadCatPending() }
 }
-;[dlgIssue, dlg, dlgCat].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
+;[dlgIssue, dlg].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
+// Диалоги правки категории (dlgCat, dlgBulkCat) НЕ закрываем случайным кликом по
+// фону и клавишей Esc — чтобы не потерять введённое. Только кнопки Отмена/Сохранить.
+;[dlgCat, dlgBulkCat].forEach(d => d.addEventListener('cancel', e => e.preventDefault()))
 boot()
 </script>
 </body>
