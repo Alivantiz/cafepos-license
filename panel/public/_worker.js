@@ -611,7 +611,7 @@ const PAGE = `<!DOCTYPE html>
       <div id="tabs" class="segtabs"></div>
       <div class="searchwrap">
         <span class="ic">⌕</span>
-        <input id="q" type="search" oninput="render()" placeholder="Поиск по клиенту или ID активации…" />
+        <input id="q" type="search" oninput="render()" placeholder="Поиск по клиенту, ID активации или коду ПК…" />
       </div>
       <div class="count" id="count"></div>
     </div>
@@ -894,6 +894,7 @@ function toggleSelectAll(on, ids){
 function onSelectAllChange(cb){ toggleSelectAll(cb.checked, lastShownIds) }
 function clearSelection(){ selected.clear(); render() }
 function copyId(id){ navigator.clipboard.writeText(id); toast('ID скопирован') }
+function copyText(t){ navigator.clipboard.writeText(t); toast('Скопировано') }
 async function editNotes(id){
   const r = rows.find(x => x.id === id)
   const val = prompt('Заметка для ' + ((r && r.customer) || id) + ':', (r && r.notes) || '')
@@ -963,7 +964,7 @@ function render(){
   ).join('')
 
   let shown = rows.filter(r => filter === 'all' || bucket(r) === filter)
-  shown = shown.filter(r => !q || (r.customer || '').toLowerCase().includes(q) || r.id.toLowerCase().includes(q))
+  shown = shown.filter(r => !q || (r.customer || '').toLowerCase().includes(q) || r.id.toLowerCase().includes(q) || (r.machine_id || '').toLowerCase().includes(q))
   if (sort.col === 'customer') {
     const m = sort.dir === 'asc' ? 1 : -1
     shown = [...shown].sort((a,b) => m * (a.customer||'').localeCompare(b.customer||'', 'ru'))
@@ -1027,9 +1028,13 @@ function rowHtml(r){
     '<div><input type="checkbox" data-id="' + r.id + '" ' + (sel ? 'checked' : '') + ' onchange="toggleSelect(this.dataset.id, this.checked)" /></div>' +
     '<div class="cust-cell"><div class="cust-name">' + esc(r.customer || '(без имени)') + '</div>' +
       '<div class="cust-id-row">' +
-        '<span class="cust-id" data-id="' + r.id + '" title="Скопировать ID" onclick="copyId(this.dataset.id)">' + r.id + '</span>' +
+        '<span class="cust-id" data-id="' + r.id + '" title="ID активации — скопировать" onclick="copyId(this.dataset.id)">' + r.id + '</span>' +
         '<span class="note-ic' + (r.notes ? ' has' : '') + '" data-id="' + r.id + '" title="' + noteTitle + '" onclick="editNotes(this.dataset.id)">✎</span>' +
-      '</div></div>' +
+      '</div>' +
+      (r.machine_id
+        ? '<div class="cust-id-row"><span class="cust-id" data-m="' + esc(r.machine_id) + '" title="Код компьютера — скопировать" onclick="copyText(this.dataset.m)">🖥 ' + esc(r.machine_id) + '</span></div>'
+        : '<div class="cust-id-row"><span class="cust-id" style="opacity:.5">🖥 ещё не активирована</span></div>') +
+    '</div>' +
     '<div><span class="pill ' + st.kind + '">' + st.text + '</span></div>' +
     '<div style="color:' + sn.color + ';font-size:12.5px">' + sn.text + '</div>' +
     '<div class="term">' + (r.terminals ?? 1) + '</div>' +
@@ -1052,7 +1057,11 @@ function cardHtml(r){
       '<div class="name-wrap"><div class="name">' + esc(r.customer || '(без имени)') + '</div>' +
       '<div class="cust-id-row"><span class="idl">' + r.id + '</span>' +
         '<span class="note-ic' + (r.notes ? ' has' : '') + '" data-id="' + r.id + '" title="' + noteTitle + '" onclick="editNotes(this.dataset.id)">✎</span>' +
-      '</div></div>' +
+      '</div>' +
+      (r.machine_id
+        ? '<div class="cust-id-row"><span class="idl" data-m="' + esc(r.machine_id) + '" title="Код компьютера — скопировать" onclick="copyText(this.dataset.m)">🖥 ' + esc(r.machine_id) + '</span></div>'
+        : '<div class="cust-id-row"><span class="idl" style="opacity:.5">🖥 ещё не активирована</span></div>') +
+      '</div>' +
       '<span class="pill ' + st.kind + '">' + st.text + '</span></div>' +
     '<div class="meta">' +
       '<span>Касс: <b>' + (r.terminals ?? 1) + '</b></span>' +
