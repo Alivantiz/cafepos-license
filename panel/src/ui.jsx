@@ -180,7 +180,10 @@ export function Toasts() {
   useEffect(() => {
     push = (text, err) => {
       const id = Date.now() + Math.random()
-      setItems(v => [...v, { id, text, err }])
+      // Одно и то же сообщение не дублируем: при череде отказов подряд экран
+      // забивался десятком одинаковых плашек, за которыми не было видно ни
+      // содержимого, ни того, что ошибка, вообще-то, одна.
+      setItems(v => v.some(t => t.text === text) ? v : [...v, { id, text, err }])
       setTimeout(() => setItems(v => v.filter(t => t.id !== id)), 3400)
     }
   }, [])

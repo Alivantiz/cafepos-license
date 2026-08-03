@@ -131,6 +131,13 @@ function Panel() {
       setBadges(b => ({ ...b, invoices: d.total ?? (d.rows || []).length }))).catch(() => {})
   }, [])
 
+  // ОБЯЗАТЕЛЬНО useCallback. Стрелка прямо в JSX — новая функция на каждую
+  // отрисовку, а «Каталог» держит её в зависимостях загрузки очереди: загрузка
+  // → счётчик → перерисовка → новая функция → снова загрузка. Получался
+  // бесконечный поток запросов, браузер начинал их отклонять
+  // (ERR_INSUFFICIENT_RESOURCES), а на экран сыпались ошибки связи.
+  const setCatalogCount = useCallback((n) => setBadges(b => ({ ...b, catalog: n })), [])
+
   useEffect(() => {
     reloadBadges()
     const fresh = () => { if (!document.hidden) reloadBadges() }
@@ -245,7 +252,7 @@ function Panel() {
           <Requests onReload={setViewReload} onApproved={() => { reload(); reloadBadges() }} />
         )}
         {!current && view === 'catalog' && (
-          <Catalog onReload={setViewReload} onCounts={(n) => setBadges(b => ({ ...b, catalog: n }))} />
+          <Catalog onReload={setViewReload} onCounts={setCatalogCount} />
         )}
         {!current && view === 'invoices' && <Invoices onReload={setViewReload} />}
         {!current && view === 'cloud' && <Cloud onReload={setViewReload} />}

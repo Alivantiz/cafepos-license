@@ -22,13 +22,19 @@ export default function Catalog({ onCounts, onReload }) {
   const [edit, setEdit] = useState(null)   // {row, pending}
   const [bulkCat, setBulkCat] = useState(false)
 
+  // onCounts держим в ссылке, а не в зависимостях загрузки. Иначе стоит
+  // родителю передать стрелку прямо в JSX — и загрузка начинает перезапускать
+  // сама себя по кругу: запрос → счётчик → перерисовка → новая функция →
+  // запрос. Один раз это уже вылилось в бесконечный поток запросов к базе.
+  const counts = useRef(onCounts)
+  counts.current = onCounts
   const loadPending = useCallback(async () => {
     try {
       const d = await api('catalog/pending')
       setPending(d.rows || []); setPendTotal(d.total ?? null); setSimilar({}); setSel(new Set())
-      onCounts?.(d.total ?? (d.rows || []).length)
+      counts.current?.(d.total ?? (d.rows || []).length)
     } catch (e) { toast.err(e.message) }
-  }, [onCounts])
+  }, [])
 
   // Запрос на каждую букву возвращался вразнобой: в таблице оказывались
   // результаты позапрошлого запроса. Задержка + счётчик отсекают устаревшие.
