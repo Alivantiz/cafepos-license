@@ -17,6 +17,37 @@ export function Tile({ label, value, hint, tone, onClick }) {
   )
 }
 
+/**
+ * Копирование одним значком. Слово «копировать» рядом с кодом лицензии не
+ * помещалось в строку и уносило кнопку на следующую — код визуально
+ * разваливался на две части. Значок влезает всегда; что он делает, говорят
+ * подсказка и aria-label.
+ */
+export function CopyBtn({ text, title = 'Скопировать' }) {
+  const [done, setDone] = useState(false)
+  return (
+    <button className="btn ghost icon" title={title} aria-label={title}
+      onClick={() => {
+        navigator.clipboard.writeText(text)
+        toast.ok('Скопировано')
+        // Отметка на кнопке: тост живёт три секунды и уезжает, а «я это уже
+        // копировал» полезно видеть на самом месте.
+        setDone(true); setTimeout(() => setDone(false), 1600)
+      }}>
+      {done
+        ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+        : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+        </svg>}
+    </button>
+  )
+}
+
 export function Tag({ tone, children }) {
   return <span className={'tag' + (tone ? ' ' + tone : '')}><i className="dot" />{children}</span>
 }

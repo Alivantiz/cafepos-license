@@ -3,7 +3,7 @@
 // а на вопрос «как у них дела» ответа не было нигде.
 import { useState } from 'react'
 import { api, fmtDate, daysLeft, daysAgo, money, agoText } from '../api'
-import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar } from '../ui'
+import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar, CopyBtn } from '../ui'
 
 export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFor }) {
   const [renew, setRenew] = useState(false)
@@ -126,18 +126,19 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
           <b>Лицензия</b>
           <dl style={{ margin: '10px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '7px 14px' }}>
             <dt className="muted2">Код</dt>
+            {/* Значок, а не слово «копировать»: рядом с длинным кодом оно не
+                помещалось в строку и уносило кнопку на следующую. */}
             <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: 12, wordBreak: 'break-all' }}>
               {c.subject}{' '}
-              <button className="btn ghost sm" onClick={() => {
-                navigator.clipboard.writeText(c.subject); toast.ok('Скопировано')
-              }}>копировать</button>
+              <CopyBtn text={c.subject} title="Скопировать код" />
             </dd>
             {/* У пробы код и «компьютер» — одно и то же, а терминалы и дата
                 выпуска лицензии смысла не имеют: показывать их незачем. */}
             {!trial && <>
               <dt className="muted2">Компьютер</dt>
               <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
-                {c.machine_id || 'не привязана'}</dd>
+                {c.machine_id || 'не привязана'}
+                {c.machine_id && <> <CopyBtn text={c.machine_id} title="Скопировать код компьютера" /></>}</dd>
               <dt className="muted2">Терминалов</dt><dd style={{ margin: 0 }}>{c.terminals ?? 1}</dd>
               <dt className="muted2">Цена продления</dt>
               <dd style={{ margin: 0 }}>{c.price ? money(c.price) : <span className="muted2">не указана</span>}</dd>

@@ -97,6 +97,13 @@ button.card { font: inherit; color: inherit; text-align: left; width: 100%; }
 .btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .btn.danger:hover { filter: brightness(1.08); }
 .btn.sm { padding: 4px 9px; font-size: 12.5px; }
+/* Кнопка-значок: квадратная, чтобы вставать в строку с кодом и не разрывать
+   её. Размер держим не меньше 26px — в неё ещё нужно попасть пальцем. */
+.btn.icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; width: 26px; height: 26px; vertical-align: middle; color: var(--mut);
+}
+.btn.icon:hover { color: var(--fg); }
 .btn:disabled { opacity: .45; cursor: default; }
 
 input, select, textarea {
@@ -184,6 +191,7 @@ tbody tr:hover td { background: var(--panel2); }
   h1 { font-size: 18px; }
   /* Палец не попадает в кнопку высотой 26px */
   .btn.sm { padding: 8px 12px; font-size: 13px; }
+  .btn.icon { width: 34px; height: 34px; }
   /* Намёк, что таблица прокручивается вбок */
   .tablewrap { position: relative; }
   .tablewrap::after {
