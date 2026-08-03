@@ -2,7 +2,7 @@
 // кассами) и сам каталог с поиском, страницами и массовой сменой категории.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
-import { Modal, toast, confirmDialog } from '../ui'
+import { Modal, toast, confirmDialog, Suggest } from '../ui'
 
 const PER_PAGE = 200
 const key = (r) => r.venue_id + '::' + r.barcode
@@ -285,12 +285,6 @@ function Similar({ r, sim }) {
 
 // pending — правка карточки из очереди: сохранение через upsert её же и
 // одобряет, поэтому кнопка называется иначе.
-// Нативная подсказка: и печатать можно, и выбрать из существующих. Отдельный
-// компонент выпадающего списка тут не нужен — браузер умеет это сам.
-function CatList({ cats }) {
-  return <datalist id="catalog-cats">{cats.map(c => <option key={c} value={c} />)}</datalist>
-}
-
 function EditModal({ row, pending, cats, onClose, onSaved }) {
   const [f, setF] = useState({
     barcode: row?.barcode || '', name: row?.name || '', category: row?.category || '',
@@ -323,10 +317,9 @@ function EditModal({ row, pending, cats, onClose, onSaved }) {
       <label>Штрихкод<input value={f.barcode} onChange={set('barcode')} readOnly={!!row} /></label>
       <label>Название<input value={f.name} onChange={set('name')} autoFocus /></label>
       <label>Категория
-        <input list="catalog-cats" value={f.category} onChange={set('category')}
-          placeholder="начните вводить или выберите" />
+        <Suggest value={f.category} onChange={v => setF(x => ({ ...x, category: v }))}
+          options={cats} placeholder="начните вводить или выберите" />
       </label>
-      <CatList cats={cats} />
       <div className="row">
         <label style={{ flex: 1 }}>Цена<input value={f.price} onChange={set('price')} /></label>
         <label style={{ flex: 1 }}>Единица<input value={f.unit} onChange={set('unit')} /></label>
@@ -359,10 +352,9 @@ function BulkCategory({ count, barcodes, cats, onClose, onDone }) {
           пришла карточка — про это окно раньше молчало. */}
       <div className="muted2">Категория поменяется у всех заведений с этими штрихкодами. Отката нет.</div>
       <label>Категория
-        <input list="catalog-cats" value={category} onChange={e => setCategory(e.target.value)}
+        <Suggest value={category} onChange={setCategory} options={cats}
           autoFocus placeholder="начните вводить или выберите" />
       </label>
-      <CatList cats={cats} />
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
         {/* Пустое поле стирало категорию у всех выбранных одним нажатием */}

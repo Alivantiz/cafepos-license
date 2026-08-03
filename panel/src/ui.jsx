@@ -48,6 +48,37 @@ export function CopyBtn({ text, title = 'Скопировать' }) {
   )
 }
 
+/**
+ * Поле с подсказкой из существующих значений. Своё, а не <datalist>: тот
+ * рисует сам браузер — белый системный список поверх тёмной панели, неотличимый
+ * от автозаполнения Chrome, и стилизовать его нечем.
+ */
+export function Suggest({ value, onChange, options, placeholder, autoFocus }) {
+  const [open, setOpen] = useState(false)
+  const term = String(value || '').trim().toLowerCase()
+  // Пока не начали печатать — показываем всё, это и есть «выпадающий список».
+  const list = (options || []).filter(o => !term || o.toLowerCase().includes(term)).slice(0, 50)
+  return (
+    <div className="suggest">
+      <input value={value} placeholder={placeholder} autoFocus={autoFocus}
+        onChange={e => { onChange(e.target.value); setOpen(true) }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={e => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false) } }} />
+      {open && list.length > 0 && (
+        // onMouseDown с preventDefault: без него поле теряет фокус раньше, чем
+        // проходит клик, и выбрать мышью ничего нельзя.
+        <div className="suggest-list" onMouseDown={e => e.preventDefault()}>
+          {list.map(o => (
+            <button key={o} type="button" className="suggest-item"
+              onClick={() => { onChange(o); setOpen(false) }}>{o}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Tag({ tone, children }) {
   return <span className={'tag' + (tone ? ' ' + tone : '')}><i className="dot" />{children}</span>
 }
