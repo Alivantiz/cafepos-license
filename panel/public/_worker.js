@@ -587,9 +587,15 @@ export default {
           // фотографиями накладных в base64: мегабайты трафика ради одной
           // цифры. Сами фото нужны только на открытой вкладке.
           const { countOnly } = await request.json().catch(() => ({}))
+          // Двенадцать, а не сто. Каждая строка тащит ФОТО накладной в base64 —
+          // сотня таких строк это десятки мегабайт, которые воркер ещё и
+          // разбирает и собирает заново. На лимите памяти изолят просто
+          // убивают, и браузер показывает «Failed to fetch» — причём не
+          // обязательно на «Накладных»: вместе с изолятом умирают и запросы
+          // соседних вкладок, отправленные в тот же момент.
           const qs = countOnly
             ? 'select=id&reviewed_at=is.null&limit=1'
-            : 'reviewed_at=is.null&order=created_at.desc&limit=100'
+            : 'reviewed_at=is.null&order=created_at.desc&limit=12'
           const r = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })

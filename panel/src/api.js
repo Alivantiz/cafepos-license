@@ -7,11 +7,19 @@ export const setPw = (v) => localStorage.setItem('panel_pw', v)
 export const logout = () => { localStorage.removeItem('panel_pw'); location.reload() }
 
 export async function api(path, body, opts) {
-  const r = await fetch('/api/' + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-panel-key': pw() },
-    body: JSON.stringify(body || {}),
-  })
+  let r
+  try {
+    r = await fetch('/api/' + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-panel-key': pw() },
+      body: JSON.stringify(body || {}),
+    })
+  } catch {
+    // Браузерное «Failed to fetch» не говорит владельцу ничего и выглядит как
+    // поломка вкладки. На деле это оборванное соединение: связь пропала или
+    // сервер не смог ответить на этот запрос.
+    throw new Error('Сервер не ответил — проверьте связь и обновите страницу')
+  }
   const d = await r.json().catch(() => ({}))
   // 401 — пароль сменили или он неверен: выкидываем на экран входа сразу,
   // иначе панель молча показывала бы пустые списки.
