@@ -185,6 +185,22 @@ async function testServerRoutes() {
     assert.ok(!d.error.includes('PGRST204'), 'сырой код Supabase наружу не уходит')
   }
 
+  // Бейдж в меню спрашивает только число. Если сюда вернётся полный список,
+  // каждое открытие панели снова начнёт тянуть фотографии накладных.
+  {
+    const real = global.fetch
+    let asked = ''
+    global.fetch = async (url) => {
+      asked = String(url)
+      return new Response('[]', { status: 200, headers: { 'content-range': '0-0/7' } })
+    }
+    const r = await authed('/api/invoices/pending', { countOnly: true })
+    global.fetch = real
+    assert.strictEqual((await r.json()).total, 7, 'счётчик отдаётся')
+    assert.ok(asked.includes('select=id'), 'фото не запрашиваются: ' + asked)
+    assert.ok(asked.includes('limit=1'), 'строки не тянутся: ' + asked)
+  }
+
   // /api/cloud опрашивает сами облачные функции — подменяем fetch, чтобы тест
   // не ходил в сеть и чтобы проверить РАЗБОР всех вариантов ответа.
   const realFetch = global.fetch

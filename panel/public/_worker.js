@@ -453,7 +453,13 @@ export default {
         }
 
         if (pathname === '/api/catalog/pending') {
-          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?status=eq.pending&order=updated_at.desc&limit=200`, {
+          // Та же экономия, что у накладных: бейджу нужно число, а не двести
+          // карточек товаров на каждое открытие панели.
+          const { countOnly } = await request.json().catch(() => ({}))
+          const qs = countOnly
+            ? 'select=barcode&status=eq.pending&limit=1'
+            : 'status=eq.pending&order=updated_at.desc&limit=200'
+          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
@@ -576,7 +582,15 @@ export default {
         }
 
         if (pathname === '/api/invoices/pending') {
-          const r = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?reviewed_at=is.null&order=created_at.desc&limit=100`, {
+          // countOnly — для красной точки в меню. Без него бейдж на КАЖДОМ
+          // открытии панели тянул до сотни распознаваний целиком, вместе с
+          // фотографиями накладных в base64: мегабайты трафика ради одной
+          // цифры. Сами фото нужны только на открытой вкладке.
+          const { countOnly } = await request.json().catch(() => ({}))
+          const qs = countOnly
+            ? 'select=id&reviewed_at=is.null&limit=1'
+            : 'reviewed_at=is.null&order=created_at.desc&limit=100'
+          const r = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)

@@ -122,9 +122,12 @@ function Panel() {
   const reloadBadges = useCallback(() => {
     api('requests/list').then(d => setBadges(b => ({ ...b, requests: pendingCount(d.rows) }))).catch(() => {})
     api('cloud').then(d => setBadges(b => ({ ...b, cloud: brokenCount(d.rows) }))).catch(() => {})
-    api('catalog/pending').then(d =>
+    // countOnly: бейджу нужно только число. Без него открытие панели тянуло
+    // сотню распознанных накладных ВМЕСТЕ С ФОТО в base64 — мегабайты ради
+    // красной точки в меню.
+    api('catalog/pending', { countOnly: true }).then(d =>
       setBadges(b => ({ ...b, catalog: d.total ?? (d.rows || []).length }))).catch(() => {})
-    api('invoices/pending').then(d =>
+    api('invoices/pending', { countOnly: true }).then(d =>
       setBadges(b => ({ ...b, invoices: d.total ?? (d.rows || []).length }))).catch(() => {})
   }, [])
 
