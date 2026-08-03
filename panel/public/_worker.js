@@ -27,15 +27,53 @@ const sb2 = (env) => ({
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
+// YYYY-MM-DD со сдвигом в днях. Панель и касса считают дни по-разному (у кассы
+// местное время заведения), поэтому окна тут — грубые, «за последние N дней»,
+// а не бухгалтерские периоды.
+export const isoDay = (shift = 0) => new Date(Date.now() + shift * 86400000).toISOString().slice(0, 10)
+
+// Свёртки по хвосту дней: выручка и чеки за 7 и 30 дней + средний чек.
+// Средний чек считаем от ТРИДЦАТИ дней: недельный слишком прыгает на маленьких
+// заведениях, где пара банкетов переворачивает картину.
+export function window_(days) {
+  const sum = (fromDay) => days.reduce((a, d) => d.day >= fromDay
+    ? { revenue: a.revenue + d.revenue, receipts: a.receipts + d.receipts } : a,
+    { revenue: 0, receipts: 0 })
+  const w7 = sum(isoDay(-7)), w30 = sum(isoDay(-30)), prev = (() => {
+    const from = isoDay(-14), to = isoDay(-7)
+    return days.reduce((a, d) => d.day >= from && d.day < to ? a + d.revenue : a, 0)
+  })()
+  return {
+    revenue7: w7.revenue, receipts7: w7.receipts,
+    revenue30: w30.revenue, receipts30: w30.receipts,
+    prevRevenue7: prev,
+    avgCheck: w30.receipts ? Math.round(w30.revenue / w30.receipts) : 0,
+  }
+}
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url)
 
-    if (pathname === '/' || pathname === '/index.html') {
+    // Старая страница целиком — временная подстраховка на время переезда на
+    // React. Новый интерфейс пока не покрывает каталог, накладные, заявки и
+    // облако; пока не покроет, здесь лежит рабочая панель со всем этим.
+    // УДАЛИТЬ вместе с константой PAGE, как только перенос закончен.
+    if (pathname === '/legacy') {
       return new Response(PAGE, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
     }
 
-    if (!pathname.startsWith('/api/')) return new Response('Not found', { status: 404 })
+    // Всё, что не API, — собранное приложение (Vite → dist). В «Advanced mode»
+    // Pages статику сам не отдаёт: воркер перехватывает ВСЕ запросы, поэтому
+    // ассеты берём явно через env.ASSETS.
+    if (!pathname.startsWith('/api/')) {
+      if (!env.ASSETS) return new Response('Сборка не найдена: проверьте build command и output directory', { status: 500 })
+      const res = await env.ASSETS.fetch(request)
+      // Одностраничное приложение: неизвестный путь — это не 404, а маршрут
+      // внутри него, отдаём index.html.
+      if (res.status === 404) return env.ASSETS.fetch(new URL('/', request.url))
+      return res
+    }
 
     // Автопинг (GitHub Actions, раз в день): лёгкий запрос в оба Supabase-проекта,
     // чтобы бесплатные проекты не заснули после 7 дней без активности. Доступен
@@ -77,6 +115,54 @@ export default {
         const r = await fetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers })
         if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
         return json({ rows: await r.json() })
+      }
+
+      // --- Клиенты: лицензии/триалы, склеенные с дневными итогами ------------
+      // Раньше панель показывала строки licenses и всё: ни выручки, ни среднего
+      // чека, ни внятного «когда последний раз работал» (last_seen_at пишется
+      // раз в сутки проверкой лицензии). Итоги приходят по тому же каналу
+      // лицензии в usage_daily/usage_state — здесь они склеиваются с клиентом.
+      //
+      // Склейка в воркере, а не в SQL: таблицы в РАЗНЫХ ключах (лицензия — по
+      // id, триал — по machine_id), клиентов десятки, дней сотни. Джойн на
+      // такой объём в памяти дешевле, чем вьюха, которую потом надо помнить.
+      if (pathname === '/api/clients') {
+        const since = isoDay(-90)
+        const [licR, trialR, dailyR, stateR] = await Promise.all([
+          fetch(`${db.url}/rest/v1/licenses?select=id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at&order=created_at.desc`, { headers: db.headers }),
+          fetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers }),
+          fetch(`${db.url}/rest/v1/usage_daily?select=subject,day,revenue,receipts&day=gte.${since}&order=day.asc&limit=20000`, { headers: db.headers }),
+          fetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers }),
+        ])
+        for (const [name, r] of [['licenses', licR], ['trials', trialR], ['usage_daily', dailyR], ['usage_state', stateR]]) {
+          // usage_* появились позже остальных: если SQL ещё не выполнен, таблицы
+          // нет — это не повод отдать 502 и оставить владельца без панели вообще.
+          if (!r.ok && (name === 'usage_daily' || name === 'usage_state')) continue
+          if (!r.ok) return json({ error: `Supabase (${name}): ${r.status} ${await r.text()}` }, 502)
+        }
+        const daily = dailyR.ok ? await dailyR.json() : []
+        const state = stateR.ok ? await stateR.json() : []
+        const byDay = new Map(), byState = new Map()
+        for (const d of daily) {
+          if (!byDay.has(d.subject)) byDay.set(d.subject, [])
+          byDay.get(d.subject).push({ day: d.day, revenue: Number(d.revenue) || 0, receipts: Number(d.receipts) || 0 })
+        }
+        for (const s of state) byState.set(s.subject, s)
+
+        const decorate = (row, subject, kind) => {
+          const days = byDay.get(subject) || []
+          const st = byState.get(subject) || null
+          return {
+            ...row, subject, kind, days, telemetry: days.length > 0 || !!st,
+            registers: st?.registers ?? null,
+            locations: st?.locations ?? null,
+            last_sale_at: st?.last_sale_at ?? null,
+            ...window_(days),
+          }
+        }
+        const licenses = (await licR.json()).map(r => decorate(r, r.id, 'license'))
+        const trials = (await trialR.json()).map(r => decorate(r, r.machine_id, 'trial'))
+        return json({ licenses, trials, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
       }
 
       if (pathname === '/api/renew') {
