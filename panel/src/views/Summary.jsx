@@ -1,13 +1,16 @@
 // Главная — не список, а ответ на вопрос «что сегодня требует внимания».
 // Прежняя панель открывалась таблицей лицензий, отсортированной по дате
 // создания: чтобы понять, кому звонить, приходилось читать её глазами целиком.
-import { daysLeft, daysAgo, money } from '../api'
-import { Tile, Chart } from '../ui'
+import { daysLeft, daysAgo, money, fmtDate } from '../api'
+import { Tile, Chart, Tag } from '../ui'
 
 const isLive = (c) => !c.revoked && (c.expires_at === null || daysLeft(c.expires_at) > 0)
 
 export default function Summary({ data, onOpen, onGoto }) {
-  const licenses = data.licenses || []
+  // Скрытые не участвуют в сводке ВООБЩЕ: тестовые кассы владельца, где чеки
+  // пробиваются по сто тенге, тянули вниз средний чек всего парка и искажали
+  // оборот — цифрам нельзя было верить.
+  const licenses = (data.licenses || []).filter(c => !c.hidden)
   const trials = data.trials || []
   const live = licenses.filter(isLive)
 
@@ -57,6 +60,8 @@ export default function Summary({ data, onOpen, onGoto }) {
         <Chart days={series} />
       </div>
 
+      <Upcoming licenses={licenses} onOpen={onOpen} />
+
       <Attention title="Требует внимания сегодня" onGoto={onGoto} items={[
         ...expired.map(c => ({ c, why: 'лицензия истекла', tone: 'bad' })),
         ...expiring.map(c => ({ c, why: `истекает через ${daysLeft(c.expires_at)} дн`, tone: 'warn' })),
@@ -64,6 +69,44 @@ export default function Summary({ data, onOpen, onGoto }) {
         ...hotTrials.map(c => ({ c, why: `на пробе, ${c.receipts7} чеков за неделю`, tone: 'ok' })),
       ]} onOpen={onOpen} />
     </>
+  )
+}
+
+// Кто платит следующим и когда. Оплата подписки — это и есть продление, так
+// что дата окончания лицензии и есть дата платежа; календарь просто ставит их
+// по порядку, чтобы не выискивать глазами в общем списке.
+//
+// Суммы тут нет и не будет, пока цена не хранится: в licenses её нет вовсе.
+function Upcoming({ licenses, onOpen }) {
+  const rows = licenses
+    .filter(c => !c.revoked && c.expires_at)
+    .map(c => ({ c, left: daysLeft(c.expires_at) }))
+    .filter(x => x.left <= 45)
+    .sort((a, b) => a.left - b.left)
+    .slice(0, 10)
+
+  if (!rows.length) return null
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <b>Ближайшие платежи</b>
+        <span className="muted2">оплата = продление подписки</span>
+      </div>
+      {rows.map(({ c, left }) => (
+        <div key={c.subject} className="row"
+          style={{ padding: '9px 0', borderTop: '1px solid var(--line)' }}>
+          <button className="btn ghost sm" style={{ fontWeight: 550 }} onClick={() => onOpen(c)}>
+            {c.customer}
+          </button>
+          {c.contact && <a className="muted2" href={`tel:${String(c.contact).replace(/[^\d+]/g, '')}`}>{c.contact}</a>}
+          <span className="spacer" />
+          <span className="muted2">{fmtDate(c.expires_at)}</span>
+          <Tag tone={left <= 0 ? 'bad' : left <= 7 ? 'warn' : null}>
+            {left <= 0 ? `просрочено ${-left} дн` : left === 0 ? 'сегодня' : `через ${left} дн`}
+          </Tag>
+        </div>
+      ))}
+    </div>
   )
 }
 

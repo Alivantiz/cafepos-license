@@ -105,12 +105,19 @@ export default {
       // такой объём в памяти дешевле, чем вьюха, которую потом надо помнить.
       if (pathname === '/api/clients') {
         const since = isoDay(-90)
-        const [licR, trialR, dailyR, stateR] = await Promise.all([
-          fetch(`${db.url}/rest/v1/licenses?select=id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at&order=created_at.desc`, { headers: db.headers }),
+        const LIC_BASE = 'id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at'
+        const licenses_ = (cols) => fetch(
+          `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
+        let [licR, trialR, dailyR, stateR] = await Promise.all([
+          licenses_(LIC_BASE + ',contact,hidden'),
           fetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers }),
           fetch(`${db.url}/rest/v1/usage_daily?select=subject,day,revenue,receipts&day=gte.${since}&order=day.asc&limit=20000`, { headers: db.headers }),
           fetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers }),
         ])
+        // contact/hidden добавлены позже отдельными ALTER. Пока их не выполнили,
+        // запрос с этими колонками падает целиком — и панель осталась бы вообще
+        // без клиентов. Повторяем без них: лучше без телефона, чем без списка.
+        if (!licR.ok) licR = await licenses_(LIC_BASE)
         for (const [name, r] of [['licenses', licR], ['trials', trialR], ['usage_daily', dailyR], ['usage_state', stateR]]) {
           // usage_* появились позже остальных: если SQL ещё не выполнен, таблицы
           // нет — это не повод отдать 502 и оставить владельца без панели вообще.
@@ -171,7 +178,7 @@ export default {
       if (pathname === '/api/issue') {
         // Новая лицензия под активацию по коду: строка в таблице, id = код
         // активации (его вводят на кассе; .lic подписывает функция activate).
-        const { customer, days, terminals, notes } = await request.json()
+        const { customer, days, terminals, notes, contact } = await request.json()
         if (!customer || !String(customer).trim()) return json({ error: 'Укажите клиента' }, 400)
         const n = Number(days)
         const body = {
@@ -180,6 +187,10 @@ export default {
           terminals: Math.max(1, Number(terminals) || 1),
           notes: (notes || '').trim() || null
         }
+        // Телефон — только если колонка уже есть: на проекте без ALTER лишнее
+        // поле уронило бы весь выпуск лицензии.
+        const phone = (contact || '').trim()
+        if (phone) body.contact = phone
         const ins = await fetch(`${db.url}/rest/v1/licenses`, {
           method: 'POST',
           headers: { ...db.headers, Prefer: 'return=representation' },
@@ -202,15 +213,43 @@ export default {
         return json({ ok: true })
       }
 
-      if (pathname === '/api/notes') {
-        const { id, notes } = await request.json()
+      // Правка карточки клиента. Раньше правились только заметки: имя задавалось
+      // один раз при выпуске и оставалось навсегда, телефона не было вовсе.
+      //
+      // Белый список полей, а не «что прислали, то и пишем»: срок, привязка к
+      // машине и revoked меняются своими каналами со своей логикой (продление
+      // считает от текущей даты, привязку ставит /activate). Попади они сюда —
+      // и лицензию можно было бы «продлить» мимо всех проверок.
+      if (pathname === '/api/edit') {
+        const body = await request.json()
+        const id = body?.id
         if (!id) return json({ error: 'Нужен id' }, 400)
-        const patch = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+
+        const patch = {}
+        if ('customer' in body) {
+          const v = String(body.customer ?? '').trim()
+          if (!v) return json({ error: 'Имя клиента не может быть пустым' }, 400)
+          patch.customer = v
+        }
+        if ('contact' in body) patch.contact = String(body.contact ?? '').trim() || null
+        if ('notes' in body) patch.notes = String(body.notes ?? '').trim() || null
+        if ('hidden' in body) {
+          if (typeof body.hidden !== 'boolean') return json({ error: 'hidden — true или false' }, 400)
+          patch.hidden = body.hidden
+        }
+        if ('terminals' in body) {
+          const n = Number(body.terminals)
+          if (!Number.isFinite(n) || n < 1) return json({ error: 'Терминалов — целое число от 1' }, 400)
+          patch.terminals = Math.floor(n)
+        }
+        if (!Object.keys(patch).length) return json({ error: 'Нечего менять' }, 400)
+
+        const r = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { ...db.headers, Prefer: 'return=minimal' },
-          body: JSON.stringify({ notes: (notes || '').trim() || null })
+          body: JSON.stringify(patch)
         })
-        if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
         return json({ ok: true })
       }
 

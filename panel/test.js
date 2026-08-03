@@ -100,6 +100,28 @@ async function testServerRoutes() {
   const rejNoMid = await authed('/api/requests/reject', {})
   assert.strictEqual(rejNoMid.status, 400, 'reject without machine_id should 400')
 
+  // Правка карточки. Все проверки обязаны отсекать запрос ДО обращения к базе,
+  // иначе тест полез бы в сеть.
+  const editNoId = await authed('/api/edit', { customer: 'Кафе' })
+  assert.strictEqual(editNoId.status, 400, 'правка без id — отказ')
+
+  const editEmptyName = await authed('/api/edit', { id: 'x', customer: '   ' })
+  assert.strictEqual(editEmptyName.status, 400, 'пустое имя клиента — отказ')
+
+  const editNothing = await authed('/api/edit', { id: 'x' })
+  assert.strictEqual(editNothing.status, 400, 'нечего менять — отказ')
+
+  const editBadTerm = await authed('/api/edit', { id: 'x', terminals: 0 })
+  assert.strictEqual(editBadTerm.status, 400, 'ноль терминалов — отказ')
+
+  const editBadHidden = await authed('/api/edit', { id: 'x', hidden: 'да' })
+  assert.strictEqual(editBadHidden.status, 400, 'hidden строкой — отказ')
+
+  // Белый список: срок и привязку через эту ручку менять нельзя — у них свои
+  // каналы со своей логикой. Одни только запрещённые поля = «нечего менять».
+  const editForbidden = await authed('/api/edit', { id: 'x', expires_at: '2099-01-01', machine_id: 'AAA', revoked: true })
+  assert.strictEqual(editForbidden.status, 400, 'поля вне белого списка не проходят')
+
   // /api/cloud опрашивает сами облачные функции — подменяем fetch, чтобы тест
   // не ходил в сеть и чтобы проверить РАЗБОР всех вариантов ответа.
   const realFetch = global.fetch

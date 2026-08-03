@@ -7,6 +7,7 @@ import { Tile, Chart, Tag, Modal, toast } from '../ui'
 
 export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
   const [renew, setRenew] = useState(false)
+  const [edit, setEdit] = useState(false)
   const [notes, setNotes] = useState(c.notes || '')
   const [busy, setBusy] = useState(false)
   const days = (c.days || []).slice(-30)
@@ -14,7 +15,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
 
   const save = async () => {
     setBusy(true)
-    try { await api('notes', { id: c.id, notes }); toast.ok('Заметка сохранена'); onChanged() }
+    try { await api('edit', { id: c.id, notes }); toast.ok('Заметка сохранена'); onChanged() }
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
   const setRevoked = async (flag) => {
@@ -22,6 +23,19 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
     try {
       await api('revoke', { id: c.id, revoked: flag })
       toast.ok(flag ? 'Лицензия отозвана' : 'Лицензия возвращена'); onChanged()
+    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+  // Скрытая лицензия продолжает работать у клиента — она лишь уходит из списка
+  // и из подсчётов сводки. Для тестовых касс это и нужно: они портили средний
+  // чек и оборот парка.
+  const setHidden = async (flag) => {
+    if (flag && !confirm(
+      `Скрыть «${c.customer}» из списка? Лицензия продолжит работать, но перестанет учитываться в сводке.`
+    )) return
+    setBusy(true)
+    try {
+      await api('edit', { id: c.id, hidden: flag })
+      toast.ok(flag ? 'Скрыта из списка и сводки' : 'Возвращена в список'); onChanged()
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
@@ -37,6 +51,11 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
           : c.revoked ? <Tag tone="bad">отозвана</Tag>
             : left !== null && left <= 0 ? <Tag tone="bad">истекла</Tag>
               : <Tag tone="ok">{left === null ? 'бессрочная' : `до ${fmtDate(c.expires_at)}`}</Tag>}
+        {c.hidden && <Tag>скрыта из сводки</Tag>}
+        {/* Телефон рядом с именем: сводка говорит «эта касса молчит, позвони» —
+            значит звонить надо отсюда, а не искать контакт в заметке. */}
+        {c.contact && <a className="tag" href={`tel:${String(c.contact).replace(/[^\d+]/g, '')}`}>{c.contact}</a>}
+        {!trial && <button className="btn ghost sm spacer" onClick={() => setEdit(true)}>Изменить</button>}
       </div>
 
       {!c.telemetry && (
@@ -93,6 +112,9 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
               <button className="btn" disabled={busy} onClick={() => setRevoked(!c.revoked)}>
                 {c.revoked ? 'Вернуть доступ' : 'Отозвать'}
               </button>
+              <button className="btn ghost" disabled={busy} onClick={() => setHidden(!c.hidden)}>
+                {c.hidden ? 'Вернуть в список' : 'Скрыть'}
+              </button>
             </div>
           )}
         </div>
@@ -112,7 +134,43 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
 
       {renew && <RenewModal c={c} kaspiPhone={kaspiPhone}
         onClose={() => setRenew(false)} onDone={() => { setRenew(false); onChanged() }} />}
+      {edit && <EditModal c={c} onClose={() => setEdit(false)}
+        onDone={() => { setEdit(false); onChanged() }} />}
     </>
+  )
+}
+
+// Имя раньше задавалось один раз при выпуске и оставалось навсегда: опечатался —
+// живи с ней. Телефона не было вовсе, число терминалов тоже не менялось.
+function EditModal({ c, onClose, onDone }) {
+  const [f, setF] = useState({
+    customer: c.customer || '', contact: c.contact || '', terminals: c.terminals ?? 1,
+  })
+  const [busy, setBusy] = useState(false)
+  const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
+
+  const go = async () => {
+    setBusy(true)
+    try {
+      await api('edit', {
+        id: c.id, customer: f.customer, contact: f.contact, terminals: Number(f.terminals),
+      })
+      toast.ok('Сохранено'); onDone()
+    } catch (e) { toast.err(e.message); setBusy(false) }
+  }
+
+  return (
+    <Modal title="Изменить клиента" onClose={onClose}>
+      <label>Название<input value={f.customer} onChange={set('customer')} autoFocus /></label>
+      <label>Телефон<input value={f.contact} onChange={set('contact')} placeholder="+7…" inputMode="tel" /></label>
+      <label>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
+      <div className="row">
+        <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
+        <button className="btn pri" disabled={busy || !f.customer.trim()} onClick={go}>
+          {busy ? 'Секунду…' : 'Сохранить'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 

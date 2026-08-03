@@ -21,6 +21,7 @@ const FILTERS = [
   { id: 'trial', label: 'Проба' },
   { id: 'silent', label: 'Молчат' },
   { id: 'expiring', label: 'Истекают' },
+  { id: 'hidden', label: 'Скрытые' },
 ]
 
 export default function Clients({ data, onOpen, onIssue }) {
@@ -35,9 +36,12 @@ export default function Clients({ data, onOpen, onIssue }) {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase()
     let list = all.filter(c => {
-      if (needle && !((c.customer || '') + ' ' + (c.machine_id || '') + ' ' + c.subject)
+      if (needle && !((c.customer || '') + ' ' + (c.contact || '') + ' ' + (c.machine_id || '') + ' ' + c.subject)
         .toLowerCase().includes(needle)) return false
       const d = daysLeft(c.expires_at)
+      // Скрытые видны только в своём фильтре — за этим их и скрывали.
+      if (filter === 'hidden') return !!c.hidden
+      if (c.hidden) return false
       if (filter === 'live') return c.kind === 'license' && !c.revoked && (d === null || d > 0)
       if (filter === 'trial') return c.kind === 'trial'
       if (filter === 'silent') return c.telemetry && (daysAgo(c.last_sale_at) ?? 99) >= 3
@@ -109,7 +113,12 @@ function Row({ c, onOpen }) {
     <tr onClick={() => onOpen(c)}>
       <td>
         <div className="name">{c.customer || c.machine_id || c.subject}</div>
-        <div className="muted2">{c.kind === 'trial' ? 'пробная установка' : (c.machine_id ? 'активирована' : 'не активирована')}</div>
+        <div className="muted2">
+          {/* Телефон прямо в строке: сводка зовёт позвонить — значит номер
+              должен быть виден, не спрятан на два клика вглубь. */}
+          {c.contact ? c.contact + ' · ' : ''}
+          {c.kind === 'trial' ? 'пробная установка' : (c.machine_id ? 'активирована' : 'не активирована')}
+        </div>
       </td>
       <td><Tag tone={s.tone}>{s.text}</Tag></td>
       {/* Телеметрия приходит только с версий, где она есть. Пустой график —

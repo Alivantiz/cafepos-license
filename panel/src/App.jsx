@@ -151,7 +151,7 @@ function Panel() {
 }
 
 function IssueModal({ onClose, onDone }) {
-  const [f, setF] = useState({ customer: '', days: 30, terminals: 1, notes: '' })
+  const [f, setF] = useState({ customer: '', contact: '', days: 30, terminals: 1, notes: '' })
   const [busy, setBusy] = useState(false)
   const [code, setCode] = useState('')
   const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
@@ -180,6 +180,9 @@ function IssueModal({ onClose, onDone }) {
       ) : (
         <>
           <label>Клиент<input value={f.customer} onChange={set('customer')} autoFocus /></label>
+          {/* Телефон спрашиваем сразу: потом, когда касса замолчит и надо будет
+              звонить, искать его будет негде. */}
+          <label>Телефон<input value={f.contact} onChange={set('contact')} placeholder="+7…" inputMode="tel" /></label>
           <div className="row">
             <label style={{ flex: 1 }}>Дней<input type="number" min="1" value={f.days} onChange={set('days')} /></label>
             <label style={{ flex: 1 }}>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
