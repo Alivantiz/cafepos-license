@@ -24,6 +24,13 @@ const sb2 = (env) => ({
   }
 })
 
+// Любой запрос в Supabase — с ограничением по времени. Без него уснувший
+// проект (бесплатный тариф засыпает) или тяжёлый запрос оставляли соединение
+// висеть, и в браузере вкладка вечно показывала «Pending»: ни данных, ни
+// ошибки, ни причины. Пятнадцать секунд — заведомо больше нормального ответа.
+const SB_TIMEOUT_MS = 15_000
+const sbFetch = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(SB_TIMEOUT_MS) })
+
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -87,7 +94,7 @@ export default {
       const ping = async (p) => {
         if (!p.url) return false
         try {
-          const r = await fetch(`${p.url}/rest/v1/`, { headers: p.headers })
+          const r = await sbFetch(`${p.url}/rest/v1/`, { headers: p.headers })
           return r.ok
         } catch { return false }
       }
@@ -127,17 +134,17 @@ export default {
         // Колонки, добавленные ALTER-ами позже базовой схемы: на проекте, где
         // SQL ещё не выполнили, запрос с ними падает целиком.
         const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until']
-        const licenses_ = (cols) => fetch(
+        const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
           licenses_(LIC_BASE + ',' + LIC_OPT.join(',')),
-          fetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers }),
-          fetch(`${db.url}/rest/v1/usage_daily?select=subject,day,revenue,receipts&day=gte.${since}&order=day.asc&limit=20000`, { headers: db.headers }),
-          fetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/usage_daily?select=subject,day,revenue,receipts&day=gte.${since}&order=day.asc&limit=20000`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers }),
           // История продлений здесь же, а не отдельным запросом с карточки:
           // строк мало (одно продление на клиента в месяц), зато сводка может
           // сложить из них «получено за 30 дней» — свои деньги, а не чужие.
-          fetch(`${db.url}/rest/v1/license_renewals?select=license_id,days,amount,to_expires,created_at&order=created_at.desc&limit=500`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/license_renewals?select=license_id,days,amount,to_expires,created_at&order=created_at.desc&limit=500`, { headers: db.headers }),
         ])
         // Пока ALTER-ы не выполнили, запрос с этими колонками падает целиком — и
         // панель осталась бы вообще без клиентов. Отступаем по одной колонке с
@@ -191,7 +198,7 @@ export default {
         const n = Number(days)
         if (!id || !Number.isFinite(n) || n <= 0) return json({ error: 'Нужны id и положительное число дней' }, 400)
 
-        const getRes = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}&select=customer,expires_at`, { headers: db.headers })
+        const getRes = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}&select=customer,expires_at`, { headers: db.headers })
         if (!getRes.ok) return json({ error: `Supabase: ${getRes.status}` }, 502)
         const rows = await getRes.json()
         if (!rows.length) return json({ error: 'Лицензия не найдена' }, 404)
@@ -203,7 +210,7 @@ export default {
         const base = cur && cur > now ? cur : now
         const newExpires = new Date(base.getTime() + n * 86400000).toISOString()
 
-        const patch = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+        const patch = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify({ expires_at: newExpires, revoked: false })
@@ -218,7 +225,7 @@ export default {
         // Запись — не критичная часть продления: если таблицы ещё нет, подписка
         // всё равно продлена, и валить операцию из-за журнала нельзя.
         const paid = Number(amount)
-        await fetch(`${db.url}/rest/v1/license_renewals`, {
+        await sbFetch(`${db.url}/rest/v1/license_renewals`, {
           method: 'POST',
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify({
@@ -254,13 +261,13 @@ export default {
         // заявки: вторая живая лицензия на ту же машину сломала бы claim.
         const mid = String(machine_id || '').trim().toUpperCase()
         if (mid) {
-          const dup = await fetch(`${db.url}/rest/v1/licenses?machine_id=eq.${encodeURIComponent(mid)}&select=id,revoked`, { headers: db.headers })
+          const dup = await sbFetch(`${db.url}/rest/v1/licenses?machine_id=eq.${encodeURIComponent(mid)}&select=id,revoked`, { headers: db.headers })
           if (!dup.ok) return json({ error: `Supabase: ${dup.status} ${await dup.text()}` }, 502)
           const live = (await dup.json()).filter(l => l.revoked !== true)
           if (live.length) return json({ error: `На этот компьютер уже выпущена лицензия ${live[0].id}` }, 409)
           body.machine_id = mid
         }
-        const ins = await fetch(`${db.url}/rest/v1/licenses`, {
+        const ins = await sbFetch(`${db.url}/rest/v1/licenses`, {
           method: 'POST',
           headers: { ...db.headers, Prefer: 'return=representation' },
           body: JSON.stringify(body)
@@ -273,7 +280,7 @@ export default {
       if (pathname === '/api/revoke') {
         const { id, revoked } = await request.json()
         if (!id || typeof revoked !== 'boolean') return json({ error: 'Нужны id и revoked (true/false)' }, 400)
-        const patch = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+        const patch = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify({ revoked })
@@ -334,7 +341,7 @@ export default {
         }
         if (!Object.keys(patch).length) return json({ error: 'Нечего менять' }, 400)
 
-        const r = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify(patch)
@@ -362,7 +369,7 @@ export default {
         const probe = async (f) => {
           if (!f.base) return { name: f.name, what: f.what, ok: false, verdict: 'не задан адрес проекта' }
           try {
-            const r = await fetch(`${f.base}/functions/v1/${f.name}`, { method: 'GET' })
+            const r = await sbFetch(`${f.base}/functions/v1/${f.name}`, { method: 'GET' })
             const text = await r.text()
             let d = {}
             try { d = JSON.parse(text) } catch { /* не JSON — значит код старый */ }
@@ -391,7 +398,7 @@ export default {
       // чего заявки и делались.
       if (pathname.startsWith('/api/requests/')) {
         if (pathname === '/api/requests/list') {
-          const r = await fetch(`${db.url}/rest/v1/activation_requests?select=machine_id,shop,contact,business_type,app_version,status,license_id,created_at,updated_at,decided_at&order=created_at.desc&limit=200`, { headers: db.headers })
+          const r = await sbFetch(`${db.url}/rest/v1/activation_requests?select=machine_id,shop,contact,business_type,app_version,status,license_id,created_at,updated_at,decided_at&order=created_at.desc&limit=200`, { headers: db.headers })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           return json({ rows: await r.json() })
         }
@@ -409,13 +416,13 @@ export default {
 
           // Повторное одобрение завело бы вторую лицензию на ту же машину:
           // claim берёт самую свежую, а старая осталась бы висеть в списке.
-          const dup = await fetch(`${db.url}/rest/v1/licenses?machine_id=eq.${encodeURIComponent(mid)}&select=id,revoked`, { headers: db.headers })
+          const dup = await sbFetch(`${db.url}/rest/v1/licenses?machine_id=eq.${encodeURIComponent(mid)}&select=id,revoked`, { headers: db.headers })
           if (!dup.ok) return json({ error: `Supabase: ${dup.status} ${await dup.text()}` }, 502)
           const live = (await dup.json()).filter(l => l.revoked !== true)
           if (live.length) return json({ error: `На этот компьютер уже выпущена лицензия ${live[0].id}` }, 409)
 
           const n = Number(days)
-          const ins = await fetch(`${db.url}/rest/v1/licenses`, {
+          const ins = await sbFetch(`${db.url}/rest/v1/licenses`, {
             method: 'POST',
             headers: { ...db.headers, Prefer: 'return=representation' },
             body: JSON.stringify({
@@ -435,7 +442,7 @@ export default {
           const { machine_id } = await request.json()
           const mid = String(machine_id || '').trim().toUpperCase()
           if (!mid) return json({ error: 'Нужен код компьютера' }, 400)
-          const patch = await fetch(`${db.url}/rest/v1/activation_requests?machine_id=eq.${encodeURIComponent(mid)}`, {
+          const patch = await sbFetch(`${db.url}/rest/v1/activation_requests?machine_id=eq.${encodeURIComponent(mid)}`, {
             method: 'PATCH',
             headers: { ...db.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ status: 'rejected', decided_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -459,7 +466,7 @@ export default {
           const qs = countOnly
             ? 'select=barcode&status=eq.pending&limit=1'
             : 'status=eq.pending&order=updated_at.desc&limit=200'
-          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, {
+          const r = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
@@ -476,7 +483,12 @@ export default {
           // и одинаковые штрихкоды идут подряд, значит дубли схлопываются в пределах страницы.
           let qs = `status=eq.approved&order=barcode.asc&limit=${per}&offset=${off}`
           if (term) qs += `&or=(barcode.ilike.*${encodeURIComponent(term)}*,name.ilike.*${encodeURIComponent(term)}*)`
-          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, { headers: { ...db2.headers, Prefer: 'count=exact' } })
+          // count=estimated, а не exact: точный подсчёт по справочнику из сотен
+          // тысяч строк — полный проход по таблице на КАЖДЫЙ ввод буквы в
+          // поиске. Именно так запрос и повисал в «Pending». Оценки хватает:
+          // число рядом со списком отвечает на «много или мало», а не на
+          // «сколько ровно».
+          const r = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, { headers: { ...db2.headers, Prefer: 'count=estimated' } })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           const total = Number((r.headers.get('content-range') || '').split('/')[1])
           const all = await r.json()
@@ -490,7 +502,7 @@ export default {
         if (pathname === '/api/catalog/approve') {
           const { venue_id, barcode } = await request.json()
           if (!venue_id || !barcode) return json({ error: 'Нужны venue_id и barcode' }, 400)
-          const patch = await fetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
+          const patch = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ status: 'approved' })
@@ -502,7 +514,7 @@ export default {
         if (pathname === '/api/catalog/reject' || pathname === '/api/catalog/delete') {
           const { venue_id, barcode } = await request.json()
           if (!venue_id || !barcode) return json({ error: 'Нужны venue_id и barcode' }, 400)
-          const del = await fetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
+          const del = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
             method: 'DELETE',
             headers: { ...db2.headers, Prefer: 'return=minimal' }
           })
@@ -520,7 +532,7 @@ export default {
           if (list.length > 500) return json({ error: 'За раз не больше 500 штрихкодов' }, 400)
           const cat = String(category || '').trim() || null
           const inList = list.map(b => encodeURIComponent('"' + b.replace(/"/g, '') + '"')).join(',')
-          const patch = await fetch(`${db2.url}/rest/v1/mon_barcodes?barcode=in.(${inList})`, {
+          const patch = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?barcode=in.(${inList})`, {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ category: cat })
@@ -536,7 +548,7 @@ export default {
           const { q, limit } = await request.json()
           const term = String(q || '').trim()
           if (!term) return json({ error: 'Нужен текст для поиска' }, 400)
-          const r = await fetch(`${db2.url}/rest/v1/rpc/mon_match_product`, {
+          const r = await sbFetch(`${db2.url}/rest/v1/rpc/mon_match_product`, {
             method: 'POST',
             headers: db2.headers,
             body: JSON.stringify({ q: term, max_results: Math.max(1, Math.min(10, Number(limit) || 5)) })
@@ -561,7 +573,7 @@ export default {
             status: 'approved',
             updated_at: new Date().toISOString()
           }
-          const r = await fetch(`${db2.url}/rest/v1/mon_barcodes?on_conflict=venue_id,barcode`, {
+          const r = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?on_conflict=venue_id,barcode`, {
             method: 'POST',
             headers: { ...db2.headers, Prefer: 'resolution=merge-duplicates,return=representation' },
             body: JSON.stringify(body)
@@ -596,7 +608,7 @@ export default {
           const qs = countOnly
             ? 'select=id&reviewed_at=is.null&limit=1'
             : 'reviewed_at=is.null&order=created_at.desc&limit=12'
-          const r = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?${qs}`, {
+          const r = await sbFetch(`${db2.url}/rest/v1/mon_ai_invoices?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
@@ -609,7 +621,7 @@ export default {
           if (!id) return json({ error: 'Нужен id' }, 400)
           // «Разобрано»: ставим reviewed_at и стираем фото (image_b64=null);
           // распознанный JSON остаётся навсегда.
-          const patch = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`, {
+          const patch = await sbFetch(`${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`, {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ reviewed_at: new Date().toISOString(), image_b64: null })
@@ -621,7 +633,7 @@ export default {
         if (pathname === '/api/invoices/delete') {
           const { id } = await request.json()
           if (!id) return json({ error: 'Нужен id' }, 400)
-          const del = await fetch(`${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`, {
+          const del = await sbFetch(`${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`, {
             method: 'DELETE',
             headers: { ...db2.headers, Prefer: 'return=minimal' }
           })
@@ -634,6 +646,12 @@ export default {
 
       return json({ error: 'Неизвестный путь' }, 404)
     } catch (e) {
+      // Истёкшее ожидание надо называть своим именем: «Pending» в браузере не
+      // объясняет ничего, а причина почти всегда одна — уснувший бесплатный
+      // проект Supabase, который просыпается от первого же запроса.
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+        return json({ error: 'Supabase не ответил за 15 секунд. Похоже, проект заснул (бесплатный тариф) — откройте его в дашборде Supabase и повторите.' }, 504)
+      }
       return json({ error: String(e?.message ?? e) }, 500)
     }
   }

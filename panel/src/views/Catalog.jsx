@@ -170,7 +170,10 @@ export default function Catalog({ onCounts, onReload }) {
           <h2 style={{ fontSize: 16, margin: 0 }}>Каталог</h2>
           {/* «Всего» считается сервером до схлопывания дублей по штрихкоду,
               поэтому оно не сходится с числом строк — говорим это прямо. */}
-          <span className="muted2">{total !== null ? `${total} записей, дубли по штрихкоду схлопнуты` : ''}</span>
+          {/* «около»: число теперь оценочное. Точный подсчёт по справочнику в
+              сотни тысяч строк — полный проход по таблице на каждую букву в
+              поиске, из-за него запрос и повисал. */}
+          <span className="muted2">{total !== null ? `около ${total} записей, дубли по штрихкоду схлопнуты` : ''}</span>
           <input placeholder="Поиск по названию или штрихкоду" value={q}
             onChange={e => { setQ(e.target.value); setPage(0) }} style={{ maxWidth: 280, marginLeft: 12 }} />
           <button className="btn spacer" onClick={() => setEdit({ row: null })}>Добавить штрихкод</button>

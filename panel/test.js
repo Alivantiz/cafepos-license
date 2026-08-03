@@ -201,6 +201,21 @@ async function testServerRoutes() {
     assert.ok(asked.includes('limit=1'), 'строки не тянутся: ' + asked)
   }
 
+  // Каталог — самая большая таблица во всём хозяйстве. Точный подсчёт по ней
+  // это полный проход на каждую букву в поиске: запрос повисал в «Pending».
+  {
+    const real = global.fetch
+    let prefer = ''
+    global.fetch = async (url, init) => {
+      prefer = init?.headers?.Prefer || ''
+      return new Response('[]', { status: 200, headers: { 'content-range': '0-0/12345' } })
+    }
+    const r = await authed('/api/catalog/list', { q: '', page: 0 })
+    global.fetch = real
+    assert.strictEqual(r.status, 200)
+    assert.strictEqual(prefer, 'count=estimated', 'каталог считается оценкой, а не полным проходом')
+  }
+
   // /api/cloud опрашивает сами облачные функции — подменяем fetch, чтобы тест
   // не ходил в сеть и чтобы проверить РАЗБОР всех вариантов ответа.
   const realFetch = global.fetch
