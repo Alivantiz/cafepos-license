@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, useApi, pw, setPw, logout, fmtDate } from './api'
-import { Toasts, Modal, toast } from './ui'
+import { Toasts, Confirms, Modal, toast } from './ui'
 import Summary from './views/Summary'
 import Clients from './views/Clients'
 import ClientCard from './views/ClientCard'
@@ -167,6 +167,7 @@ function Panel() {
 
       {issue && <IssueModal onClose={() => setIssue(false)} onDone={() => { setIssue(false); reload() }} />}
       <Toasts />
+      <Confirms />
     </div>
   )
 }

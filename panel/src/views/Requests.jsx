@@ -3,7 +3,7 @@
 // ровно то, ради чего заявки и делались.
 import { useState } from 'react'
 import { api, useApi, fmtDate } from '../api'
-import { Tag, Modal, toast } from '../ui'
+import { Tag, Modal, toast, confirmDialog } from '../ui'
 import { BIZ } from './Trials'
 
 /** Ждут решения = заявка есть, а лицензии по ней ещё нет. Остальное — история. */
@@ -16,7 +16,11 @@ export default function Requests({ onApproved }) {
   const rows = data?.rows || []
 
   const reject = async (r) => {
-    if (!confirm(`Отклонить заявку с компьютера ${r.machine_id}?`)) return
+    if (!await confirmDialog({
+      title: 'Отклонить заявку',
+      message: `Заявка от «${r.shop || 'без названия'}» будет отклонена. Касса лицензию не получит.`,
+      confirmText: 'Отклонить',
+    })) return
     try { await api('requests/reject', { machine_id: r.machine_id }); toast.ok('Отклонена'); reload() }
     catch (e) { toast.err(e.message) }
   }

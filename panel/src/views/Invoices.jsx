@@ -1,7 +1,7 @@
 // Разбор ИИ-распознаваний накладных: фото, что распозналось, и решение —
 // «разобрано» (фото удаляется) или «удалить целиком».
 import { api, useApi } from '../api'
-import { toast } from '../ui'
+import { toast, confirmDialog } from '../ui'
 
 export default function Invoices() {
   const { data, error, loading, reload } = useApi('invoices/pending')
@@ -12,7 +12,11 @@ export default function Invoices() {
     catch (e) { toast.err(e.message) }
   }
   const remove = async (id) => {
-    if (!confirm('Удалить запись распознавания целиком?')) return
+    if (!await confirmDialog({
+      title: 'Удалить распознавание',
+      message: 'Запись и фото накладной будут удалены без возможности вернуть.',
+      confirmText: 'Удалить',
+    })) return
     try { await api('invoices/delete', { id: Number(id) }); toast.ok('Удалено'); reload() }
     catch (e) { toast.err(e.message) }
   }

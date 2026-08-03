@@ -122,6 +122,23 @@ async function testServerRoutes() {
   const editForbidden = await authed('/api/edit', { id: 'x', expires_at: '2099-01-01', machine_id: 'AAA', revoked: true })
   assert.strictEqual(editForbidden.status, 400, 'поля вне белого списка не проходят')
 
+  // Колонки contact/hidden добавляются отдельными ALTER. Пока их нет, Supabase
+  // отвечает «PGRST204 column ... does not exist» — владельцу это не говорит
+  // ничего. Подменяем fetch и проверяем, что наружу уходит инструкция.
+  {
+    const real = global.fetch
+    global.fetch = async () => new Response(
+      JSON.stringify({ code: 'PGRST204', message: "Column 'hidden' of relation 'licenses' does not exist" }),
+      { status: 400 })
+    const r = await authed('/api/edit', { id: 'x', hidden: true })
+    global.fetch = real
+    assert.strictEqual(r.status, 502)
+    const d = await r.json()
+    assert.ok(d.error.includes('нет колонки'), 'ошибка объясняет, ЧЕГО не хватает: ' + d.error)
+    assert.ok(d.error.includes('schema.sql'), 'и говорит, что именно выполнить')
+    assert.ok(!d.error.includes('PGRST204'), 'сырой код Supabase наружу не уходит')
+  }
+
   // /api/cloud опрашивает сами облачные функции — подменяем fetch, чтобы тест
   // не ходил в сеть и чтобы проверить РАЗБОР всех вариантов ответа.
   const realFetch = global.fetch

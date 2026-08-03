@@ -3,7 +3,7 @@
 // а на вопрос «как у них дела» ответа не было нигде.
 import { useState } from 'react'
 import { api, fmtDate, daysLeft, daysAgo, money, agoText } from '../api'
-import { Tile, Chart, Tag, Modal, toast } from '../ui'
+import { Tile, Chart, Tag, Modal, toast, confirmDialog } from '../ui'
 
 export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
   const [renew, setRenew] = useState(false)
@@ -29,9 +29,11 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
   // и из подсчётов сводки. Для тестовых касс это и нужно: они портили средний
   // чек и оборот парка.
   const setHidden = async (flag) => {
-    if (flag && !confirm(
-      `Скрыть «${c.customer}» из списка? Лицензия продолжит работать, но перестанет учитываться в сводке.`
-    )) return
+    if (flag && !await confirmDialog({
+      title: 'Скрыть клиента',
+      message: `«${c.customer}» пропадёт из списка и перестанет учитываться в сводке. Лицензия при этом продолжит работать у клиента.`,
+      confirmText: 'Скрыть',
+    })) return
     setBusy(true)
     try {
       await api('edit', { id: c.id, hidden: flag })

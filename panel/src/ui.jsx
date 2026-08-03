@@ -68,6 +68,35 @@ export function Modal({ title, onClose, children }) {
   )
 }
 
+// ── Подтверждение ─────────────────────────────────────────────────────
+// Своё окно вместо window.confirm: системное выглядит чужим, показывает адрес
+// сайта вместо вопроса и на телефоне выезжает поверх всего.
+let ask = () => Promise.resolve(false)
+export const confirmDialog = (opts) =>
+  ask(typeof opts === 'string' ? { message: opts } : opts)
+
+export function Confirms() {
+  const [state, setState] = useState(null)
+  useEffect(() => {
+    ask = (o) => new Promise(resolve => setState({ ...o, resolve }))
+  }, [])
+  if (!state) return null
+  const done = (v) => { state.resolve(v); setState(null) }
+  return (
+    <Modal title={state.title || 'Подтвердите'} onClose={() => done(false)}>
+      <div className="muted">{state.message}</div>
+      <div className="row">
+        <button className="btn ghost spacer" onClick={() => done(false)}>
+          {state.cancelText || 'Отмена'}
+        </button>
+        <button className="btn pri" autoFocus onClick={() => done(true)}>
+          {state.confirmText || 'Да'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 // ── Тосты ─────────────────────────────────────────────────────────────
 let push = () => {}
 export const toast = {

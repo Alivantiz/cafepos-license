@@ -27,6 +27,19 @@ const sb2 = (env) => ({
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
+// Человеческий текст вместо сырого ответа Supabase. Колонки contact/hidden
+// добавляются отдельными ALTER, и пока их не выполнили, запись падала с
+// «PGRST204 column ... does not exist» — владельцу такое сообщение не говорит
+// ничего, а сделать надо ровно одну понятную вещь.
+async function sqlHint(res, cols) {
+  const text = await res.text()
+  const missing = cols.find(c => text.includes(`'${c}'`) || text.includes(`"${c}"`))
+  if (missing || /does not exist|PGRST204|42703/.test(text)) {
+    return `В базе нет колонки${missing ? ' «' + missing + '»' : ''}. Выполните SQL из license-server/supabase/schema.sql (раздел про contact и hidden) в Supabase → SQL Editor.`
+  }
+  return `Supabase: ${res.status} ${text}`
+}
+
 // YYYY-MM-DD со сдвигом в днях. Панель и касса считают дни по-разному (у кассы
 // местное время заведения), поэтому окна тут — грубые, «за последние N дней»,
 // а не бухгалтерские периоды.
@@ -196,7 +209,7 @@ export default {
           headers: { ...db.headers, Prefer: 'return=representation' },
           body: JSON.stringify(body)
         })
-        if (!ins.ok) return json({ error: `Supabase: ${ins.status} ${await ins.text()}` }, 502)
+        if (!ins.ok) return json({ error: await sqlHint(ins, ['contact']) }, 502)
         const [row] = await ins.json()
         return json({ ok: true, id: row.id, expires_at: row.expires_at })
       }
@@ -249,7 +262,7 @@ export default {
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify(patch)
         })
-        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        if (!r.ok) return json({ error: await sqlHint(r, ['contact', 'hidden']) }, 502)
         return json({ ok: true })
       }
 

@@ -2,7 +2,7 @@
 // кассами) и сам каталог с поиском, страницами и массовой сменой категории.
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
-import { Modal, toast } from '../ui'
+import { Modal, toast, confirmDialog } from '../ui'
 
 const PER_PAGE = 200
 const key = (r) => r.venue_id + '::' + r.barcode
@@ -61,7 +61,11 @@ export default function Catalog({ onCounts }) {
   const bulk = async (action) => {
     const items = pending.filter(r => sel.has(key(r)))
     if (!items.length) return
-    if (action === 'reject' && !confirm(`Отклонить ${items.length} заявок?`)) return
+    if (action === 'reject' && !await confirmDialog({
+      title: 'Отклонить выбранные',
+      message: `Заявок будет отклонено: ${items.length}.`,
+      confirmText: 'Отклонить',
+    })) return
     const res = await Promise.allSettled(
       items.map(r => api('catalog/' + action, { venue_id: r.venue_id, barcode: r.barcode })))
     const ok = res.filter(x => x.status === 'fulfilled').length
@@ -265,7 +269,11 @@ function EditModal({ row, pending, onClose, onSaved }) {
     } catch (e) { toast.err(e.message); setBusy(false) }
   }
   const remove = async () => {
-    if (!confirm(`Удалить штрихкод ${f.barcode} из каталога?`)) return
+    if (!await confirmDialog({
+      title: 'Удалить из каталога',
+      message: `Штрихкод ${f.barcode} исчезнет из общего справочника.`,
+      confirmText: 'Удалить',
+    })) return
     try {
       await api('catalog/delete', { venue_id: row.venue_id, barcode: row.barcode })
       toast.ok('Удалено'); onSaved()
