@@ -142,6 +142,108 @@ export default {
         return json({ ok: true })
       }
 
+      // --- Вкладка «Облако»: живы ли облачные функции ------------------------
+      // Панель, как и вся админка, читает только таблицы. Функция при этом
+      // может лежать — и снаружи это неотличимо от «клиентов нет». Однажды
+      // уже вышло боком: `trial` не была выложена, таблица оставалась пустой,
+      // и это читалось как «демо никто не ставит». Спрашиваем сами функции:
+      // на GET они отдают только версию и готовность, без данных и ключей.
+      if (pathname === '/api/cloud') {
+        const mon = sb2(env)
+        const fns = [
+          { name: 'activate',           base: db.url,  what: 'выдаёт лицензию при активации по коду' },
+          { name: 'status',             base: db.url,  what: 'проверка лицензии и автопродление срока' },
+          { name: 'claim',              base: db.url,  what: 'касса забирает одобренную заявку' },
+          { name: 'request-activation', base: db.url,  what: 'касса присылает заявку на активацию' },
+          { name: 'trial',              base: db.url,  what: 'телеметрия пробных установок' },
+          { name: 'parse-invoice',      base: mon.url, what: 'распознавание накладной по фото' },
+        ]
+        const probe = async (f) => {
+          if (!f.base) return { name: f.name, what: f.what, ok: false, verdict: 'не задан адрес проекта' }
+          try {
+            const r = await fetch(`${f.base}/functions/v1/${f.name}`, { method: 'GET' })
+            const text = await r.text()
+            let d = {}
+            try { d = JSON.parse(text) } catch { /* не JSON — значит код старый */ }
+            if (r.status === 404) return { name: f.name, what: f.what, ok: false, verdict: 'не выложена' }
+            // Версию умеет называть только код, выложенный после 03.08.2026.
+            // Без этого различия «старая, но живая» выглядела бы как «нет вовсе».
+            if (!d.version) return { name: f.name, what: f.what, ok: false, verdict: 'старая версия — выложите заново' }
+            // Функция может отвечать и при этом не работать: нет таблицы или
+            // не задан ключ подписи. Тихий отказ — самый дорогой.
+            const bad = []
+            if (d.table_activation_requests === 'no_table') bad.push('нет таблицы activation_requests')
+            if (d.table_licenses === 'no_table') bad.push('нет таблицы licenses')
+            if (d.signing_key === 'missing') bad.push('не задан LICENSE_PRIVATE_KEY')
+            return { name: f.name, what: f.what, version: d.version, ok: bad.length === 0, verdict: bad.join(' · ') || 'работает' }
+          } catch {
+            return { name: f.name, what: f.what, ok: false, verdict: 'не отвечает' }
+          }
+        }
+        return json({ rows: await Promise.all(fns.map(probe)) })
+      }
+
+      // --- Вкладка «Заявки»: активация без ввода кода ------------------------
+      // Касса шлёт заявку (функция request-activation), владелец одобряет,
+      // касса сама забирает лицензию (claim). Заявок не было видно нигде:
+      // код компьютера приходилось выпрашивать у клиента — ровно то, ради
+      // чего заявки и делались.
+      if (pathname.startsWith('/api/requests/')) {
+        if (pathname === '/api/requests/list') {
+          const r = await fetch(`${db.url}/rest/v1/activation_requests?select=machine_id,shop,contact,business_type,app_version,status,license_id,created_at,updated_at,decided_at&order=created_at.desc&limit=200`, { headers: db.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          return json({ rows: await r.json() })
+        }
+
+        // Одобрение = строка в licenses с этим machine_id: отдельного
+        // «выключателя» нет, claim ищет именно лицензию. Статус заявки здесь
+        // НЕ трогаем — его ставит claim, когда касса реально забрала лицензию.
+        // Иначе «одобрено» появлялось бы сразу и скрывало случай «одобрили, а
+        // касса так и не пришла».
+        if (pathname === '/api/requests/approve') {
+          const { machine_id, customer, days, terminals } = await request.json()
+          const mid = String(machine_id || '').trim().toUpperCase()
+          if (!mid) return json({ error: 'Нужен код компьютера' }, 400)
+          if (!String(customer || '').trim()) return json({ error: 'Укажите клиента' }, 400)
+
+          // Повторное одобрение завело бы вторую лицензию на ту же машину:
+          // claim берёт самую свежую, а старая осталась бы висеть в списке.
+          const dup = await fetch(`${db.url}/rest/v1/licenses?machine_id=eq.${encodeURIComponent(mid)}&select=id,revoked`, { headers: db.headers })
+          if (!dup.ok) return json({ error: `Supabase: ${dup.status} ${await dup.text()}` }, 502)
+          const live = (await dup.json()).filter(l => l.revoked !== true)
+          if (live.length) return json({ error: `На этот компьютер уже выпущена лицензия ${live[0].id}` }, 409)
+
+          const n = Number(days)
+          const ins = await fetch(`${db.url}/rest/v1/licenses`, {
+            method: 'POST',
+            headers: { ...db.headers, Prefer: 'return=representation' },
+            body: JSON.stringify({
+              customer: String(customer).trim(),
+              machine_id: mid,
+              expires_at: Number.isFinite(n) && n > 0 ? new Date(Date.now() + n * 86400000).toISOString() : null,
+              terminals: Math.max(1, Number(terminals) || 1),
+              notes: 'Одобрено по заявке из панели'
+            })
+          })
+          if (!ins.ok) return json({ error: `Supabase: ${ins.status} ${await ins.text()}` }, 502)
+          const [row] = await ins.json()
+          return json({ ok: true, id: row.id, expires_at: row.expires_at })
+        }
+
+        if (pathname === '/api/requests/reject') {
+          const { machine_id } = await request.json()
+          const mid = String(machine_id || '').trim().toUpperCase()
+          if (!mid) return json({ error: 'Нужен код компьютера' }, 400)
+          const patch = await fetch(`${db.url}/rest/v1/activation_requests?machine_id=eq.${encodeURIComponent(mid)}`, {
+            method: 'PATCH',
+            headers: { ...db.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ status: 'rejected', decided_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+      }
+
       // --- Вкладка «Штрихкоды»: общий словарь mon_barcodes (проект монитора) ---
       if (pathname.startsWith('/api/catalog/')) {
         const db2 = sb2(env)
@@ -584,6 +686,8 @@ const PAGE = `<!DOCTYPE html>
       <button id="navSubs" class="active" onclick="switchView('subs')">Подписки</button>
       <button id="navCat" onclick="switchView('cat')">Штрихкоды<span id="navCatBadge" class="navbadge" style="display:none"></span></button>
       <button id="navInv" onclick="switchView('inv')">Приёмки<span id="navInvBadge" class="navbadge" style="display:none"></span></button>
+      <button id="navReq" onclick="switchView('req')">Заявки<span id="navReqBadge" class="navbadge" style="display:none"></span></button>
+      <button id="navCloud" onclick="switchView('cloud')">Облако<span id="navCloudBadge" class="navbadge" style="display:none"></span></button>
     </nav>
     <div class="topbar-right">
       <button id="themeBtn" class="icon-btn" onclick="toggleTheme()" title="Сменить тему">☀</button>
@@ -691,6 +795,29 @@ const PAGE = `<!DOCTYPE html>
     </div>
     <div id="invEmpty" class="empty" style="display:none">Нет накладных на разбор</div>
     <div id="invList"></div>
+  </div>
+
+  <div id="viewReq" style="display:none">
+    <div class="titlerow">
+      <div>
+        <h1>Заявки на активацию</h1>
+        <div class="sub">Касса присылает заявку сама — код компьютера спрашивать у клиента не нужно. После одобрения касса заберёт лицензию при ближайшем выходе в интернет.</div>
+      </div>
+      <div class="count" id="reqCount"></div>
+    </div>
+    <div id="reqEmpty" class="empty" style="display:none">Заявок нет</div>
+    <div id="reqList"></div>
+  </div>
+
+  <div id="viewCloud" style="display:none">
+    <div class="titlerow">
+      <div>
+        <h1>Облако</h1>
+        <div class="sub">Панель читает базу, а касса разговаривает с этими функциями. Если функция лежит, база просто остаётся пустой — со стороны это выглядит как «клиентов нет».</div>
+      </div>
+      <button class="btn" onclick="loadCloud()">Проверить снова</button>
+    </div>
+    <div id="cloudList"></div>
   </div>
   </main>
 </div>
@@ -1168,11 +1295,91 @@ async function switchView(v){
   $('viewSubs').style.display = v === 'subs' ? '' : 'none'
   $('viewCat').style.display = v === 'cat' ? '' : 'none'
   $('viewInv').style.display = v === 'inv' ? '' : 'none'
+  $('viewReq').style.display = v === 'req' ? '' : 'none'
+  $('viewCloud').style.display = v === 'cloud' ? '' : 'none'
   $('navSubs').className = v === 'subs' ? 'active' : ''
   $('navCat').className = v === 'cat' ? 'active' : ''
   $('navInv').className = v === 'inv' ? 'active' : ''
+  $('navReq').className = v === 'req' ? 'active' : ''
+  $('navCloud').className = v === 'cloud' ? 'active' : ''
   if (v === 'cat') await Promise.all([loadCatPending(), loadCatList()])
   if (v === 'inv') await loadInv()
+  if (v === 'req') await loadReq()
+  if (v === 'cloud') await loadCloud()
+}
+
+// ── Вкладка «Заявки на активацию» ──
+let reqRows = []
+async function loadReq(){
+  try {
+    const d = await api('requests/list')
+    reqRows = d.rows || []
+    // Ждут решения = заявка есть, а лицензии по ней ещё нет. Именно это
+    // число выносим бейджем: остальные строки — история.
+    const pending = reqRows.filter(r => r.status !== 'rejected' && !r.license_id).length
+    $('reqCount').textContent = pending ? 'ждут решения: ' + pending : 'всего ' + reqRows.length
+    $('navReqBadge').style.display = pending > 0 ? '' : 'none'
+    $('navReqBadge').textContent = pending
+    renderReq()
+  } catch(e){ toast(e.message, true) }
+}
+function renderReq(){
+  if (!reqRows.length){ $('reqList').innerHTML = ''; $('reqEmpty').style.display = 'block'; return }
+  $('reqEmpty').style.display = 'none'
+  $('reqList').innerHTML = reqRows.map(r => {
+    const decided = r.status === 'rejected' ? 'отклонена'
+      : r.license_id ? 'одобрена, лицензия ' + esc(r.license_id)
+      : 'ждёт решения'
+    // Значения — через data-*, как в остальных таблицах панели: название
+    // точки с апострофом («Кафе У Ани'с») внутри onclick оборвало бы строку.
+    const actions = (r.status !== 'rejected' && !r.license_id)
+      ? '<button class="btn pri" data-mid="' + esc(r.machine_id) + '" data-shop="' + esc(r.shop || '') +
+          '" onclick="approveReq(this.dataset.mid, this.dataset.shop)">Одобрить</button> ' +
+        '<button class="btn" data-mid="' + esc(r.machine_id) +
+          '" onclick="rejectReq(this.dataset.mid)">Отклонить</button>'
+      : ''
+    return '<div class="tablewrap" style="padding:14px;margin-bottom:10px">' +
+      '<div style="font-weight:600">' + esc(r.shop || 'Без названия') + '</div>' +
+      '<div class="exp">Код ПК: ' + esc(r.machine_id) + '</div>' +
+      '<div class="exp">' + esc(r.contact || 'контакт не указан') + ' · ' + esc(r.business_type || '—') +
+        ' · версия ' + esc(r.app_version || '—') + ' · ' + fmtDate(r.created_at) + '</div>' +
+      '<div class="exp" style="margin-bottom:8px">' + decided + '</div>' +
+      actions +
+    '</div>'
+  }).join('')
+}
+async function approveReq(machineId, shop){
+  const customer = prompt('Клиент (как назвать в списке лицензий):', shop || '')
+  if (customer === null) return
+  const days = prompt('Срок, дней (0 = бессрочная):', '30')
+  if (days === null) return
+  try {
+    const d = await api('requests/approve', { machine_id: machineId, customer, days: Number(days), terminals: 1 })
+    toast('Одобрено: ' + d.id)
+    await Promise.all([loadReq(), load()])
+  } catch(e){ toast(e.message, true) }
+}
+async function rejectReq(machineId){
+  if (!confirm('Отклонить заявку с этого компьютера?')) return
+  try { await api('requests/reject', { machine_id: machineId }); toast('Отклонена'); loadReq() }
+  catch(e){ toast(e.message, true) }
+}
+
+// ── Вкладка «Облако»: живы ли функции, с которыми говорит касса ──
+async function loadCloud(){
+  try {
+    const d = await api('cloud')
+    const rows = d.rows || []
+    const bad = rows.filter(r => !r.ok).length
+    $('navCloudBadge').style.display = bad > 0 ? '' : 'none'
+    $('navCloudBadge').textContent = bad
+    $('cloudList').innerHTML = rows.map(r =>
+      '<div class="tablewrap" style="padding:14px;margin-bottom:10px">' +
+        '<div style="font-weight:600">' + (r.ok ? '✅ ' : '❌ ') + esc(r.name) + '</div>' +
+        '<div class="exp">' + esc(r.what) + '</div>' +
+        '<div class="exp">' + esc(r.verdict) + (r.version ? ' · версия ' + esc(r.version) : '') + '</div>' +
+      '</div>').join('')
+  } catch(e){ toast(e.message, true) }
 }
 
 // ── Вкладка «Приёмки»: разбор ИИ-распознаваний накладных ──
@@ -1464,7 +1671,9 @@ function boot(){
   $('app').style.display = has ? '' : 'none'
   // Очередь модерации грузим сразу при входе: и бейдж «на модерации N» виден
   // без перехода на вкладку, и проект монитора получает активность (не заснёт).
-  if (has){ load(); loadCatPending() }
+  // Заявки и состояние облака — тем же приёмом: смысл в том, чтобы поломка
+  // и новая заявка находили владельца сами, а не ждали, пока он зайдёт.
+  if (has){ load(); loadCatPending(); loadReq(); loadCloud() }
 }
 ;[dlgIssue, dlg].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
 // Диалоги правки категории (dlgCat, dlgBulkCat) НЕ закрываем случайным кликом по

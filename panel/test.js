@@ -74,6 +74,42 @@ async function testServerRoutes() {
   const noQuery = await authed('/api/catalog/similar', {})
   assert.strictEqual(noQuery.status, 400, 'similar without query text should 400')
 
+  // Одобрение заявки создаёт лицензию — обе проверки обязаны отсекать запрос
+  // ДО обращения к базе, иначе тест полез бы в сеть.
+  const apprNoMid = await authed('/api/requests/approve', { customer: 'Кафе' })
+  assert.strictEqual(apprNoMid.status, 400, 'approve without machine_id should 400')
+
+  const apprNoCust = await authed('/api/requests/approve', { machine_id: 'AAAA-BBBB' })
+  assert.strictEqual(apprNoCust.status, 400, 'approve without customer should 400')
+
+  const rejNoMid = await authed('/api/requests/reject', {})
+  assert.strictEqual(rejNoMid.status, 400, 'reject without machine_id should 400')
+
+  // /api/cloud опрашивает сами облачные функции — подменяем fetch, чтобы тест
+  // не ходил в сеть и чтобы проверить РАЗБОР всех вариантов ответа.
+  const realFetch = global.fetch
+  global.fetch = async (url) => {
+    const u = String(url)
+    if (u.endsWith('/functions/v1/trial')) return new Response('{"error":"not found"}', { status: 404 })
+    if (u.endsWith('/functions/v1/status')) return new Response('старый ответ без версии', { status: 200 })
+    if (u.endsWith('/functions/v1/activate')) {
+      return new Response(JSON.stringify({ version: '1', table_licenses: 'ok', signing_key: 'missing' }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ version: '1' }), { status: 200 })
+  }
+  const cloud = await authed('/api/cloud')
+  global.fetch = realFetch
+
+  assert.strictEqual(cloud.status, 200, '/api/cloud should answer 200')
+  const cl = await cloud.json()
+  assert.strictEqual(cl.rows.length, 6, 'cloud check should probe all six functions')
+  const byName = Object.fromEntries(cl.rows.map(r => [r.name, r]))
+  assert.strictEqual(byName.trial.verdict, 'не выложена', '404 should read as "not deployed"')
+  assert.strictEqual(byName.status.verdict, 'старая версия — выложите заново', 'answer without a version should read as stale')
+  assert.strictEqual(byName.claim.ok, true, 'a versioned healthy answer should read as working')
+  assert.strictEqual(byName.activate.ok, false, 'missing signing key should mark activate as broken')
+  assert.ok(byName.activate.verdict.includes('LICENSE_PRIVATE_KEY'), 'activate verdict should name the missing key')
+
   console.log('server routes: OK')
 }
 
@@ -109,6 +145,18 @@ async function testClientScript() {
     if (u.includes('/api/catalog/list')) return { total: 1, rows: [
       { venue_id: 'panel-owner', barcode: '4870009999999', name: 'Хлеб', category: null, price: 200, unit: 'шт', status: 'approved' }
     ] }
+    if (u.includes('/api/requests/list')) return { rows: [
+      // ждёт решения — по ней и считается бейдж
+      { machine_id: 'AAAA-BBBB', shop: 'Кафе «Тест»', contact: '+77001234567', business_type: 'cafe',
+        app_version: '1.23.0', status: 'pending', license_id: null, created_at: new Date().toISOString() },
+      // уже одобрена: касса забрала лицензию — в бейдж не попадает
+      { machine_id: 'CCCC-DDDD', shop: 'Магазин', contact: null, business_type: 'shop',
+        app_version: '1.23.0', status: 'approved', license_id: 'lic-1', created_at: new Date().toISOString() }
+    ] }
+    if (u.includes('/api/cloud')) return { rows: [
+      { name: 'activate', what: 'выдаёт лицензию', ok: false, verdict: 'не выложена' },
+      { name: 'claim', what: 'забирает заявку', ok: true, version: '1', verdict: 'работает' }
+    ] }
     return { rows: global.__TEST_ROWS__, kaspiPhone: '' }
   } })
 
@@ -124,7 +172,10 @@ async function testClientScript() {
     'doIssueBtn', 'doRenewBtn', 'refreshBtn',
     'navSubs', 'navCat', 'viewSubs', 'viewCat', 'catq', 'catBulkbar', 'catPendAll', 'catPendBody', 'catPendEmpty',
     'catPendCount', 'catListCount', 'catBody', 'catEmpty', 'dlgCat', 'dlgCatTitle', 'catBarcode', 'catName',
-    'catCategory', 'catUnit', 'catPrice', 'catDelBtn', 'catSaveBtn', 'navCatBadge'].forEach(id => document.getElementById(id))
+    'catCategory', 'catUnit', 'catPrice', 'catDelBtn', 'catSaveBtn', 'navCatBadge',
+    'navInv', 'navInvBadge', 'viewInv', 'invCount', 'invEmpty', 'invList',
+    'navReq', 'navReqBadge', 'viewReq', 'reqCount', 'reqEmpty', 'reqList',
+    'navCloud', 'navCloudBadge', 'viewCloud', 'cloudList'].forEach(id => document.getElementById(id))
 
   const day = 86400000, now = Date.now()
   global.__TEST_ROWS__ = [
@@ -173,6 +224,19 @@ async function testClientScript() {
   global.__RESULT__.simHtmlAfterToggle = document.getElementById('catPendBody').innerHTML
   await switchView('subs')
   global.__RESULT__.catViewHiddenBack = document.getElementById('viewCat').style.display
+  await switchView('req')
+  global.__RESULT__.reqBadgeText = document.getElementById('navReqBadge').textContent
+  global.__RESULT__.reqBadgeShown = document.getElementById('navReqBadge').style.display
+  global.__RESULT__.reqCountText = document.getElementById('reqCount').textContent
+  global.__RESULT__.reqListHtml = document.getElementById('reqList').innerHTML
+  global.__RESULT__.reqViewShown = document.getElementById('viewReq').style.display
+  await switchView('cloud')
+  global.__RESULT__.cloudBadgeText = document.getElementById('navCloudBadge').textContent
+  global.__RESULT__.cloudListHtml = document.getElementById('cloudList').innerHTML
+  global.__RESULT__.cloudViewShown = document.getElementById('viewCloud').style.display
+  await switchView('subs')
+  global.__RESULT__.cloudViewHiddenBack = document.getElementById('viewCloud').style.display
+  global.__RESULT__.reqViewHiddenBack = document.getElementById('viewReq').style.display
 })()
 `
   eval(mainScript + driver)
@@ -198,7 +262,10 @@ async function testClientScript() {
   assert.ok(res.catPendBodyHtml.includes('4870001234567'), 'pending queue should show the submitted barcode')
   assert.ok(res.catBodyHtml.includes('4870009999999'), 'catalog list should show the approved barcode')
   assert.strictEqual(res.catPendCountText, '1 из 1', 'pending count should reflect loaded rows and total')
-  assert.strictEqual(res.catListCountText, '1 из 1', 'catalog count should reflect loaded rows and total')
+  // После появления постраничности подпись каталога — «N всего» (позиция
+  // страницы ушла в пагинатор). Тест остался на прежней формулировке и с тех
+  // пор был красным на main.
+  assert.strictEqual(res.catListCountText, '1 всего', 'catalog count should show the catalogue total')
   assert.strictEqual(res.catViewShown, '', 'catalog view should be visible after switchView(cat)')
   assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when catalog view is active')
   assert.strictEqual(res.catSelectedAfterAll, 1, 'select-all on the pending queue should select every row')
@@ -206,6 +273,26 @@ async function testClientScript() {
   assert.ok(res.simHtml.includes('тот же штрихкод'), 'similar hint should flag a match with the same barcode')
   assert.ok(!res.simHtmlAfterToggle.includes('Похожие в каталоге'), 'second click should hide the similar hint')
   assert.strictEqual(res.catViewHiddenBack, 'none', 'switching back should hide the catalog view')
+
+  // Заявки: бейдж считает только те, по которым ещё нет лицензии — иначе
+  // «одобрено» висело бы вечно и владелец перестал бы на него смотреть.
+  assert.strictEqual(res.reqBadgeText, 1, 'requests badge should count only undecided requests')
+  assert.strictEqual(res.reqBadgeShown, '', 'requests badge should be visible when something awaits a decision')
+  assert.strictEqual(res.reqCountText, 'ждут решения: 1', 'requests count should name what is pending')
+  assert.ok(res.reqListHtml.includes('AAAA-BBBB'), 'requests list should show the machine id to approve')
+  assert.ok(res.reqListHtml.includes('Одобрить'), 'an undecided request should offer the approve button')
+  assert.ok(res.reqListHtml.includes('одобрена, лицензия lic-1'), 'a claimed request should show its licence instead of buttons')
+  assert.strictEqual(res.reqViewShown, '', 'requests view should be visible after switchView(req)')
+
+  // Облако: бейдж — число неработающих функций, именно оно должно бросаться
+  // в глаза без захода на вкладку.
+  assert.strictEqual(res.cloudBadgeText, 1, 'cloud badge should count broken functions')
+  assert.ok(res.cloudListHtml.includes('не выложена'), 'cloud list should spell out what is wrong')
+  assert.ok(res.cloudListHtml.includes('❌ activate'), 'a broken function should be marked as such')
+  assert.ok(res.cloudListHtml.includes('✅ claim'), 'a healthy function should be marked as such')
+  assert.strictEqual(res.cloudViewShown, '', 'cloud view should be visible after switchView(cloud)')
+  assert.strictEqual(res.cloudViewHiddenBack, 'none', 'switching back should hide the cloud view')
+  assert.strictEqual(res.reqViewHiddenBack, 'none', 'switching back should hide the requests view')
 
   console.log('client script: OK')
 }
