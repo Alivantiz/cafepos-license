@@ -27,6 +27,116 @@ const sb2 = (env) => ({
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
+// ── Ежедневные отчёты в Telegram ──────────────────────────────────────────
+// Жили в GitHub Actions и не отработали ни разу: скрипты лежали в репозитории
+// КАССЫ, куда Actions админки не смотрят. Переносить их в Actions незачем — у
+// панели уже есть свой планировщик (Worker imag-keepalive с cron-триггером
+// Cloudflare), и он, в отличие от расписаний GitHub, не отключается за
+// неактивность репозитория. Логика — здесь, запуск — оттуда, по /api/cron/daily.
+//
+// Обе функции чистые (строки на входе, текст или null на выходе) и покрыты
+// panel/test.js. Молчание осознанное: нет поводов → сообщения нет. Ежедневное
+// «всё хорошо» перестают читать, и настоящее тревожное тонет вместе с ним.
+const DAY = 86400000
+const dm = (d) => `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
+const daysAgo = (t, now) => Math.floor((now - new Date(t).getTime()) / DAY)
+
+export function buildLicenseReminder(rows, now = Date.now()) {
+  const active = rows.filter(r => !r.revoked)
+  const expired = []   // истекли за последние 3 дня — ещё можно догнать
+  const soon = []      // истекают в ближайшие 7 дней
+  for (const r of active) {
+    if (!r.expires_at) continue
+    const d = Math.ceil((new Date(r.expires_at).getTime() - now) / DAY)
+    if (d <= 0 && d >= -3) expired.push({ r, d })
+    else if (d > 0 && d <= 7) soon.push({ r, d })
+  }
+  const offline = active
+    .filter(r => r.activated_at && r.last_seen_at && daysAgo(r.last_seen_at, now) > 14)
+    .map(r => ({ r, ago: daysAgo(r.last_seen_at, now) }))
+
+  if (!expired.length && !soon.length && !offline.length) return null
+  soon.sort((a, b) => a.d - b.d)
+  offline.sort((a, b) => b.ago - a.ago)
+
+  const nm = r => r.customer || '(без имени)'
+  const when = d => d === 0 ? 'сегодня' : d === -1 ? 'вчера' : `${-d} дн назад`
+  const left = d => d === 1 ? 'завтра' : `через ${d} дн`
+  const lines = [`🔔 iMag — лицензии на контроль (${dm(new Date(now))})`]
+  if (expired.length) {
+    lines.push('', '🔴 Истекли:')
+    for (const { r, d } of expired) lines.push(`• ${nm(r)} — ${when(d)} (${dm(new Date(r.expires_at))})`)
+  }
+  if (soon.length) {
+    lines.push('', '🟡 Истекают ≤7 дней:')
+    for (const { r, d } of soon) lines.push(`• ${nm(r)} — ${left(d)} (${dm(new Date(r.expires_at))})`)
+  }
+  if (offline.length) {
+    lines.push('', '🔌 Касса давно не на связи:')
+    for (const { r, ago } of offline) lines.push(`• ${nm(r)} — ${ago} дн назад`)
+  }
+  return lines.join('\n')
+}
+
+const TRIAL_DAYS = 14   // как в кассе (license.service TRIAL_DAYS)
+const BIZ = { shop: 'магазин', cafe: 'кафе', sauna: 'сауна' }
+
+export function buildTrialsReport(rows, now = Date.now()) {
+  const fresh = [], hot = [], lapsed = [], quiet = []
+  for (const r of rows) {
+    if (r.status === 'licensed') continue          // уже купили — не наша воронка
+    const seenAgo = daysAgo(r.last_seen_at, now)
+    const startedAgo = r.started_at ? daysAgo(r.started_at, now) : null
+    const left = startedAgo == null ? null : TRIAL_DAYS - startedAgo
+    if (daysAgo(r.created_at, now) < 1) fresh.push({ r, left })
+    if (r.status === 'expired' && seenAgo <= 3) lapsed.push({ r, seenAgo })
+    else if (left != null && left <= 3 && left > 0) hot.push({ r, left })
+    else if (r.status === 'trial' && seenAgo >= 3) quiet.push({ r, seenAgo })
+  }
+  if (!fresh.length && !hot.length && !lapsed.length && !quiet.length) return null
+  hot.sort((a, b) => a.left - b.left)
+  quiet.sort((a, b) => b.seenAgo - a.seenAgo)
+
+  // Код компьютера длинный, читать его целиком незачем — хвоста хватает,
+  // чтобы отличать установки друг от друга в списке.
+  const id = r => String(r.machine_id ?? '').slice(-6)
+  const biz = r => BIZ[r.business_type] ?? r.business_type ?? '—'
+  const ver = r => r.app_version ? ` · v${r.app_version}` : ''
+  const lines = [
+    `🧪 iMag — пробные установки (${dm(new Date(now))})`, '',
+    `Всего в работе: ${rows.filter(r => r.status !== 'licensed').length}`,
+  ]
+  if (fresh.length) {
+    lines.push('', '🆕 Новые за сутки:')
+    for (const { r } of fresh) lines.push(`• ${id(r)} — ${biz(r)}${ver(r)}`)
+  }
+  if (hot.length) {
+    lines.push('', '🔥 Триал заканчивается:')
+    for (const { r, left } of hot) lines.push(`• ${id(r)} — ${biz(r)}, ${left === 1 ? 'завтра' : `${left} дн`}`)
+  }
+  if (lapsed.length) {
+    lines.push('', '💰 Истёк, но кассу открывают (звонить в первую очередь):')
+    for (const { r, seenAgo } of lapsed) lines.push(`• ${id(r)} — ${biz(r)}, был ${seenAgo === 0 ? 'сегодня' : `${seenAgo} дн назад`}`)
+  }
+  if (quiet.length) {
+    lines.push('', '💤 Тихие (похоже, бросили):')
+    for (const { r, seenAgo } of quiet) lines.push(`• ${id(r)} — ${biz(r)}, молчит ${seenAgo} дн`)
+  }
+  return lines.join('\n')
+}
+
+async function sendTelegram(env, text) {
+  const token = (env.TELEGRAM_BOT_TOKEN || '').trim()
+  const chat = (env.TELEGRAM_CHAT_ID || '').trim()
+  if (!token || !chat) return { ok: false, error: 'не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID' }
+  const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chat, text }),
+  })
+  const d = await r.json().catch(() => ({}))
+  return d.ok === true ? { ok: true } : { ok: false, error: d.description || `HTTP ${r.status}` }
+}
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url)
@@ -140,6 +250,27 @@ export default {
         })
         if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
         return json({ ok: true })
+      }
+
+      // Ежедневные отчёты. Дёргает планировщик (Worker imag-keepalive) — он и
+      // держит пароль панели, поэтому маршрут стоит ЗА проверкой пароля выше:
+      // отдельный секрет заводить не пришлось, а слать владельцу в Telegram что
+      // попало снаружи нельзя. Ответ — что именно ушло, чтобы в логах Worker'а
+      // было видно «сегодня поводов не было», а не пустота.
+      if (pathname === '/api/cron/daily') {
+        const run = async (table, select, build) => {
+          const r = await fetch(`${db.url}/rest/v1/${table}?select=${select}`, { headers: db.headers })
+          if (!r.ok) return { sent: false, error: `Supabase: ${r.status}` }
+          const text = build(await r.json())
+          if (!text) return { sent: false, reason: 'нет поводов' }
+          const tg = await sendTelegram(env, text)
+          return tg.ok ? { sent: true } : { sent: false, error: tg.error }
+        }
+        const [licenses, trials] = await Promise.all([
+          run('licenses', 'customer,expires_at,revoked,activated_at,last_seen_at', buildLicenseReminder),
+          run('trials', 'machine_id,started_at,status,business_type,app_version,last_seen_at,created_at', buildTrialsReport),
+        ])
+        return json({ ok: !licenses.error && !trials.error, licenses, trials })
       }
 
       // --- Вкладка «Облако»: живы ли облачные функции ------------------------

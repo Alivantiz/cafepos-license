@@ -297,10 +297,76 @@ async function testClientScript() {
   console.log('client script: OK')
 }
 
+
+// ── Ежедневные отчёты в Telegram ─────────────────────────────────────────
+// Эти два отчёта год пролежали в GitHub Actions неработающими и никто не
+// заметил — потому что проверить их было нечем. Функции чистые, покрываем.
+async function testDailyReports() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_reports_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let buildLicenseReminder, buildTrialsReport
+  try {
+    const mod = await import(pathToFileURL(tmp).href)
+    ;({ buildLicenseReminder, buildTrialsReport } = mod)
+  } finally {
+    fs.unlinkSync(tmp)
+  }
+
+  const NOW = Date.UTC(2026, 6, 15, 6, 0, 0)
+  const DAY = 86400000
+  const at = (days) => new Date(NOW + days * DAY).toISOString()
+
+  // Молчание при отсутствии поводов — иначе ежедневное «всё хорошо»
+  // перестают читать, и настоящее тревожное тонет вместе с ним.
+  assert.strictEqual(buildLicenseReminder([]), null, 'no licenses → no message')
+  assert.strictEqual(
+    buildLicenseReminder([{ customer: 'Далёкий', expires_at: at(90), activated_at: at(-30), last_seen_at: at(0) }], NOW),
+    null, 'healthy license → no message')
+  assert.strictEqual(buildTrialsReport([]), null, 'no trials → no message')
+
+  const lic = buildLicenseReminder([
+    { customer: 'Истёк вчера', expires_at: at(-1), activated_at: at(-300), last_seen_at: at(0) },
+    { customer: 'Скоро', expires_at: at(3), activated_at: at(-100), last_seen_at: at(0) },
+    { customer: 'Молчит', expires_at: at(200), activated_at: at(-100), last_seen_at: at(-20) },
+    // отозванная не попадает никуда: напоминать о ней нечего
+    { customer: 'Отозван', expires_at: at(1), revoked: true, activated_at: at(-50), last_seen_at: at(0) },
+    // истекла давно (>3 дней) — догонять поздно, в «истекли» не берём
+    { customer: 'Древний', expires_at: at(-40), activated_at: at(-400), last_seen_at: at(0) },
+  ], NOW)
+  assert.ok(lic.includes('Истёк вчера — вчера'), 'expired yesterday should be listed')
+  assert.ok(lic.includes('Скоро — через 3 дн'), 'expiring soon should be listed')
+  assert.ok(lic.includes('Молчит — 20 дн назад'), 'silent till should be listed')
+  assert.ok(!lic.includes('Отозван'), 'revoked license must not be reported')
+  assert.ok(!lic.includes('Древний'), 'long-expired license must not be reported')
+
+  const tr = buildTrialsReport([
+    { machine_id: 'AAAA-BB1111', status: 'trial', business_type: 'cafe', app_version: '1.24.1',
+      started_at: at(-1), created_at: at(-0.5), last_seen_at: at(0) },
+    { machine_id: 'AAAA-BB2222', status: 'trial', business_type: 'shop',
+      started_at: at(-12), created_at: at(-12), last_seen_at: at(0) },
+    { machine_id: 'AAAA-BB3333', status: 'expired', business_type: 'sauna',
+      started_at: at(-20), created_at: at(-20), last_seen_at: at(-1) },
+    { machine_id: 'AAAA-BB4444', status: 'trial', business_type: 'shop',
+      started_at: at(-5), created_at: at(-5), last_seen_at: at(-6) },
+    // купил — из воронки выбывает
+    { machine_id: 'AAAA-BB5555', status: 'licensed', business_type: 'cafe',
+      started_at: at(-30), created_at: at(-30), last_seen_at: at(0) },
+  ], NOW)
+  assert.ok(tr.includes('Всего в работе: 4'), 'licensed installs must not be counted')
+  assert.ok(tr.includes('🆕 Новые за сутки:') && tr.includes('BB1111'), 'fresh trial should be listed')
+  assert.ok(tr.includes('🔥 Триал заканчивается:') && tr.includes('BB2222'), 'hot trial should be listed')
+  assert.ok(tr.includes('💰 Истёк, но кассу открывают') && tr.includes('BB3333'), 'lapsed-but-active is the warmest lead')
+  assert.ok(tr.includes('💤 Тихие') && tr.includes('BB4444'), 'quiet trial should be listed')
+  assert.ok(!tr.includes('BB5555'), 'licensed install must not appear')
+
+  console.log('daily reports: OK')
+}
+
 ;(async () => {
   try {
     await testServerRoutes()
     await testClientScript()
+    await testDailyReports()
     console.log('ALL OK')
   } catch (e) {
     console.error('FAILED:', e.message)
