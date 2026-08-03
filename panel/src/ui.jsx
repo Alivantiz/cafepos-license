@@ -64,12 +64,16 @@ export function Suggest({ value, onChange, options, placeholder, autoFocus }) {
   const [side, setSide] = useState(null)
   const box = useRef(null)
   const SIDE_MIN_WIDTH = 260
+  const SIDE_PAD = 16   // отступ от краёв экрана
 
   const show = () => {
     const modal = box.current?.closest('.modal')
     const r = modal?.getBoundingClientRect()
+    // Панель во всю высоту экрана, а не в высоту окна: категорий два десятка, и
+    // упирать список в короткое окно значило прокручивать его при том, что
+    // справа полэкрана пустого.
     setSide(r && window.innerWidth - r.right >= SIDE_MIN_WIDTH
-      ? { left: r.right + 10, top: r.top, maxHeight: r.height }
+      ? { left: r.right + 10, top: SIDE_PAD, maxHeight: window.innerHeight - SIDE_PAD * 2 }
       : null)
     setOpen(true)
   }
