@@ -19,6 +19,13 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
   const setRevoked = async (flag) => {
+    // Отзыв ломает работу клиента мгновенно, а кнопка стоит рядом с «Продлить».
+    // Промах в восемь пикселей стоил бы звонка от клиента.
+    if (flag && !await confirmDialog({
+      title: 'Отозвать лицензию',
+      message: `Касса у «${c.customer}» перестанет работать сразу после следующей проверки.`,
+      confirmText: 'Отозвать',
+    })) return
     setBusy(true)
     try {
       await api('revoke', { id: c.id, revoked: flag })
@@ -135,7 +142,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
       </div>
 
       {renew && <RenewModal c={c} kaspiPhone={kaspiPhone}
-        onClose={() => setRenew(false)} onDone={() => { setRenew(false); onChanged() }} />}
+        onClose={() => setRenew(false)} onDone={onChanged} />}
       {edit && <EditModal c={c} onClose={() => setEdit(false)}
         onDone={() => { setEdit(false); onChanged() }} />}
     </>
@@ -190,6 +197,8 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
       setMsg(`Здравствуйте! Подписка iMag продлена до ${fmtDate(r.expires_at)}.`
         + (kaspiPhone ? ` Оплата на Kaspi: ${kaspiPhone}.` : ''))
       toast.ok(`Продлено до ${fmtDate(r.expires_at)}`)
+      // Карточку обновляем, но окно оставляем открытым: иначе готовый текст
+      // клиенту не показывался вообще, и его писали руками.
       onDone()
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }

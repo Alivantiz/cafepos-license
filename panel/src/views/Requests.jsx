@@ -1,7 +1,7 @@
 // Заявки на активацию: касса шлёт заявку, владелец одобряет, касса сама
 // забирает лицензию. Раньше код компьютера приходилось выпрашивать у клиента —
 // ровно то, ради чего заявки и делались.
-import { useState } from 'react'
+import { useState , useEffect} from 'react'
 import { api, useApi, fmtDate } from '../api'
 import { Tag, Modal, toast, confirmDialog } from '../ui'
 import { BIZ } from './Trials'
@@ -10,8 +10,9 @@ import { BIZ } from './Trials'
 export const pendingCount = (rows) =>
   (rows || []).filter(r => r.status !== 'rejected' && !r.license_id).length
 
-export default function Requests({ onApproved }) {
+export default function Requests({ onApproved, onReload }) {
   const { data, error, loading, reload } = useApi('requests/list')
+  useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const [approve, setApprove] = useState(null)
   const rows = data?.rows || []
 

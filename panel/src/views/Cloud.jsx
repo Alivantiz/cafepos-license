@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 // Живы ли облачные функции, с которыми говорит касса. Панель читает таблицы,
 // и лежачая функция снаружи неотличима от «клиентов нет» — однажды уже вышло
 // боком: trial не была выложена, таблица оставалась пустой, и это читалось
@@ -7,8 +8,9 @@ import { Tag } from '../ui'
 
 export const brokenCount = (rows) => (rows || []).filter(r => !r.ok).length
 
-export default function Cloud() {
-  const { data, error, loading } = useApi('cloud')
+export default function Cloud({ onReload }) {
+  const { data, error, loading, reload } = useApi('cloud')
+  useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   if (error) return <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>
   if (loading && !data) return <div className="empty">Опрашиваю функции…</div>
   const rows = data?.rows || []

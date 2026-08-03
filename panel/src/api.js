@@ -6,7 +6,7 @@ export const pw = () => localStorage.getItem('panel_pw') || ''
 export const setPw = (v) => localStorage.setItem('panel_pw', v)
 export const logout = () => { localStorage.removeItem('panel_pw'); location.reload() }
 
-export async function api(path, body) {
+export async function api(path, body, opts) {
   const r = await fetch('/api/' + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-panel-key': pw() },
@@ -15,7 +15,14 @@ export async function api(path, body) {
   const d = await r.json().catch(() => ({}))
   // 401 — пароль сменили или он неверен: выкидываем на экран входа сразу,
   // иначе панель молча показывала бы пустые списки.
-  if (r.status === 401) { localStorage.removeItem('panel_pw'); location.reload(); throw new Error('Неверный пароль') }
+  //
+  // Кроме самого экрана входа (noReload): там перезагрузка съедала сообщение
+  // об ошибке — страница моргала, поле пустело, причина не называлась.
+  if (r.status === 401) {
+    localStorage.removeItem('panel_pw')
+    if (!opts?.noReload) location.reload()
+    throw new Error('Неверный пароль')
+  }
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status))
   return d
 }

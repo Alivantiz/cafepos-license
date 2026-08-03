@@ -1,10 +1,12 @@
+import { useEffect } from 'react'
 // Разбор ИИ-распознаваний накладных: фото, что распозналось, и решение —
 // «разобрано» (фото удаляется) или «удалить целиком».
 import { api, useApi } from '../api'
 import { toast, confirmDialog } from '../ui'
 
-export default function Invoices() {
+export default function Invoices({ onReload }) {
   const { data, error, loading, reload } = useApi('invoices/pending')
+  useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const rows = data?.rows || []
 
   const review = async (id) => {

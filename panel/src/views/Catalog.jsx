@@ -7,7 +7,7 @@ import { Modal, toast, confirmDialog } from '../ui'
 const PER_PAGE = 200
 const key = (r) => r.venue_id + '::' + r.barcode
 
-export default function Catalog({ onCounts }) {
+export default function Catalog({ onCounts, onReload }) {
   const [pending, setPending] = useState([])
   const [pendTotal, setPendTotal] = useState(null)
   const [sel, setSel] = useState(() => new Set())
@@ -39,6 +39,8 @@ export default function Catalog({ onCounts }) {
 
   useEffect(() => { loadPending() }, [loadPending])
   useEffect(() => { loadList() }, [loadList])
+  // Кнопка «Обновить» в шапке должна перечитывать ИМЕННО эту вкладку.
+  useEffect(() => { onReload?.(() => () => { loadPending(); loadList() }) }, [loadPending, loadList, onReload])
 
   const showSimilar = async (r) => {
     const k = key(r)

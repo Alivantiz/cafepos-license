@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, useApi, pw, setPw, logout, fmtDate } from './api'
 import { Toasts, Confirms, Modal, toast } from './ui'
 import Summary from './views/Summary'
@@ -35,7 +35,11 @@ function Login({ onOk }) {
     setPw(value)
     // Проверяем пароль сразу, а не на первом же экране: иначе неверный пароль
     // выглядел бы как «панель не грузится».
-    try { await api('clients'); onOk() }
+    //
+    // noReload: обычный api() на 401 перезагружает страницу (пароль сменили —
+    // выкидываем на вход). Здесь мы УЖЕ на входе, и перезагрузка съедала бы
+    // сообщение об ошибке: экран моргал, поле пустело, причина не называлась.
+    try { await api('clients', {}, { noReload: true }); onOk() }
     catch (err) { localStorage.removeItem('panel_pw'); toast.err(err.message) }
     finally { setBusy(false) }
   }
@@ -80,9 +84,11 @@ function Panel() {
     return () => { document.removeEventListener('visibilitychange', fresh); clearInterval(t) }
   }, [reload])
 
-  // Счётчики тянем при входе, а не при открытии вкладки: смысл бейджа в том,
-  // чтобы новая заявка и поломка в облаке находили владельца сами.
-  useEffect(() => {
+  // Счётчики: смысл бейджа в том, чтобы новая заявка и поломка в облаке
+  // находили владельца сами. Раньше они тянулись ОДИН раз при входе — вкладка
+  // висела день, заявка приходила, а красной точки не было. Обновляем по тому
+  // же расписанию, что и клиентов.
+  const reloadBadges = useCallback(() => {
     api('requests/list').then(d => setBadges(b => ({ ...b, requests: pendingCount(d.rows) }))).catch(() => {})
     api('cloud').then(d => setBadges(b => ({ ...b, cloud: brokenCount(d.rows) }))).catch(() => {})
     api('catalog/pending').then(d =>
@@ -91,12 +97,37 @@ function Panel() {
       setBadges(b => ({ ...b, invoices: d.total ?? (d.rows || []).length }))).catch(() => {})
   }, [])
 
-  const trialsBadge = actionableTrials(data?.trials)
+  useEffect(() => {
+    reloadBadges()
+    const fresh = () => { if (!document.hidden) reloadBadges() }
+    document.addEventListener('visibilitychange', fresh)
+    const t = setInterval(fresh, 300_000)
+    return () => { document.removeEventListener('visibilitychange', fresh); clearInterval(t) }
+  }, [reloadBadges])
 
-  const goto = (v) => { setView(v); setOpenClient(null); setMenu(false) }
+  // Купившие после пробы остаются в таблице trials со статусом licensed. Если
+  // их не отсечь ЗДЕСЬ, они считаются и как проба, и как лицензия: плитка «на
+  // пробе» врёт, в списке клиентов человек двоится, в «требует внимания»
+  // висит как горячий триал. Чем лучше продажи, тем сильнее расходятся цифры.
+  const trials = useMemo(
+    () => (data?.trials || []).filter(t => t.status !== 'licensed'), [data])
+  const cleanData = useMemo(
+    () => data ? { ...data, trials } : null, [data, trials])
+
+  const trialsBadge = actionableTrials(trials)
+
+  // «Обновить» и время в шапке относились ТОЛЬКО к клиентам: остальные вкладки
+  // грузятся своими хуками, и на «Заявках» кнопка дёргала невидимый запрос —
+  // владелец жал и решал, что новых заявок нет. Вкладка регистрирует здесь свою
+  // перезагрузку, шапка вызывает именно её.
+  const [viewReload, setViewReload] = useState(null)
+  const isOwnData = view === 'summary' || view === 'clients' || view === 'trials' || !!current
+  const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
+
+  const goto = (v) => { setView(v); setOpenClient(null); setMenu(false); setViewReload(null) }
   const open = (c) => { setOpenClient(c.subject); setMenu(false) }
 
-  const all = [...(data?.licenses || []), ...(data?.trials || [])]
+  const all = [...(data?.licenses || []), ...trials]
   // Держим subject, а не объект: после продления/отзыва список перечитывается,
   // и старый объект показывал бы вчерашние цифры.
   const current = openClient ? all.find(c => c.subject === openClient) : null
@@ -131,9 +162,11 @@ function Panel() {
               вкладка провисела ночь. Кнопка осталась — обновление само по себе
               работает, но иногда хочется дёрнуть прямо сейчас. */}
           <span className="muted2 spacer">
-            {at ? 'данные на ' + new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''}
+            {isOwnData && at
+              ? 'данные на ' + new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+              : ''}
           </span>
-          <button className="btn ghost sm" onClick={reload} disabled={loading}>
+          <button className="btn ghost sm" onClick={doReload} disabled={loading}>
             {loading ? 'Обновляю…' : 'Обновить'}
           </button>
         </div>
@@ -146,26 +179,23 @@ function Panel() {
             onChanged={reload} />
         )}
         {data && !current && view === 'summary' && (
-          <Summary data={data} onOpen={open} onGoto={goto} />
+          <Summary data={cleanData} onOpen={open} onGoto={goto} />
         )}
         {data && !current && view === 'clients' && (
-          <Clients data={data} onOpen={open} onIssue={() => setIssue(true)} />
+          <Clients data={cleanData} onOpen={open} onIssue={() => setIssue(true)} />
         )}
-        {data && !current && view === 'trials' && <Trials data={data} onOpen={open} />}
+        {data && !current && view === 'trials' && <Trials data={cleanData} onOpen={open} />}
         {!current && view === 'requests' && (
-          <Requests onApproved={() => {
-            reload()
-            api('requests/list').then(d => setBadges(b => ({ ...b, requests: pendingCount(d.rows) }))).catch(() => {})
-          }} />
+          <Requests onReload={setViewReload} onApproved={() => { reload(); reloadBadges() }} />
         )}
         {!current && view === 'catalog' && (
-          <Catalog onCounts={(n) => setBadges(b => ({ ...b, catalog: n }))} />
+          <Catalog onReload={setViewReload} onCounts={(n) => setBadges(b => ({ ...b, catalog: n }))} />
         )}
-        {!current && view === 'invoices' && <Invoices />}
-        {!current && view === 'cloud' && <Cloud />}
+        {!current && view === 'invoices' && <Invoices onReload={setViewReload} />}
+        {!current && view === 'cloud' && <Cloud onReload={setViewReload} />}
       </main>
 
-      {issue && <IssueModal onClose={() => setIssue(false)} onDone={() => { setIssue(false); reload() }} />}
+      {issue && <IssueModal onClose={() => setIssue(false)} onDone={reload} />}
       <Toasts />
       <Confirms />
     </div>
@@ -184,6 +214,9 @@ function IssueModal({ onClose, onDone }) {
       const r = await api('issue', { ...f, days: Number(f.days), terminals: Number(f.terminals) })
       setCode(r.id)
       toast.ok('Лицензия выпущена')
+      // Список перечитываем, но окно НЕ закрываем: раньше родитель закрывал его
+      // в том же тике, и код активации не показывался вообще — за ним
+      // приходилось лезть в карточку клиента.
       onDone()
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
