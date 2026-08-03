@@ -27,9 +27,16 @@ export default function Summary({ data, onOpen, onFilter }) {
     !c.revoked && c.expires_at && daysLeft(c.expires_at) <= -30).length
   const hotTrials = trials.filter(t => (t.receipts7 || 0) > 0)
 
-  // Выручка всех заведений за 30 дней — не твои деньги, а масштаб парка:
-  // по нему видно, растёт ли то, на чём стоит касса.
-  const gmv30 = licenses.reduce((s, c) => s + (c.revenue30 || 0), 0)
+  // Свои деньги, а не чужие. Оборот парка красив, но это выручка клиентов —
+  // на неё нельзя ни жить, ни планировать. Считаем то, что приходит тебе:
+  // сколько получено за месяц и сколько ждать в следующем.
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString()
+  const income30 = licenses.reduce((s, c) =>
+    s + (c.renewals || []).reduce((a, r) => a + (r.created_at >= monthAgo ? (r.amount || 0) : 0), 0), 0)
+  const soon = licenses.filter(c => !c.revoked && c.expires_at
+    && daysLeft(c.expires_at) > 0 && daysLeft(c.expires_at) <= 30)
+  const expected30 = soon.reduce((s, c) => s + (c.price || 0), 0)
+  const noPrice = soon.filter(c => !c.price).length
 
   // Суммарная кривая по дням: складываем все заведения по датам.
   const byDay = new Map()
@@ -40,6 +47,7 @@ export default function Summary({ data, onOpen, onFilter }) {
     [...byDay.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([day, revenue]) => ({ day, revenue })), 30)
 
   const noTelemetry = live.filter(c => !c.telemetry).length
+  const today = new Date().toISOString().slice(0, 10)
 
   // Ноль клиентов: плитки писали «все лицензии живы» и «всё спокойно» —
   // экран выглядел рабочим, хотя данных нет вовсе.
@@ -61,21 +69,28 @@ export default function Summary({ data, onOpen, onFilter }) {
           hint={expired.length ? `${expired.length} уже истекли` : lost ? `${lost} потеряны давно` : 'просроченных нет'} />
         <Tile label="Молчат 3+ дня" value={silent.length} onClick={() => onFilter("silent")}
           tone={silent.length ? 'bad' : undefined} hint="нет продаж" />
-        <Tile label="Оборот парка за 30 дней" value={money(gmv30, true)}
-          hint={noTelemetry ? `${noTelemetry} без телеметрии` : 'по всем заведениям'} />
+        <Tile label="Получено за 30 дней" value={money(income30, true)}
+          hint="по записанным продлениям" />
+        <Tile label="Ожидается за 30 дней" value={money(expected30, true)}
+          hint={noPrice ? `у ${noPrice} из ${soon.length} не указана цена` : `${soon.length} продлений`} />
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="row" style={{ marginBottom: 10 }}>
+          {/* Оборот парка — не твои деньги, отдельной плитки он больше не
+              занимает. График оставлен как диагностика: по нему видно, что
+              кассы работают, а не встали все разом. */}
           <b>Выручка всех заведений</b>
-          <span className="muted2">последние 30 дней</span>
+          <span className="muted2">
+            последние 30 дней{noTelemetry ? ` · ${noTelemetry} без телеметрии` : ''}
+          </span>
         </div>
         <Chart days={series} />
       </div>
 
       <Upcoming licenses={licenses} onOpen={onOpen} />
 
-      <Attention title="Требует внимания сегодня" items={[
+      <Attention title="Требует внимания сегодня" today={today} items={[
         ...expired.map(c => ({ c, why: 'лицензия истекла', tone: 'bad' })),
         ...expiring.map(c => ({ c, why: `истекает через ${daysLeft(c.expires_at)} дн`, tone: 'warn' })),
         ...silent.map(c => ({ c, why: `нет продаж ${daysAgo(c.last_sale_at)} дн`, tone: 'bad' })),
@@ -88,8 +103,6 @@ export default function Summary({ data, onOpen, onFilter }) {
 // Кто платит следующим и когда. Оплата подписки — это и есть продление, так
 // что дата окончания лицензии и есть дата платежа; календарь просто ставит их
 // по порядку, чтобы не выискивать глазами в общем списке.
-//
-// Суммы тут нет и не будет, пока цена не хранится: в licenses её нет вовсе.
 function Upcoming({ licenses, onOpen }) {
   const rows = licenses
     .filter(c => !c.revoked && c.expires_at)
@@ -99,11 +112,15 @@ function Upcoming({ licenses, onOpen }) {
     .slice(0, 10)
 
   if (!rows.length) return null
+  const total = rows.reduce((s, x) => s + (x.c.price || 0), 0)
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <div className="row" style={{ marginBottom: 10 }}>
         <b>Ближайшие платежи</b>
         <span className="muted2">оплата = продление подписки</span>
+        {/* Итог по колонке: главный вопрос к календарю — «сколько всего
+            придёт», а складывать строки глазами владелец не должен. */}
+        {total > 0 && <span className="spacer">{money(total)}</span>}
       </div>
       {rows.map(({ c, left }) => (
         <div key={c.subject} className="row"
@@ -113,6 +130,10 @@ function Upcoming({ licenses, onOpen }) {
           </button>
           {c.contact && <a className="muted2" href={`tel:${String(c.contact).replace(/[^\d+]/g, '')}`}>{c.contact}</a>}
           <span className="spacer" />
+          {/* Цена продления стоит рядом с датой: «когда» без «сколько» —
+              половина ответа. Без цены пишем прочерк, чтобы было видно, у кого
+              её ещё не проставили. */}
+          <span className={c.price ? '' : 'muted2'}>{c.price ? money(c.price) : '— ₸'}</span>
           <span className="muted2">{fmtDate(c.expires_at)}</span>
           <Tag tone={left <= 0 ? 'bad' : left <= 7 ? 'warn' : null}>
             {left < 0 ? `просрочено ${-left} дн` : left === 0 ? 'сегодня' : `через ${left} дн`}
@@ -123,7 +144,7 @@ function Upcoming({ licenses, onOpen }) {
   )
 }
 
-function Attention({ title, items, onOpen }) {
+function Attention({ title, items, onOpen, today }) {
   // Один клиент может попасть в список дважды (истекает И молчит) — показываем
   // обе причины в одной строке, иначе список раздувается дублями.
   const merged = new Map()
@@ -133,11 +154,17 @@ function Attention({ title, items, onOpen }) {
     merged.get(key).whys.push(it.why)
     if (it.tone === 'bad') merged.get(key).tone = 'bad'
   }
-  const list = [...merged.values()]
+  // Отложенные: про них уже позвонили и договорились. Оставлять их в блоке
+  // значило приучить владельца не читать блок вообще — «там всегда те же».
+  const all = [...merged.values()]
+  const list = all.filter(x => !(x.c.snoozed_until && x.c.snoozed_until > today))
+  const snoozed = all.length - list.length
   return (
     <div className="card">
       <div className="row" style={{ marginBottom: 10 }}><b>{title}</b>
-        <span className="muted2">{list.length ? `${list.length} шт` : ''}</span></div>
+        <span className="muted2">
+          {list.length ? `${list.length} шт` : ''}{snoozed ? ` · ${snoozed} отложено` : ''}
+        </span></div>
       {!list.length && <div className="empty">Всё спокойно — никого дёргать не надо</div>}
       {list.map(({ c, whys, tone }) => (
         <div key={c.subject} className="row" style={{ padding: '9px 0', borderTop: '1px solid var(--line)' }}>

@@ -8,6 +8,7 @@ import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar } from '../ui'
 export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFor }) {
   const [renew, setRenew] = useState(false)
   const [edit, setEdit] = useState(false)
+  const [snooze, setSnooze] = useState(false)
   const [notes, setNotes] = useState(c.notes || '')
   const [busy, setBusy] = useState(false)
   // Календарь, а не порядок точек: дни без продаж в данных отсутствуют,
@@ -61,6 +62,16 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
     onBack()
   }
 
+  // Отложенный клиент остаётся в списках и в цифрах — он лишь не попадает в
+  // «требует внимания сегодня» до этой даты.
+  const snoozedTill = c.snoozed_until && c.snoozed_until > new Date().toISOString().slice(0, 10)
+    ? c.snoozed_until : null
+  const unsnooze = async () => {
+    setBusy(true)
+    try { await api('edit', { id: c.id, snoozed_until: null }); toast.ok('Вернули во «внимание»'); onChanged() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
   const left = daysLeft(c.expires_at)
   const grow = c.prevRevenue7 > 0 ? Math.round((c.revenue7 - c.prevRevenue7) / c.prevRevenue7 * 100) : null
 
@@ -74,6 +85,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
             : left !== null && left <= 0 ? <Tag tone="bad">истекла</Tag>
               : <Tag tone="ok">{left === null ? 'бессрочная' : `до ${fmtDate(c.expires_at)}`}</Tag>}
         {c.hidden && <Tag>скрыта из сводки</Tag>}
+        {snoozedTill && <Tag>отложен до {fmtDate(snoozedTill)}</Tag>}
         {/* Телефон рядом с именем: сводка говорит «эта касса молчит, позвони» —
             значит звонить надо отсюда, а не искать контакт в заметке. */}
         {c.contact && <a className="tag" href={`tel:${String(c.contact).replace(/[^\d+]/g, '')}`}>{c.contact}</a>}
@@ -127,6 +139,8 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
               <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
                 {c.machine_id || 'не привязана'}</dd>
               <dt className="muted2">Терминалов</dt><dd style={{ margin: 0 }}>{c.terminals ?? 1}</dd>
+              <dt className="muted2">Цена продления</dt>
+              <dd style={{ margin: 0 }}>{c.price ? money(c.price) : <span className="muted2">не указана</span>}</dd>
               <dt className="muted2">Заведена</dt><dd style={{ margin: 0 }}>{fmtDate(c.created_at)}</dd>
             </>}
             <dt className="muted2">Связь</dt><dd style={{ margin: 0 }}>{agoText(c.last_seen_at)}</dd>
@@ -146,12 +160,19 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
               <button className="btn" disabled={busy} onClick={() => setRevoked(!c.revoked)}>
                 {c.revoked ? 'Вернуть доступ' : 'Отозвать'}
               </button>
+              {/* «Позвонил, договорились на среду» — до среды дёргать не о чем,
+                  но клиент продолжает висеть в блоке внимания каждый день. */}
+              {snoozedTill
+                ? <button className="btn ghost" disabled={busy} onClick={unsnooze}>Вернуть во «внимание»</button>
+                : <button className="btn ghost" disabled={busy} onClick={() => setSnooze(true)}>Отложить</button>}
               <button className="btn ghost" disabled={busy} onClick={() => setHidden(!c.hidden)}>
                 {c.hidden ? 'Вернуть в список' : 'Скрыть'}
               </button>
             </div>
           )}
         </div>
+
+        {!trial && <History rows={c.renewals} />}
 
         {!trial && (
           <div className="card">
@@ -170,7 +191,70 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
         onClose={() => setRenew(false)} onDone={onChanged} />}
       {edit && <EditModal c={c} onClose={() => setEdit(false)}
         onDone={() => { setEdit(false); onChanged() }} />}
+      {snooze && <SnoozeModal c={c} onClose={() => setSnooze(false)}
+        onDone={() => { setSnooze(false); onChanged() }} />}
     </>
+  )
+}
+
+// История продлений. Раньше от платежа не оставалось ничего, кроме сдвинутой
+// даты: сколько клиент уже заплатил и как давно он с нами — узнать было негде.
+function History({ rows }) {
+  const list = rows || []
+  const total = list.reduce((s, r) => s + (r.amount || 0), 0)
+  return (
+    <div className="card">
+      <div className="row">
+        <b>Продления</b>
+        {total > 0 && <span className="muted2 spacer">всего {money(total)}</span>}
+      </div>
+      {!list.length && <div className="empty" style={{ padding: '18px 0' }}>
+        Продлений ещё не было. Они начнут записываться с первого продления из панели.
+      </div>}
+      {list.slice(0, 12).map((r, i) => (
+        <div key={i} className="row" style={{ padding: '8px 0', borderTop: '1px solid var(--line)' }}>
+          <span className="muted2">{fmtDate(r.created_at)}</span>
+          <span>+{r.days} дн</span>
+          <span className="spacer" />
+          {r.amount ? <span>{money(r.amount)}</span> : <span className="muted2">сумма не записана</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// «Отложить до даты»: клиент никуда не девается, но до этого дня не попадает
+// в блок «требует внимания сегодня».
+function SnoozeModal({ c, onClose, onDone }) {
+  const plus = (d) => new Date(Date.now() + d * 86400000).toISOString().slice(0, 10)
+  const [date, setDate] = useState(plus(7))
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    setBusy(true)
+    try { await api('edit', { id: c.id, snoozed_until: date }); toast.ok('Отложено'); onDone() }
+    catch (e) { toast.err(e.message); setBusy(false) }
+  }
+  return (
+    <Modal title="Отложить до даты" onClose={onClose} keepOpen>
+      <div className="muted2">
+        «{c.customer}» до этой даты не будет попадать в «требует внимания сегодня».
+        В списке клиентов и в цифрах он остаётся.
+      </div>
+      <div className="row">
+        {[3, 7, 30].map(d => (
+          <button key={d} className="btn sm" onClick={() => setDate(plus(d))}>
+            {d === 30 ? 'месяц' : d + ' дн'}
+          </button>
+        ))}
+      </div>
+      <label>До<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+      <div className="row">
+        <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
+        <button className="btn pri" disabled={busy || !date} onClick={go}>
+          {busy ? 'Секунду…' : 'Отложить'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 
@@ -179,6 +263,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
 function EditModal({ c, onClose, onDone }) {
   const [f, setF] = useState({
     customer: c.customer || '', contact: c.contact || '', terminals: c.terminals ?? 1,
+    price: c.price ?? '',
   })
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
@@ -188,6 +273,7 @@ function EditModal({ c, onClose, onDone }) {
     try {
       await api('edit', {
         id: c.id, customer: f.customer, contact: f.contact, terminals: Number(f.terminals),
+        price: f.price === '' ? null : Number(f.price),
       })
       toast.ok('Сохранено'); onDone()
     } catch (e) { toast.err(e.message); setBusy(false) }
@@ -198,6 +284,11 @@ function EditModal({ c, onClose, onDone }) {
       <label>Название<input value={f.customer} onChange={set('customer')} autoFocus /></label>
       <label>Телефон<input value={f.contact} onChange={set('contact')} placeholder="+7…" inputMode="tel" /></label>
       <label>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
+      {/* Цена одного продления, а не «в месяц»: кто-то платит за месяц, кто-то
+          за год — приводить к общему периоду значит гадать за клиента. */}
+      <label>Цена продления, ₸
+        <input type="number" min="0" value={f.price} onChange={set('price')} placeholder="сколько платит за раз" />
+      </label>
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
         <button className="btn pri" disabled={busy || !f.customer.trim()} onClick={go}>
@@ -210,6 +301,9 @@ function EditModal({ c, onClose, onDone }) {
 
 function RenewModal({ c, kaspiPhone, onClose, onDone }) {
   const [days, setDays] = useState(30)
+  // Сумма подставляется из цены клиента: в 9 случаях из 10 платят ровно её,
+  // а поправить разовую скидку можно прямо здесь.
+  const [amount, setAmount] = useState(c.price ?? '')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const n = Number(days) || 0
@@ -217,7 +311,7 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
   const go = async () => {
     setBusy(true)
     try {
-      const r = await api('renew', { id: c.id, days: Number(days) })
+      const r = await api('renew', { id: c.id, days: Number(days), amount: amount === '' ? null : Number(amount) })
       // Текст клиенту готовим здесь же: раньше владелец писал его руками
       // каждый раз, подставляя дату из головы.
       setMsg(`Здравствуйте! Подписка iMag продлена до ${fmtDate(r.expires_at)}.`
@@ -238,6 +332,12 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
           <button key={d} className="btn sm" onClick={() => setDays(d)}>{d === 365 ? '1 год' : d + ' дн'}</button>
         ))}
       </div>
+      {/* Сумма нужна для истории платежей: без неё продление запишется, но на
+          вопрос «сколько он всего заплатил» ответа опять не будет. */}
+      <label>Сумма, ₸
+        <input type="number" min="0" value={amount} onChange={e => setAmount(e.target.value)}
+          placeholder={c.price ? '' : 'необязательно'} />
+      </label>
       {/* Дату видно ДО нажатия: раньше она появлялась только в ответе сервера */}
       <div className="muted2">
         {n > 0 ? `Продлится до ${fmtDate(new Date(Math.max(Date.now(), new Date(c.expires_at || 0).getTime()) + n * 86400000))}`

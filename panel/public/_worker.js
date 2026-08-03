@@ -35,7 +35,7 @@ async function sqlHint(res, cols) {
   const text = await res.text()
   const missing = cols.find(c => text.includes(`'${c}'`) || text.includes(`"${c}"`))
   if (missing || /does not exist|PGRST204|42703/.test(text)) {
-    return `В базе нет колонки${missing ? ' «' + missing + '»' : ''}. Выполните SQL из license-server/supabase/schema.sql (раздел про contact и hidden) в Supabase → SQL Editor.`
+    return `В базе нет колонки${missing ? ' «' + missing + '»' : ''}. Выполните SQL из license-server/supabase/schema.sql (раздел про contact, hidden, price и snoozed_until) в Supabase → SQL Editor.`
   }
   return `Supabase: ${res.status} ${text}`
 }
@@ -117,20 +117,35 @@ export default {
       // id, триал — по machine_id), клиентов десятки, дней сотни. Джойн на
       // такой объём в памяти дешевле, чем вьюха, которую потом надо помнить.
       if (pathname === '/api/clients') {
-        const since = isoDay(-90)
+        // 35 дней, а не 90: панель нигде не показывает окно длиннее тридцати,
+        // а лишние два месяца строк на каждого клиента гонялись из Supabase при
+        // каждом обновлении — это оплаченный трафик за данные, которые никто
+        // не рисует. Запас в пять дней — на разницу часовых поясов и на то,
+        // что «за 30 дней» считается от сегодня.
+        const since = isoDay(-35)
         const LIC_BASE = 'id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at'
+        // Колонки, добавленные ALTER-ами позже базовой схемы: на проекте, где
+        // SQL ещё не выполнили, запрос с ними падает целиком.
+        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until']
         const licenses_ = (cols) => fetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
-        let [licR, trialR, dailyR, stateR] = await Promise.all([
-          licenses_(LIC_BASE + ',contact,hidden'),
+        let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
+          licenses_(LIC_BASE + ',' + LIC_OPT.join(',')),
           fetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers }),
           fetch(`${db.url}/rest/v1/usage_daily?select=subject,day,revenue,receipts&day=gte.${since}&order=day.asc&limit=20000`, { headers: db.headers }),
           fetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers }),
+          // История продлений здесь же, а не отдельным запросом с карточки:
+          // строк мало (одно продление на клиента в месяц), зато сводка может
+          // сложить из них «получено за 30 дней» — свои деньги, а не чужие.
+          fetch(`${db.url}/rest/v1/license_renewals?select=license_id,days,amount,to_expires,created_at&order=created_at.desc&limit=500`, { headers: db.headers }),
         ])
-        // contact/hidden добавлены позже отдельными ALTER. Пока их не выполнили,
-        // запрос с этими колонками падает целиком — и панель осталась бы вообще
-        // без клиентов. Повторяем без них: лучше без телефона, чем без списка.
-        if (!licR.ok) licR = await licenses_(LIC_BASE)
+        // Пока ALTER-ы не выполнили, запрос с этими колонками падает целиком — и
+        // панель осталась бы вообще без клиентов. Отступаем по одной колонке с
+        // конца, а не сразу к базе: иначе непринятая price уносила бы и телефон,
+        // который на этом проекте давно работает.
+        for (let n = LIC_OPT.length - 1; n >= 0 && !licR.ok; n--) {
+          licR = await licenses_(n ? LIC_BASE + ',' + LIC_OPT.slice(0, n).join(',') : LIC_BASE)
+        }
         for (const [name, r] of [['licenses', licR], ['trials', trialR], ['usage_daily', dailyR], ['usage_state', stateR]]) {
           // usage_* появились позже остальных: если SQL ещё не выполнен, таблицы
           // нет — это не повод отдать 502 и оставить владельца без панели вообще.
@@ -139,6 +154,14 @@ export default {
         }
         const daily = dailyR.ok ? await dailyR.json() : []
         const state = stateR.ok ? await stateR.json() : []
+        // Таблицы может не быть (SQL не выполнен) — это пустая история, а не
+        // повод оставить владельца без списка клиентов.
+        const renewals = renewR.ok ? await renewR.json() : []
+        const byRenewal = new Map()
+        for (const r of renewals) {
+          if (!byRenewal.has(r.license_id)) byRenewal.set(r.license_id, [])
+          byRenewal.get(r.license_id).push(r)
+        }
         const byDay = new Map(), byState = new Map()
         for (const d of daily) {
           if (!byDay.has(d.subject)) byDay.set(d.subject, [])
@@ -157,13 +180,14 @@ export default {
             ...window_(days),
           }
         }
-        const licenses = (await licR.json()).map(r => decorate(r, r.id, 'license'))
+        const licenses = (await licR.json()).map(r =>
+          ({ ...decorate(r, r.id, 'license'), renewals: byRenewal.get(r.id) || [] }))
         const trials = (await trialR.json()).map(r => decorate(r, r.machine_id, 'trial'))
         return json({ licenses, trials, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
       }
 
       if (pathname === '/api/renew') {
-        const { id, days } = await request.json()
+        const { id, days, amount } = await request.json()
         const n = Number(days)
         if (!id || !Number.isFinite(n) || n <= 0) return json({ error: 'Нужны id и положительное число дней' }, 400)
 
@@ -185,8 +209,27 @@ export default {
           body: JSON.stringify({ expires_at: newExpires, revoked: false })
         })
         if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+
+        // История продлений: раньше от платежа не оставалось ничего, кроме
+        // сдвинутой даты. На вопрос «сколько он уже заплатил и как давно с
+        // нами» ответить было нечем — а это первое, что смотрят перед скидкой
+        // или перед тем, как отпускать клиента.
+        //
+        // Запись — не критичная часть продления: если таблицы ещё нет, подписка
+        // всё равно продлена, и валить операцию из-за журнала нельзя.
+        const paid = Number(amount)
+        await fetch(`${db.url}/rest/v1/license_renewals`, {
+          method: 'POST',
+          headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({
+            license_id: String(id), days: n,
+            amount: Number.isFinite(paid) && paid > 0 ? Math.round(paid) : null,
+            from_expires: rows[0].expires_at || null, to_expires: newExpires,
+          })
+        }).catch(() => {})
         return json({ ok: true, customer: rows[0].customer, expires_at: newExpires })
       }
+
 
       if (pathname === '/api/issue') {
         // Новая лицензия под активацию по коду: строка в таблице, id = код
@@ -268,6 +311,27 @@ export default {
           if (!Number.isFinite(n) || n < 1) return json({ error: 'Терминалов — целое число от 1' }, 400)
           patch.terminals = Math.floor(n)
         }
+        // Цена ОДНОГО продления, а не «в месяц»: кто-то платит помесячно, кто-то
+        // за год — приводить это к общему периоду значит гадать. Панель ставит
+        // сумму в календарь платежей ровно в тот день, когда лицензия истекает.
+        if ('price' in body) {
+          if (body.price === null || body.price === '') patch.price = null
+          else {
+            const n = Number(body.price)
+            if (!Number.isFinite(n) || n < 0) return json({ error: 'Цена — число от 0' }, 400)
+            patch.price = Math.round(n)
+          }
+        }
+        // «Отложить»: клиент остаётся в списке и в цифрах, но до этой даты не
+        // попадает в «требует внимания сегодня». Без этого молчащая касса, про
+        // которую уже позвонили и договорились, висела в блоке каждый день и
+        // приучала не читать его вовсе.
+        if ('snoozed_until' in body) {
+          const v = String(body.snoozed_until ?? '').trim()
+          if (!v) patch.snoozed_until = null
+          else if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return json({ error: 'Дата — в виде ГГГГ-ММ-ДД' }, 400)
+          else patch.snoozed_until = v
+        }
         if (!Object.keys(patch).length) return json({ error: 'Нечего менять' }, 400)
 
         const r = await fetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
@@ -275,7 +339,7 @@ export default {
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify(patch)
         })
-        if (!r.ok) return json({ error: await sqlHint(r, ['contact', 'hidden']) }, 502)
+        if (!r.ok) return json({ error: await sqlHint(r, ['contact', 'hidden', 'price', 'snoozed_until']) }, 502)
         return json({ ok: true })
       }
 

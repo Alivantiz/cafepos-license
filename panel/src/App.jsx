@@ -103,13 +103,16 @@ function Panel() {
   //
   // Важно другое: вкладку оставляют открытой, и наутро в ней вчерашние цифры,
   // а «молчит N дней» и «истекает через N дней» считаются в момент отрисовки —
-  // то есть врут. Поэтому перечитываем при возврате к вкладке и раз в пять
-  // минут в фоне. Пока вкладка спрятана — не дёргаем сервер вовсе.
+  // то есть врут. Достаточно перечитать в тот момент, когда на вкладку
+  // ВЕРНУЛИСЬ: пока на неё не смотрят, свежесть цифр никому не нужна.
+  //
+  // Таймера «раз в пять минут» здесь был: он тянул из Supabase полный список
+  // клиентов с дневными итогами 288 раз в сутки на каждую открытую вкладку —
+  // за данные, которые обновляются раз в день. Это оплаченный трафик впустую.
   useEffect(() => {
     const fresh = () => { if (!document.hidden) reload() }
     document.addEventListener('visibilitychange', fresh)
-    const t = setInterval(fresh, 300_000)
-    return () => { document.removeEventListener('visibilitychange', fresh); clearInterval(t) }
+    return () => document.removeEventListener('visibilitychange', fresh)
   }, [reload])
 
   // Счётчики: смысл бейджа в том, чтобы новая заявка и поломка в облаке
@@ -129,8 +132,7 @@ function Panel() {
     reloadBadges()
     const fresh = () => { if (!document.hidden) reloadBadges() }
     document.addEventListener('visibilitychange', fresh)
-    const t = setInterval(fresh, 300_000)
-    return () => { document.removeEventListener('visibilitychange', fresh); clearInterval(t) }
+    return () => document.removeEventListener('visibilitychange', fresh)
   }, [reloadBadges])
 
   // Купившие после пробы остаются в таблице trials со статусом licensed. Если
@@ -150,16 +152,22 @@ function Panel() {
   // перезагрузку, шапка вызывает именно её.
   const [viewReload, setViewReload] = useState(null)
   const [clientsFilter, setClientsFilter] = useState('all')
-  const isOwnData = view === 'summary' || view === 'clients' || view === 'trials' || !!current
-  const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
-
-  const goto = (v) => { setView(v); setMenu(false); setViewReload(null) }
-  const open = (c) => { setOpenClient(c.subject); setMenu(false) }
 
   const all = [...(data?.licenses || []), ...trials]
   // Держим subject, а не объект: после продления/отзыва список перечитывается,
   // и старый объект показывал бы вчерашние цифры.
   const current = openClient ? all.find(c => c.subject === openClient) : null
+
+  // ВАЖЕН ПОРЯДОК: current объявлен выше, потому что используется здесь. Когда
+  // он стоял ниже, на «Заявках», «Каталоге», «Накладных» и «Облаке» вкладка
+  // падала целиком: там первые три сравнения ложны, `||` доходит до current, а
+  // тот ещё не инициализирован. На сводке выражение до него не добиралось —
+  // поэтому поломка выглядела как «сломаны четыре вкладки из семи».
+  const isOwnData = view === 'summary' || view === 'clients' || view === 'trials' || !!current
+  const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
+
+  const goto = (v) => { setView(v); setMenu(false); setViewReload(null) }
+  const open = (c) => { setOpenClient(c.subject); setMenu(false) }
 
   return (
     <div className="shell">

@@ -117,6 +117,17 @@ async function testServerRoutes() {
   const editBadHidden = await authed('/api/edit', { id: 'x', hidden: 'да' })
   assert.strictEqual(editBadHidden.status, 400, 'hidden строкой — отказ')
 
+  // Цена и «отложить до даты» — деньги и календарь: мусор в них тихо ломает
+  // и плитку «ожидается за 30 дней», и блок внимания.
+  const editBadPrice = await authed('/api/edit', { id: 'x', price: 'дорого' })
+  assert.strictEqual(editBadPrice.status, 400, 'цена не числом — отказ')
+
+  const editNegPrice = await authed('/api/edit', { id: 'x', price: -1 })
+  assert.strictEqual(editNegPrice.status, 400, 'отрицательная цена — отказ')
+
+  const editBadDate = await authed('/api/edit', { id: 'x', snoozed_until: '15.09.2026' })
+  assert.strictEqual(editBadDate.status, 400, 'дата не в виде ГГГГ-ММ-ДД — отказ')
+
   // Белый список: срок и привязку через эту ручку менять нельзя — у них свои
   // каналы со своей логикой. Одни только запрещённые поля = «нечего менять».
   const editForbidden = await authed('/api/edit', { id: 'x', expires_at: '2099-01-01', machine_id: 'AAA', revoked: true })
@@ -135,6 +146,27 @@ async function testServerRoutes() {
     assert.strictEqual(r.status, 409, 'дубль лицензии на ту же машину — отказ')
     assert.ok((await r.json()).error.includes('уже-есть'), 'в ошибке назван номер существующей лицензии')
   }
+
+  // Продление — деньги клиента. Журнал продлений появился позже, и на проекте,
+  // где SQL ещё не выполнили, его таблицы нет. Подписка обязана продлиться всё
+  // равно: терять оплату из-за отсутствующего журнала нельзя.
+  {
+    const real = global.fetch
+    let renewed = false
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.includes('license_renewals')) return new Response('{"code":"42P01"}', { status: 404 })
+      if (init?.method === 'PATCH') { renewed = true; return new Response(null, { status: 204 }) }
+      return new Response(JSON.stringify([{ customer: 'Кафе', expires_at: null }]), { status: 200 })
+    }
+    const r = await authed('/api/renew', { id: 'x', days: 30, amount: 15000 })
+    global.fetch = real
+    assert.strictEqual(r.status, 200, 'продление проходит даже без таблицы истории')
+    assert.ok(renewed, 'срок лицензии при этом реально сдвинут')
+  }
+
+  const renewNoDays = await authed('/api/renew', { id: 'x' })
+  assert.strictEqual(renewNoDays.status, 400, 'продление без числа дней — отказ')
 
   // Колонки contact/hidden добавляются отдельными ALTER. Пока их нет, Supabase
   // отвечает «PGRST204 column ... does not exist» — владельцу это не говорит
@@ -225,9 +257,49 @@ function testUsageWindows() {
   console.log('свёртки итогов: OK')
 }
 
+// ── Отрисовка вкладок ─────────────────────────────────────────────────
+// Сборка молча пропускает ошибки, которые случаются только при отрисовке. Так
+// уже вышло: обращение к переменной до её объявления роняло «Заявки»,
+// «Каталог», «Накладные» и «Облако» целиком — на сводке то же выражение
+// обрывалось раньше по `||`, поэтому поломки не было видно вовсе.
+//
+// Рисуем каждую вкладку на сервере: сеть при этом не нужна (эффекты в SSR не
+// выполняются), достаточно, чтобы отрисовка не бросила исключение.
+async function testViewsRender() {
+  const esbuild = await import('esbuild')
+  // Собираем рядом с исходниками, а не в /tmp: оттуда node не находит react.
+  const out = path.join(__dirname, '.app-render-test.mjs')
+  await esbuild.build({
+    entryPoints: [path.join(__dirname, 'src', 'App.jsx')],
+    bundle: true, format: 'esm', jsx: 'automatic', outfile: out,
+    external: ['react', 'react/jsx-runtime', 'react-dom'], loader: { '.css': 'empty' },
+  })
+
+  // Панель написана для браузера: пароль лежит в localStorage, вкладка — в
+  // адресе. В node этих объектов нет, подставляем самое необходимое.
+  globalThis.localStorage = {
+    store: { panel_pw: 'x' },
+    getItem(k) { return this.store[k] ?? null },
+    setItem(k, v) { this.store[k] = String(v) },
+    removeItem(k) { delete this.store[k] },
+  }
+  const { renderToString } = await import('react-dom/server')
+  const React = await import('react')
+  const { default: App } = await import(pathToFileURL(out).href)
+  fs.unlinkSync(out)
+
+  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'invoices', 'cloud']) {
+    globalThis.location = { hash: '#/' + view, href: 'https://x.test/#/' + view }
+    const html = renderToString(React.createElement(App))
+    assert.ok(html.includes('iMag'), `вкладка «${view}» отрисовалась`)
+  }
+  console.log('отрисовка вкладок: OK')
+}
+
 try {
   await testServerRoutes()
   testUsageWindows()
+  await testViewsRender()
   console.log('ВСЁ OK')
 } catch (e) {
   console.error('УПАЛО:', e.message)
