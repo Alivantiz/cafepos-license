@@ -48,6 +48,13 @@ button { font: inherit; }
 .side {
   width: 208px; flex: 0 0 208px; border-right: 1px solid var(--line);
   background: var(--panel); padding: 16px 12px; display: flex; flex-direction: column; gap: 4px;
+  /* Меню стоит на месте, а прокручивается только содержимое. Раньше оно
+     уезжало вверх вместе со страницей: на длинном списке клиентов, чтобы
+     перейти на другую вкладку, приходилось сначала мотать наверх.
+     align-self: flex-start обязателен — иначе flex растягивает колонку на всю
+     высоту содержимого и липнуть становится нечему. */
+  position: sticky; top: 0; align-self: flex-start;
+  height: 100vh; overflow-y: auto;
 }
 .brand { font-weight: 700; font-size: 16px; padding: 4px 8px 14px; letter-spacing: -.01em; }
 .nav {
