@@ -1,6 +1,6 @@
 // Мелкие кирпичики панели. Своя графика вместо библиотеки: линия по тридцати
 // точкам — это два десятка строк, а библиотека тянет сотни килобайт в бандл.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { money } from './api'
 
 export function Tile({ label, value, hint, tone, onClick }) {
@@ -55,26 +55,47 @@ export function CopyBtn({ text, title = 'Скопировать' }) {
  */
 export function Suggest({ value, onChange, options, placeholder, autoFocus }) {
   const [open, setOpen] = useState(false)
+  // Куда показывать список. На широком экране — панелью СБОКУ от окна: форма
+  // не разъезжается, список виден целиком, и не надо крутить окно. Если справа
+  // места нет (узкое окно, телефон) — обычным списком под полем.
+  //
+  // position: fixed обязателен: у окна своя прокрутка (overflow: auto), и
+  // всё, что позиционировано внутри него обычным образом, ею и обрезается.
+  const [side, setSide] = useState(null)
+  const box = useRef(null)
+  const SIDE_MIN_WIDTH = 260
+
+  const show = () => {
+    const modal = box.current?.closest('.modal')
+    const r = modal?.getBoundingClientRect()
+    setSide(r && window.innerWidth - r.right >= SIDE_MIN_WIDTH
+      ? { left: r.right + 10, top: r.top, maxHeight: r.height }
+      : null)
+    setOpen(true)
+  }
+
   const term = String(value || '').trim().toLowerCase()
-  // Пока не начали печатать — показываем всё, это и есть «выпадающий список».
   const list = (options || []).filter(o => !term || o.toLowerCase().includes(term)).slice(0, 50)
+  const items = (
+    // onMouseDown с preventDefault: без него поле теряет фокус раньше, чем
+    // проходит клик, и выбрать мышью ничего нельзя.
+    <div className={side ? 'suggest-list suggest-side' : 'suggest-list'} style={side || undefined}
+      onMouseDown={e => e.preventDefault()}>
+      {list.map(o => (
+        <button key={o} type="button" className="suggest-item"
+          onClick={() => { onChange(o); setOpen(false) }}>{o}</button>
+      ))}
+    </div>
+  )
+
   return (
-    <div>
+    <div ref={box}>
       <input value={value} placeholder={placeholder} autoFocus={autoFocus}
-        onChange={e => { onChange(e.target.value); setOpen(true) }}
-        onFocus={() => setOpen(true)}
+        onChange={e => { onChange(e.target.value); if (!open) show() }}
+        onFocus={show}
         onBlur={() => setOpen(false)}
         onKeyDown={e => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false) } }} />
-      {open && list.length > 0 && (
-        // onMouseDown с preventDefault: без него поле теряет фокус раньше, чем
-        // проходит клик, и выбрать мышью ничего нельзя.
-        <div className="suggest-list" onMouseDown={e => e.preventDefault()}>
-          {list.map(o => (
-            <button key={o} type="button" className="suggest-item"
-              onClick={() => { onChange(o); setOpen(false) }}>{o}</button>
-          ))}
-        </div>
-      )}
+      {open && list.length > 0 && items}
     </div>
   )
 }

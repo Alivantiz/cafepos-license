@@ -132,6 +132,12 @@ input, select, textarea {
   background: none; border: 0; padding: 7px 10px; border-radius: 7px; cursor: pointer;
 }
 .suggest-item:hover { background: var(--panel); }
+/* Панель сбоку от окна: форма не разъезжается, список виден целиком.
+   fixed — чтобы прокрутка окна её не обрезала; z-index выше самого окна. */
+.suggest-side {
+  position: fixed; width: 240px; z-index: 60; margin: 0;
+  background: var(--panel); box-shadow: var(--shadow);
+}
 
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .spacer { margin-left: auto; }
