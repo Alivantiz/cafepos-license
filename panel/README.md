@@ -12,13 +12,14 @@ mode**: `public/_worker.js` — бэкенд, он обрабатывает `/ap
 Интерфейс — Vite + React в `panel/src`. Воркер лежит в `panel/public/`,
 откуда Vite кладёт его в корень `dist/` — этого требует Advanced mode.
 
-Настройки Pages-проекта:
+Выкладывает **не** гит-интеграция Cloudflare, а workflow
+`.github/workflows/deploy-panel.yml`: `npm ci` → `node panel/test.js` →
+`npm run build` → `wrangler pages deploy dist`. Настройки сборки в панели
+Cloudflare при этом ни на что не влияют — трогать их не нужно.
 
-| Поле | Значение |
-|---|---|
-| Root directory | `panel` |
-| Build command | `npm run build` |
-| Build output directory | `dist` |
+Запускается сам при изменениях в `panel/**`; вручную — кнопкой Run workflow
+(например после правки самого workflow: фильтр `paths` такие изменения
+не ловит).
 
 Локально: `npm install && npm run dev`. Проверки: `node test.js` —
 маршруты воркера, разбор ответов облака, арифметика денежных свёрток.

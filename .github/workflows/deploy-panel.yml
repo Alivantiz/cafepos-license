@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'panel/**'
+  # Ручной запуск: пересобрать и выложить панель, не трогая код (например
+  # после правки самого workflow — его изменения фильтр paths не ловит).
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,12 +17,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: panel/package-lock.json
+      - name: Зависимости
+        run: npm ci
+        working-directory: panel
       - name: Смоук-тест панели
         run: node panel/test.js
+      # Интерфейс переехал на React (Vite). Выкладываем dist, а не public:
+      # в public лежит только _worker.js, и раньше этого хватало — вся страница
+      # была строкой внутри воркера. Теперь Vite копирует воркер в корень dist
+      # (этого требует Advanced mode) и кладёт рядом собранный интерфейс.
+      - name: Сборка интерфейса
+        run: npm run build
+        working-directory: panel
       - name: Деплой на Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: panel
-          command: pages deploy public --project-name imag-license-panel
+          command: pages deploy dist --project-name imag-license-panel
