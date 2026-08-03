@@ -35,20 +35,27 @@ export async function api(path, body, opts) {
   return d
 }
 
-/** Загрузка с состоянием. reload() — перечитать после действия. */
-export function useApi(path, body) {
+/**
+ * Загрузка с состоянием. reload() — перечитать после действия.
+ *
+ * enabled=false — не ходить на сервер вовсе. Нужно, чтобы открытие панели не
+ * тянуло данные ВСЕХ вкладок разом: список клиентов с дневными итогами самый
+ * тяжёлый запрос, а на «Каталоге» или «Заявках» он не нужен ни для чего.
+ */
+export function useApi(path, body, enabled = true) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [at, setAt] = useState(null)     // когда данные последний раз доехали
   const key = JSON.stringify(body || {})
   const reload = useCallback(() => {
+    if (!enabled) return
     setLoading(true)
     api(path, JSON.parse(key))
       .then(d => { setData(d); setError(null); setAt(Date.now()) })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [path, key])
+  }, [path, key, enabled])
   useEffect(() => { reload() }, [reload])
   return { data, error, loading, reload, at }
 }

@@ -21,6 +21,10 @@ export default function Catalog({ onCounts, onReload }) {
 
   const [edit, setEdit] = useState(null)   // {row, pending}
   const [bulkCat, setBulkCat] = useState(false)
+  // Существующие категории — один запрос на открытие вкладки. Без подсказки
+  // одна и та же категория заводилась то «Напитки», то «напитки»: попасть в
+  // уже заведённое название было нечем, а список их не показывал нигде.
+  const [cats, setCats] = useState([])
 
   // onCounts держим в ссылке, а не в зависимостях загрузки. Иначе стоит
   // родителю передать стрелку прямо в JSX — и загрузка начинает перезапускать
@@ -49,6 +53,7 @@ export default function Catalog({ onCounts, onReload }) {
   }, [q, page])
 
   useEffect(() => { loadPending() }, [loadPending])
+  useEffect(() => { api('catalog/categories').then(d => setCats(d.rows || [])).catch(() => {}) }, [])
   useEffect(() => { const t = setTimeout(loadList, 300); return () => clearTimeout(t) }, [loadList])
   // Кнопка «Обновить» в шапке должна перечитывать ИМЕННО эту вкладку.
   useEffect(() => { onReload?.(() => () => { loadPending(); loadList() }) }, [loadPending, loadList, onReload])
@@ -247,9 +252,9 @@ export default function Catalog({ onCounts, onReload }) {
         )}
       </section>
 
-      {edit && <EditModal {...edit} onClose={() => setEdit(null)}
+      {edit && <EditModal {...edit} cats={cats} onClose={() => setEdit(null)}
         onSaved={() => { setEdit(null); loadList(); loadPending() }} />}
-      {bulkCat && <BulkCategory count={listSel.size} barcodes={[...listSel]}
+      {bulkCat && <BulkCategory count={listSel.size} barcodes={[...listSel]} cats={cats}
         onClose={() => setBulkCat(false)}
         onDone={() => { setBulkCat(false); setListSel(new Set()); loadList() }} />}
     </>
@@ -280,7 +285,13 @@ function Similar({ r, sim }) {
 
 // pending — правка карточки из очереди: сохранение через upsert её же и
 // одобряет, поэтому кнопка называется иначе.
-function EditModal({ row, pending, onClose, onSaved }) {
+// Нативная подсказка: и печатать можно, и выбрать из существующих. Отдельный
+// компонент выпадающего списка тут не нужен — браузер умеет это сам.
+function CatList({ cats }) {
+  return <datalist id="catalog-cats">{cats.map(c => <option key={c} value={c} />)}</datalist>
+}
+
+function EditModal({ row, pending, cats, onClose, onSaved }) {
   const [f, setF] = useState({
     barcode: row?.barcode || '', name: row?.name || '', category: row?.category || '',
     price: row?.price ?? '', unit: row?.unit || '',
@@ -311,7 +322,11 @@ function EditModal({ row, pending, onClose, onSaved }) {
     <Modal title={pending ? 'Править перед одобрением' : row ? 'Правка штрихкода' : 'Новый штрихкод'} onClose={onClose}>
       <label>Штрихкод<input value={f.barcode} onChange={set('barcode')} readOnly={!!row} /></label>
       <label>Название<input value={f.name} onChange={set('name')} autoFocus /></label>
-      <label>Категория<input value={f.category} onChange={set('category')} /></label>
+      <label>Категория
+        <input list="catalog-cats" value={f.category} onChange={set('category')}
+          placeholder="начните вводить или выберите" />
+      </label>
+      <CatList cats={cats} />
       <div className="row">
         <label style={{ flex: 1 }}>Цена<input value={f.price} onChange={set('price')} /></label>
         <label style={{ flex: 1 }}>Единица<input value={f.unit} onChange={set('unit')} /></label>
@@ -327,7 +342,7 @@ function EditModal({ row, pending, onClose, onSaved }) {
   )
 }
 
-function BulkCategory({ count, barcodes, onClose, onDone }) {
+function BulkCategory({ count, barcodes, cats, onClose, onDone }) {
   const [category, setCategory] = useState('')
   const [busy, setBusy] = useState(false)
   const go = async () => {
@@ -343,7 +358,11 @@ function BulkCategory({ count, barcodes, onClose, onDone }) {
       {/* Меняется у ВСЕХ заведений с этими штрихкодами, а не только там, откуда
           пришла карточка — про это окно раньше молчало. */}
       <div className="muted2">Категория поменяется у всех заведений с этими штрихкодами. Отката нет.</div>
-      <label>Категория<input value={category} onChange={e => setCategory(e.target.value)} autoFocus /></label>
+      <label>Категория
+        <input list="catalog-cats" value={category} onChange={e => setCategory(e.target.value)}
+          autoFocus placeholder="начните вводить или выберите" />
+      </label>
+      <CatList cats={cats} />
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
         {/* Пустое поле стирало категорию у всех выбранных одним нажатием */}

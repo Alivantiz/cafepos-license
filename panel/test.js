@@ -216,6 +216,18 @@ async function testServerRoutes() {
     assert.strictEqual(prefer, 'count=estimated', 'каталог считается оценкой, а не полным проходом')
   }
 
+  // Подсказка категорий: дубли и регистр схлопываются на сервере, иначе в
+  // выпадающем списке было бы по три «Напитки» подряд.
+  {
+    const real = global.fetch
+    global.fetch = async () => new Response(JSON.stringify(
+      [{ category: 'Напитки' }, { category: ' Напитки ' }, { category: null }, { category: 'Бакалея' }]),
+      { status: 200 })
+    const r = await authed('/api/catalog/categories')
+    global.fetch = real
+    assert.deepStrictEqual((await r.json()).rows, ['Бакалея', 'Напитки'], 'категории без дублей и по алфавиту')
+  }
+
   // /api/cloud опрашивает сами облачные функции — подменяем fetch, чтобы тест
   // не ходил в сеть и чтобы проверить РАЗБОР всех вариантов ответа.
   const realFetch = global.fetch

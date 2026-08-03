@@ -241,7 +241,7 @@ export default {
       if (pathname === '/api/issue') {
         // Новая лицензия под активацию по коду: строка в таблице, id = код
         // активации (его вводят на кассе; .lic подписывает функция activate).
-        const { customer, days, terminals, notes, contact, machine_id } = await request.json()
+        const { customer, days, terminals, notes, contact, price, machine_id } = await request.json()
         if (!customer || !String(customer).trim()) return json({ error: 'Укажите клиента' }, 400)
         const n = Number(days)
         const body = {
@@ -250,10 +250,14 @@ export default {
           terminals: Math.max(1, Number(terminals) || 1),
           notes: (notes || '').trim() || null
         }
-        // Телефон — только если колонка уже есть: на проекте без ALTER лишнее
-        // поле уронило бы весь выпуск лицензии.
+        // Телефон и цена — в отдельной пачке: их колонки добавлены ALTER-ами
+        // позже, и на проекте, где SQL ещё не выполнили, лишнее поле уронило бы
+        // весь выпуск лицензии. Поэтому при отказе пробуем ещё раз без них.
+        const extra = {}
         const phone = (contact || '').trim()
-        if (phone) body.contact = phone
+        if (phone) extra.contact = phone
+        const p = Number(price)
+        if (Number.isFinite(p) && p >= 0) extra.price = Math.round(p)
 
         // Выпуск для конкретного компьютера (из карточки пробной установки):
         // лицензия сразу привязана, и касса забирает её сама функцией claim —
@@ -267,12 +271,16 @@ export default {
           if (live.length) return json({ error: `На этот компьютер уже выпущена лицензия ${live[0].id}` }, 409)
           body.machine_id = mid
         }
-        const ins = await sbFetch(`${db.url}/rest/v1/licenses`, {
+        const insert = (b) => sbFetch(`${db.url}/rest/v1/licenses`, {
           method: 'POST',
           headers: { ...db.headers, Prefer: 'return=representation' },
-          body: JSON.stringify(body)
+          body: JSON.stringify(b)
         })
-        if (!ins.ok) return json({ error: await sqlHint(ins, ['contact']) }, 502)
+        let ins = await insert({ ...body, ...extra })
+        // Выпуск лицензии — то, ради чего панель вообще нужна: ронять его
+        // из-за невыполненного ALTER нельзя. Лучше без телефона и цены.
+        if (!ins.ok && Object.keys(extra).length) ins = await insert(body)
+        if (!ins.ok) return json({ error: await sqlHint(ins, ['contact', 'price']) }, 502)
         const [row] = await ins.json()
         return json({ ok: true, id: row.id, expires_at: row.expires_at })
       }
@@ -398,9 +406,17 @@ export default {
       // чего заявки и делались.
       if (pathname.startsWith('/api/requests/')) {
         if (pathname === '/api/requests/list') {
-          const r = await sbFetch(`${db.url}/rest/v1/activation_requests?select=machine_id,shop,contact,business_type,app_version,status,license_id,created_at,updated_at,decided_at&order=created_at.desc&limit=200`, { headers: db.headers })
+          // countOnly — для красной точки в меню: «ждут решения» это заявка без
+          // лицензии и не отклонённая, ровно тот же отбор, что в списке.
+          const { countOnly } = await request.json().catch(() => ({}))
+          const qs = countOnly
+            ? 'select=machine_id&status=neq.rejected&license_id=is.null&limit=1'
+            : 'select=machine_id,shop,contact,business_type,app_version,status,license_id,created_at,updated_at,decided_at&order=created_at.desc&limit=200'
+          const r = await sbFetch(`${db.url}/rest/v1/activation_requests?${qs}`,
+            { headers: countOnly ? { ...db.headers, Prefer: 'count=exact' } : db.headers })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-          return json({ rows: await r.json() })
+          const total = Number((r.headers.get('content-range') || '').split('/')[1])
+          return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
         }
 
         // Одобрение = строка в licenses с этим machine_id: отдельного
@@ -472,6 +488,22 @@ export default {
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           const total = Number((r.headers.get('content-range') || '').split('/')[1])
           return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
+        }
+
+        // Существующие категории — для подсказки при вводе. Без неё одна и та же
+        // категория заводилась то «Напитки», то «напитки», то «Вода/напитки»:
+        // руками попасть в уже заведённое название нечем.
+        if (pathname === '/api/catalog/categories') {
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_barcodes?select=category&category=not.is.null&limit=5000`,
+            { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const seen = new Set()
+          for (const row of await r.json()) {
+            const c = String(row.category || '').trim()
+            if (c) seen.add(c)
+          }
+          return json({ rows: [...seen].sort((a, b) => a.localeCompare(b, 'ru')) })
         }
 
         if (pathname === '/api/catalog/list') {

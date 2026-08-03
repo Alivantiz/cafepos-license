@@ -14,6 +14,9 @@ import Cloud, { brokenCount } from './views/Cloud'
 // разбираются когда удобно, тревожить ими незачем.
 const URGENT = new Set(['requests', 'cloud', 'trials'])
 
+// Обычная подписка. Меняется руками в карточке, если у клиента своя цена.
+const DEFAULT_PRICE = 8000
+
 const VIEWS = [
   { id: 'summary', label: 'Сводка' },
   { id: 'clients', label: 'Клиенты' },
@@ -78,7 +81,12 @@ function Panel() {
   const [issue, setIssue] = useState(null)   // null | {} | {machine_id, customer}
   const [theme, setTheme] = useState(localStorage.getItem('panel_theme') || 'dark')
   const [badges, setBadges] = useState({})
-  const { data, error, loading, reload, at } = useApi('clients')
+  // Список клиентов с дневными итогами — самый тяжёлый запрос панели, и на
+  // «Каталоге», «Заявках», «Накладных» и «Облаке» он не нужен ни для чего.
+  // Грузим его только для тех вкладок, которые из него и состоят: открытие
+  // панели больше не тянет разом данные всех вкладок.
+  const needsClients = view === 'summary' || view === 'clients' || view === 'trials' || !!openClient
+  const { data, error, loading, reload, at } = useApi('clients', undefined, needsClients)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -120,7 +128,8 @@ function Panel() {
   // висела день, заявка приходила, а красной точки не было. Обновляем по тому
   // же расписанию, что и клиентов.
   const reloadBadges = useCallback(() => {
-    api('requests/list').then(d => setBadges(b => ({ ...b, requests: pendingCount(d.rows) }))).catch(() => {})
+    api('requests/list', { countOnly: true }).then(d =>
+      setBadges(b => ({ ...b, requests: d.total ?? pendingCount(d.rows) }))).catch(() => {})
     api('cloud').then(d => setBadges(b => ({ ...b, cloud: brokenCount(d.rows) }))).catch(() => {})
     // countOnly: бейджу нужно только число. Без него открытие панели тянуло
     // сотню распознанных накладных ВМЕСТЕ С ФОТО в base64 — мегабайты ради
@@ -168,12 +177,7 @@ function Panel() {
   // и старый объект показывал бы вчерашние цифры.
   const current = openClient ? all.find(c => c.subject === openClient) : null
 
-  // ВАЖЕН ПОРЯДОК: current объявлен выше, потому что используется здесь. Когда
-  // он стоял ниже, на «Заявках», «Каталоге», «Накладных» и «Облаке» вкладка
-  // падала целиком: там первые три сравнения ложны, `||` доходит до current, а
-  // тот ещё не инициализирован. На сводке выражение до него не добиралось —
-  // поэтому поломка выглядела как «сломаны четыре вкладки из семи».
-  const isOwnData = view === 'summary' || view === 'clients' || view === 'trials' || !!current
+  const isOwnData = needsClients
   const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
 
   const goto = (v) => { setView(v); setMenu(false); setViewReload(null) }
@@ -267,7 +271,9 @@ function Panel() {
 
 function IssueModal({ pre, onClose, onDone }) {
   const [f, setF] = useState({
-    customer: pre?.customer || '', contact: '', days: 30, terminals: 1, notes: '',
+    // Цена по умолчанию — обычная подписка: её ставят почти всем, а руками
+    // вбивать одно и то же число каждый раз незачем.
+    customer: pre?.customer || '', contact: '', days: 30, terminals: 1, notes: '', price: DEFAULT_PRICE,
     // Из карточки триала лицензия сразу привязывается к его компьютеру —
     // иначе код приходилось копировать руками из другой вкладки.
     machine_id: pre?.machine_id || '',
@@ -279,7 +285,10 @@ function IssueModal({ pre, onClose, onDone }) {
   const go = async () => {
     setBusy(true)
     try {
-      const r = await api('issue', { ...f, days: Number(f.days), terminals: Number(f.terminals) })
+      const r = await api('issue', {
+        ...f, days: Number(f.days), terminals: Number(f.terminals),
+        price: f.price === '' ? null : Number(f.price),
+      })
       setCode(r.id)
       toast.ok('Лицензия выпущена')
       // Список перечитываем, но окно НЕ закрываем: раньше родитель закрывал его
@@ -313,6 +322,11 @@ function IssueModal({ pre, onClose, onDone }) {
             <label style={{ flex: 1 }}>Дней<input type="number" min="1" value={f.days} onChange={set('days')} /></label>
             <label style={{ flex: 1 }}>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
           </div>
+          {/* Цена спрашивается здесь, а не потом в карточке: договариваются о
+              ней ровно сейчас, а через неделю уже не вспомнить. */}
+          <label>Цена подписки за {f.days || 30} дн, ₸
+            <input type="number" min="0" value={f.price} onChange={set('price')} />
+          </label>
           <label>Заметка<input value={f.notes} onChange={set('notes')} placeholder="необязательно" /></label>
           <div className="row">
             <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
