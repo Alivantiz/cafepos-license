@@ -1,4 +1,8 @@
-name: Выпустить лицензию
+# Выпуск лицензии ФАЙЛОМ — только для кассы без интернета. Кассе с
+# интернетом код активации выдаётся в панели (там же продление и отзыв);
+# сюда лезть незачем. Скрипт заодно заводит строку в licenses, иначе
+# выпущенная лицензия не видна в панели и неуправляема.
+name: Выпустить лицензию файлом (касса без интернета)
 
 on:
   workflow_dispatch:
@@ -30,6 +34,8 @@ jobs:
       - name: Выпуск лицензии
         env:
           LICENSE_PRIVATE_KEY: ${{ secrets.LICENSE_PRIVATE_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           CUSTOMER: ${{ inputs.customer }}
           MACHINE: ${{ inputs.machine }}
           DAYS: ${{ inputs.days }}
