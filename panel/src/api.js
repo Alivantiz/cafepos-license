@@ -25,16 +25,17 @@ export function useApi(path, body) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [at, setAt] = useState(null)     // когда данные последний раз доехали
   const key = JSON.stringify(body || {})
   const reload = useCallback(() => {
     setLoading(true)
     api(path, JSON.parse(key))
-      .then(d => { setData(d); setError(null) })
+      .then(d => { setData(d); setError(null); setAt(Date.now()) })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [path, key])
   useEffect(() => { reload() }, [reload])
-  return { data, error, loading, reload }
+  return { data, error, loading, reload, at }
 }
 
 // ── Форматирование ────────────────────────────────────────────────────

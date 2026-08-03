@@ -58,12 +58,27 @@ function Panel() {
   const [issue, setIssue] = useState(false)
   const [theme, setTheme] = useState(localStorage.getItem('panel_theme') || 'dark')
   const [badges, setBadges] = useState({})
-  const { data, error, loading, reload } = useApi('clients')
+  const { data, error, loading, reload, at } = useApi('clients')
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('panel_theme', theme)
   }, [theme])
+
+  // Обновление без вебсокета. Данные меняются примерно раз в сутки (итоги
+  // приходят одним пингом от кассы, лицензии правишь ты сам — и после каждого
+  // действия панель перечитывает себя), так что держать соединение не за чем.
+  //
+  // Важно другое: вкладку оставляют открытой, и наутро в ней вчерашние цифры,
+  // а «молчит N дней» и «истекает через N дней» считаются в момент отрисовки —
+  // то есть врут. Поэтому перечитываем при возврате к вкладке и раз в пять
+  // минут в фоне. Пока вкладка спрятана — не дёргаем сервер вовсе.
+  useEffect(() => {
+    const fresh = () => { if (!document.hidden) reload() }
+    document.addEventListener('visibilitychange', fresh)
+    const t = setInterval(fresh, 300_000)
+    return () => { document.removeEventListener('visibilitychange', fresh); clearInterval(t) }
+  }, [reload])
 
   // Счётчики тянем при входе, а не при открытии вкладки: смысл бейджа в том,
   // чтобы новая заявка и поломка в облаке находили владельца сами.
@@ -112,7 +127,13 @@ function Panel() {
         <div className="topbar">
           <button className="btn ghost burger" onClick={() => setMenu(true)} aria-label="Меню">☰</button>
           {!current && <h1>{VIEWS.find(v => v.id === view)?.label}</h1>}
-          <button className="btn ghost sm spacer" onClick={reload} disabled={loading}>
+          {/* Время последней загрузки: без него не понять, свежие цифры или
+              вкладка провисела ночь. Кнопка осталась — обновление само по себе
+              работает, но иногда хочется дёрнуть прямо сейчас. */}
+          <span className="muted2 spacer">
+            {at ? 'данные на ' + new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''}
+          </span>
+          <button className="btn ghost sm" onClick={reload} disabled={loading}>
             {loading ? 'Обновляю…' : 'Обновить'}
           </button>
         </div>
