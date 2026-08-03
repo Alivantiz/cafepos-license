@@ -11,9 +11,18 @@ const { pathToFileURL } = require('url')
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
 
 function makeEl(id) {
+  // classList настоящий (поверх Set): на нём держится выездное меню, и
+  // заглушка-пустышка молча делала бы вид, что оно открывается и закрывается.
+  const cls = new Set()
   return {
     id, value: '', textContent: '', innerHTML: '', style: {}, dataset: {}, disabled: false,
     className: '', checked: false,
+    classList: {
+      add: c => cls.add(c),
+      remove: c => cls.delete(c),
+      contains: c => cls.has(c),
+      toggle: (c, on) => { const v = on === undefined ? !cls.has(c) : !!on; v ? cls.add(c) : cls.delete(c); return v },
+    },
     addEventListener() {}, focus() {}, showModal() {}, close() {}
   }
 }
@@ -153,6 +162,23 @@ async function testClientScript() {
       { machine_id: 'CCCC-DDDD', shop: 'Магазин', contact: null, business_type: 'shop',
         app_version: '1.23.0', status: 'approved', license_id: 'lic-1', created_at: new Date().toISOString() }
     ] }
+    if (u.includes('/api/trials')) {
+      const DAY = 86400000, at = d => new Date(Date.now() + d * DAY).toISOString()
+      return { rows: [
+        // истёк, но кассу открывают — самый тёплый, должен быть первым
+        { machine_id: 'AAAA-LAPSED', status: 'expired', business_type: 'sauna',
+          started_at: at(-20), created_at: at(-20), last_seen_at: at(-1) },
+        // горит: осталось 2 дня
+        { machine_id: 'AAAA-HOT', status: 'trial', business_type: 'shop', app_version: '1.24.1',
+          started_at: at(-12), created_at: at(-12), last_seen_at: at(0) },
+        // молчит неделю
+        { machine_id: 'AAAA-QUIET', status: 'trial', business_type: 'cafe',
+          started_at: at(-5), created_at: at(-5), last_seen_at: at(-7) },
+        // уже купил — в воронке ему не место
+        { machine_id: 'AAAA-PAID', status: 'licensed', business_type: 'cafe',
+          started_at: at(-30), created_at: at(-30), last_seen_at: at(0) },
+      ] }
+    }
     if (u.includes('/api/cloud')) return { rows: [
       { name: 'activate', what: 'выдаёт лицензию', ok: false, verdict: 'не выложена' },
       { name: 'claim', what: 'забирает заявку', ok: true, version: '1', verdict: 'работает' }
@@ -234,7 +260,17 @@ async function testClientScript() {
   global.__RESULT__.cloudBadgeText = document.getElementById('navCloudBadge').textContent
   global.__RESULT__.cloudListHtml = document.getElementById('cloudList').innerHTML
   global.__RESULT__.cloudViewShown = document.getElementById('viewCloud').style.display
+  await switchView('trials')
+  global.__RESULT__.trialsBadgeText = document.getElementById('navTrialsBadge').textContent
+  global.__RESULT__.trialsCountText = document.getElementById('trialsCount').textContent
+  global.__RESULT__.trialsListHtml = document.getElementById('trialsList').innerHTML
+  global.__RESULT__.trialsViewShown = document.getElementById('viewTrials').style.display
+  // Меню: открылось по гамбургеру и закрылось само при выборе раздела
+  toggleMenu()
+  global.__RESULT__.menuOpenAfterToggle = document.getElementById('nav').classList.contains('open')
+  global.__RESULT__.backdropOpen = document.getElementById('navBackdrop').classList.contains('open')
   await switchView('subs')
+  global.__RESULT__.menuOpenAfterPick = document.getElementById('nav').classList.contains('open')
   global.__RESULT__.cloudViewHiddenBack = document.getElementById('viewCloud').style.display
   global.__RESULT__.reqViewHiddenBack = document.getElementById('viewReq').style.display
 })()
@@ -294,79 +330,32 @@ async function testClientScript() {
   assert.strictEqual(res.cloudViewHiddenBack, 'none', 'switching back should hide the cloud view')
   assert.strictEqual(res.reqViewHiddenBack, 'none', 'switching back should hide the requests view')
 
+  // Триалы: разбор по состояниям — главное, ради чего вкладка и делалась.
+  assert.strictEqual(res.trialsViewShown, '', 'trials view should be visible after switchView(trials)')
+  assert.strictEqual(res.trialsBadgeText, 2, 'badge counts only lapsed+hot, not the whole base')
+  assert.ok(res.trialsCountText.includes('требуют внимания: 2'), 'header should call out actionable trials')
+  assert.ok(res.trialsListHtml.includes('истёк, но кассу открывают'), 'warmest lead must be labelled')
+  assert.ok(res.trialsListHtml.includes('осталось 2 дн'), 'hot trial should show days left')
+  assert.ok(res.trialsListHtml.includes('молчит 7 дн'), 'quiet trial should show silence length')
+  assert.ok(!res.trialsListHtml.includes('AAAA-PAID'.slice(-6)), 'licensed install must not appear in the funnel')
+  const order = ['истёк, но кассу открывают', 'осталось 2 дн', 'молчит 7 дн']
+    .map(t => res.trialsListHtml.indexOf(t))
+  assert.ok(order[0] < order[1] && order[1] < order[2], 'rows must be sorted by urgency')
+
+  // Мобильное меню: шесть вкладок в строку не влезают, поэтому открывается и
+  // закрывается выездная панель. Закрытие при выборе — половина смысла.
+  assert.strictEqual(res.menuOpenAfterToggle, true, 'hamburger should open the drawer')
+  assert.strictEqual(res.backdropOpen, true, 'backdrop should appear with the drawer')
+  assert.strictEqual(res.menuOpenAfterPick, false, 'picking a section should close the drawer')
+
   console.log('client script: OK')
 }
 
-
-// ── Ежедневные отчёты в Telegram ─────────────────────────────────────────
-// Эти два отчёта год пролежали в GitHub Actions неработающими и никто не
-// заметил — потому что проверить их было нечем. Функции чистые, покрываем.
-async function testDailyReports() {
-  const tmp = path.join(os.tmpdir(), 'imag_panel_reports_' + Date.now() + '.mjs')
-  fs.copyFileSync(WORKER_PATH, tmp)
-  let buildLicenseReminder, buildTrialsReport
-  try {
-    const mod = await import(pathToFileURL(tmp).href)
-    ;({ buildLicenseReminder, buildTrialsReport } = mod)
-  } finally {
-    fs.unlinkSync(tmp)
-  }
-
-  const NOW = Date.UTC(2026, 6, 15, 6, 0, 0)
-  const DAY = 86400000
-  const at = (days) => new Date(NOW + days * DAY).toISOString()
-
-  // Молчание при отсутствии поводов — иначе ежедневное «всё хорошо»
-  // перестают читать, и настоящее тревожное тонет вместе с ним.
-  assert.strictEqual(buildLicenseReminder([]), null, 'no licenses → no message')
-  assert.strictEqual(
-    buildLicenseReminder([{ customer: 'Далёкий', expires_at: at(90), activated_at: at(-30), last_seen_at: at(0) }], NOW),
-    null, 'healthy license → no message')
-  assert.strictEqual(buildTrialsReport([]), null, 'no trials → no message')
-
-  const lic = buildLicenseReminder([
-    { customer: 'Истёк вчера', expires_at: at(-1), activated_at: at(-300), last_seen_at: at(0) },
-    { customer: 'Скоро', expires_at: at(3), activated_at: at(-100), last_seen_at: at(0) },
-    { customer: 'Молчит', expires_at: at(200), activated_at: at(-100), last_seen_at: at(-20) },
-    // отозванная не попадает никуда: напоминать о ней нечего
-    { customer: 'Отозван', expires_at: at(1), revoked: true, activated_at: at(-50), last_seen_at: at(0) },
-    // истекла давно (>3 дней) — догонять поздно, в «истекли» не берём
-    { customer: 'Древний', expires_at: at(-40), activated_at: at(-400), last_seen_at: at(0) },
-  ], NOW)
-  assert.ok(lic.includes('Истёк вчера — вчера'), 'expired yesterday should be listed')
-  assert.ok(lic.includes('Скоро — через 3 дн'), 'expiring soon should be listed')
-  assert.ok(lic.includes('Молчит — 20 дн назад'), 'silent till should be listed')
-  assert.ok(!lic.includes('Отозван'), 'revoked license must not be reported')
-  assert.ok(!lic.includes('Древний'), 'long-expired license must not be reported')
-
-  const tr = buildTrialsReport([
-    { machine_id: 'AAAA-BB1111', status: 'trial', business_type: 'cafe', app_version: '1.24.1',
-      started_at: at(-1), created_at: at(-0.5), last_seen_at: at(0) },
-    { machine_id: 'AAAA-BB2222', status: 'trial', business_type: 'shop',
-      started_at: at(-12), created_at: at(-12), last_seen_at: at(0) },
-    { machine_id: 'AAAA-BB3333', status: 'expired', business_type: 'sauna',
-      started_at: at(-20), created_at: at(-20), last_seen_at: at(-1) },
-    { machine_id: 'AAAA-BB4444', status: 'trial', business_type: 'shop',
-      started_at: at(-5), created_at: at(-5), last_seen_at: at(-6) },
-    // купил — из воронки выбывает
-    { machine_id: 'AAAA-BB5555', status: 'licensed', business_type: 'cafe',
-      started_at: at(-30), created_at: at(-30), last_seen_at: at(0) },
-  ], NOW)
-  assert.ok(tr.includes('Всего в работе: 4'), 'licensed installs must not be counted')
-  assert.ok(tr.includes('🆕 Новые за сутки:') && tr.includes('BB1111'), 'fresh trial should be listed')
-  assert.ok(tr.includes('🔥 Триал заканчивается:') && tr.includes('BB2222'), 'hot trial should be listed')
-  assert.ok(tr.includes('💰 Истёк, но кассу открывают') && tr.includes('BB3333'), 'lapsed-but-active is the warmest lead')
-  assert.ok(tr.includes('💤 Тихие') && tr.includes('BB4444'), 'quiet trial should be listed')
-  assert.ok(!tr.includes('BB5555'), 'licensed install must not appear')
-
-  console.log('daily reports: OK')
-}
 
 ;(async () => {
   try {
     await testServerRoutes()
     await testClientScript()
-    await testDailyReports()
     console.log('ALL OK')
   } catch (e) {
     console.error('FAILED:', e.message)

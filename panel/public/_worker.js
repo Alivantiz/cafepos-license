@@ -27,116 +27,6 @@ const sb2 = (env) => ({
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
-// ── Ежедневные отчёты в Telegram ──────────────────────────────────────────
-// Жили в GitHub Actions и не отработали ни разу: скрипты лежали в репозитории
-// КАССЫ, куда Actions админки не смотрят. Переносить их в Actions незачем — у
-// панели уже есть свой планировщик (Worker imag-keepalive с cron-триггером
-// Cloudflare), и он, в отличие от расписаний GitHub, не отключается за
-// неактивность репозитория. Логика — здесь, запуск — оттуда, по /api/cron/daily.
-//
-// Обе функции чистые (строки на входе, текст или null на выходе) и покрыты
-// panel/test.js. Молчание осознанное: нет поводов → сообщения нет. Ежедневное
-// «всё хорошо» перестают читать, и настоящее тревожное тонет вместе с ним.
-const DAY = 86400000
-const dm = (d) => `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
-const daysAgo = (t, now) => Math.floor((now - new Date(t).getTime()) / DAY)
-
-export function buildLicenseReminder(rows, now = Date.now()) {
-  const active = rows.filter(r => !r.revoked)
-  const expired = []   // истекли за последние 3 дня — ещё можно догнать
-  const soon = []      // истекают в ближайшие 7 дней
-  for (const r of active) {
-    if (!r.expires_at) continue
-    const d = Math.ceil((new Date(r.expires_at).getTime() - now) / DAY)
-    if (d <= 0 && d >= -3) expired.push({ r, d })
-    else if (d > 0 && d <= 7) soon.push({ r, d })
-  }
-  const offline = active
-    .filter(r => r.activated_at && r.last_seen_at && daysAgo(r.last_seen_at, now) > 14)
-    .map(r => ({ r, ago: daysAgo(r.last_seen_at, now) }))
-
-  if (!expired.length && !soon.length && !offline.length) return null
-  soon.sort((a, b) => a.d - b.d)
-  offline.sort((a, b) => b.ago - a.ago)
-
-  const nm = r => r.customer || '(без имени)'
-  const when = d => d === 0 ? 'сегодня' : d === -1 ? 'вчера' : `${-d} дн назад`
-  const left = d => d === 1 ? 'завтра' : `через ${d} дн`
-  const lines = [`🔔 iMag — лицензии на контроль (${dm(new Date(now))})`]
-  if (expired.length) {
-    lines.push('', '🔴 Истекли:')
-    for (const { r, d } of expired) lines.push(`• ${nm(r)} — ${when(d)} (${dm(new Date(r.expires_at))})`)
-  }
-  if (soon.length) {
-    lines.push('', '🟡 Истекают ≤7 дней:')
-    for (const { r, d } of soon) lines.push(`• ${nm(r)} — ${left(d)} (${dm(new Date(r.expires_at))})`)
-  }
-  if (offline.length) {
-    lines.push('', '🔌 Касса давно не на связи:')
-    for (const { r, ago } of offline) lines.push(`• ${nm(r)} — ${ago} дн назад`)
-  }
-  return lines.join('\n')
-}
-
-const TRIAL_DAYS = 14   // как в кассе (license.service TRIAL_DAYS)
-const BIZ = { shop: 'магазин', cafe: 'кафе', sauna: 'сауна' }
-
-export function buildTrialsReport(rows, now = Date.now()) {
-  const fresh = [], hot = [], lapsed = [], quiet = []
-  for (const r of rows) {
-    if (r.status === 'licensed') continue          // уже купили — не наша воронка
-    const seenAgo = daysAgo(r.last_seen_at, now)
-    const startedAgo = r.started_at ? daysAgo(r.started_at, now) : null
-    const left = startedAgo == null ? null : TRIAL_DAYS - startedAgo
-    if (daysAgo(r.created_at, now) < 1) fresh.push({ r, left })
-    if (r.status === 'expired' && seenAgo <= 3) lapsed.push({ r, seenAgo })
-    else if (left != null && left <= 3 && left > 0) hot.push({ r, left })
-    else if (r.status === 'trial' && seenAgo >= 3) quiet.push({ r, seenAgo })
-  }
-  if (!fresh.length && !hot.length && !lapsed.length && !quiet.length) return null
-  hot.sort((a, b) => a.left - b.left)
-  quiet.sort((a, b) => b.seenAgo - a.seenAgo)
-
-  // Код компьютера длинный, читать его целиком незачем — хвоста хватает,
-  // чтобы отличать установки друг от друга в списке.
-  const id = r => String(r.machine_id ?? '').slice(-6)
-  const biz = r => BIZ[r.business_type] ?? r.business_type ?? '—'
-  const ver = r => r.app_version ? ` · v${r.app_version}` : ''
-  const lines = [
-    `🧪 iMag — пробные установки (${dm(new Date(now))})`, '',
-    `Всего в работе: ${rows.filter(r => r.status !== 'licensed').length}`,
-  ]
-  if (fresh.length) {
-    lines.push('', '🆕 Новые за сутки:')
-    for (const { r } of fresh) lines.push(`• ${id(r)} — ${biz(r)}${ver(r)}`)
-  }
-  if (hot.length) {
-    lines.push('', '🔥 Триал заканчивается:')
-    for (const { r, left } of hot) lines.push(`• ${id(r)} — ${biz(r)}, ${left === 1 ? 'завтра' : `${left} дн`}`)
-  }
-  if (lapsed.length) {
-    lines.push('', '💰 Истёк, но кассу открывают (звонить в первую очередь):')
-    for (const { r, seenAgo } of lapsed) lines.push(`• ${id(r)} — ${biz(r)}, был ${seenAgo === 0 ? 'сегодня' : `${seenAgo} дн назад`}`)
-  }
-  if (quiet.length) {
-    lines.push('', '💤 Тихие (похоже, бросили):')
-    for (const { r, seenAgo } of quiet) lines.push(`• ${id(r)} — ${biz(r)}, молчит ${seenAgo} дн`)
-  }
-  return lines.join('\n')
-}
-
-async function sendTelegram(env, text) {
-  const token = (env.TELEGRAM_BOT_TOKEN || '').trim()
-  const chat = (env.TELEGRAM_CHAT_ID || '').trim()
-  if (!token || !chat) return { ok: false, error: 'не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID' }
-  const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chat, text }),
-  })
-  const d = await r.json().catch(() => ({}))
-  return d.ok === true ? { ok: true } : { ok: false, error: d.description || `HTTP ${r.status}` }
-}
-
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url)
@@ -178,6 +68,15 @@ export default {
         const r = await fetch(`${db.url}/rest/v1/licenses?select=id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at&order=created_at.desc`, { headers: db.headers })
         if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
         return json({ rows: await r.json(), kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
+      }
+
+      // Пробные установки — воронка ДО оплаты. Касса без лицензии раз в сутки
+      // сообщает своё состояние (Edge Function trial → таблица trials), но
+      // посмотреть это было негде: ни вкладки, ни отчёта — только SQL руками.
+      if (pathname === '/api/trials') {
+        const r = await fetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        return json({ rows: await r.json() })
       }
 
       if (pathname === '/api/renew') {
@@ -250,27 +149,6 @@ export default {
         })
         if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
         return json({ ok: true })
-      }
-
-      // Ежедневные отчёты. Дёргает планировщик (Worker imag-keepalive) — он и
-      // держит пароль панели, поэтому маршрут стоит ЗА проверкой пароля выше:
-      // отдельный секрет заводить не пришлось, а слать владельцу в Telegram что
-      // попало снаружи нельзя. Ответ — что именно ушло, чтобы в логах Worker'а
-      // было видно «сегодня поводов не было», а не пустота.
-      if (pathname === '/api/cron/daily') {
-        const run = async (table, select, build) => {
-          const r = await fetch(`${db.url}/rest/v1/${table}?select=${select}`, { headers: db.headers })
-          if (!r.ok) return { sent: false, error: `Supabase: ${r.status}` }
-          const text = build(await r.json())
-          if (!text) return { sent: false, reason: 'нет поводов' }
-          const tg = await sendTelegram(env, text)
-          return tg.ok ? { sent: true } : { sent: false, error: tg.error }
-        }
-        const [licenses, trials] = await Promise.all([
-          run('licenses', 'customer,expires_at,revoked,activated_at,last_seen_at', buildLicenseReminder),
-          run('trials', 'machine_id,started_at,status,business_type,app_version,last_seen_at,created_at', buildTrialsReport),
-        ])
-        return json({ ok: !licenses.error && !trials.error, licenses, trials })
       }
 
       // --- Вкладка «Облако»: живы ли облачные функции ------------------------
@@ -782,13 +660,37 @@ const PAGE = `<!DOCTYPE html>
     background:var(--brand);color:var(--accent-fg);border:1px solid var(--brand)}
   .toast.err{background:color-mix(in srgb,var(--bad) 18%,var(--panel));color:var(--bad);border:1px solid var(--bad)}
 
+  /* Гамбургер виден только на узком экране; на широком меню и так помещается */
+  .mobile-only{display:none}
+  .nav-backdrop{display:none}
+
   @media (max-width:760px){
     .wrap{padding:20px 14px 70px}
     .desktop-only{display:none}
+    .mobile-only{display:flex}
     .statgrid{grid-template-columns:1fr 1fr;gap:10px}
     .chartcard{grid-column:1 / -1}
     .table-desktop{display:none}
     .card-view{display:block}
+
+    /* Шесть вкладок в строку на телефон не влезают: раньше они уезжали за край
+       и часть разделов была недоступна. Теперь — выездная панель сбоку, как в
+       мобильных сайтах: помещается сколько угодно пунктов, и добавление
+       седьмого ничего не сломает. */
+    .topbar{gap:10px;padding:0 12px}
+    .logo-sub{display:none}
+    .tabs-deco{position:fixed;top:0;left:0;z-index:40;display:flex;flex-direction:column;gap:4px;
+      width:264px;max-width:82vw;height:100dvh;margin:0;padding:14px 12px;overflow-y:auto;
+      background:var(--bg2);border-right:1px solid var(--b);
+      transform:translateX(-100%);transition:transform .22s ease;
+      /* aria-hidden убирает пункты из-под пальца и из читалки, пока меню закрыто */
+      visibility:hidden}
+    .tabs-deco.open{transform:none;visibility:visible}
+    .tabs-deco button{display:flex;align-items:center;justify-content:space-between;
+      width:100%;padding:13px 14px;font-size:15px;border-radius:10px;text-align:left}
+    .tabs-deco button.active{background:var(--brand);color:var(--accent-fg)}
+    .nav-backdrop{position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.45)}
+    .nav-backdrop.open{display:block}
   }
 </style>
 </head>
@@ -813,11 +715,14 @@ const PAGE = `<!DOCTYPE html>
         <div class="logo-sub">Касса · подписки</div>
       </div>
     </div>
-    <nav class="tabs-deco">
+    <button id="menuBtn" class="icon-btn mobile-only" onclick="toggleMenu()" aria-label="Меню">☰</button>
+    <div id="navBackdrop" class="nav-backdrop" onclick="toggleMenu(false)"></div>
+    <nav id="nav" class="tabs-deco">
       <button id="navSubs" class="active" onclick="switchView('subs')">Подписки</button>
+      <button id="navTrials" onclick="switchView('trials')">Триалы<span id="navTrialsBadge" class="navbadge" style="display:none"></span></button>
+      <button id="navReq" onclick="switchView('req')">Заявки<span id="navReqBadge" class="navbadge" style="display:none"></span></button>
       <button id="navCat" onclick="switchView('cat')">Штрихкоды<span id="navCatBadge" class="navbadge" style="display:none"></span></button>
       <button id="navInv" onclick="switchView('inv')">Приёмки<span id="navInvBadge" class="navbadge" style="display:none"></span></button>
-      <button id="navReq" onclick="switchView('req')">Заявки<span id="navReqBadge" class="navbadge" style="display:none"></span></button>
       <button id="navCloud" onclick="switchView('cloud')">Облако<span id="navCloudBadge" class="navbadge" style="display:none"></span></button>
     </nav>
     <div class="topbar-right">
@@ -938,6 +843,18 @@ const PAGE = `<!DOCTYPE html>
     </div>
     <div id="reqEmpty" class="empty" style="display:none">Заявок нет</div>
     <div id="reqList"></div>
+  </div>
+
+  <div id="viewTrials" style="display:none">
+    <div class="titlerow">
+      <div>
+        <h1>Пробные установки</h1>
+        <div class="sub">Кто поставил кассу и ещё не заплатил. Касса без лицензии сама сообщает состояние раз в сутки. Самые тёплые — «истёк, но кассу открывают»: продукт нужен, а денег пока не отдали.</div>
+      </div>
+      <div class="count" id="trialsCount"></div>
+    </div>
+    <div id="trialsEmpty" class="empty" style="display:none">Пробных установок нет</div>
+    <div id="trialsList"></div>
   </div>
 
   <div id="viewCloud" style="display:none">
@@ -1421,22 +1338,88 @@ async function bulkSetRevoked(flag){
 let view = 'subs'
 let catPending = [], catPendTotal = null, catRows = [], catListTotal = null, catPage = 0, catSelected = new Set(), catListSel = new Set(), catEditKey = null
 
+// Выездное меню на телефоне. На широком экране класс open ни на что не влияет:
+// там .tabs-deco — обычная строка вкладок, drawer-стили живут в @media.
+function toggleMenu(force){
+  const nav = $('nav'), bd = $('navBackdrop')
+  const open = force === undefined ? !nav.classList.contains('open') : !!force
+  nav.classList.toggle('open', open)
+  bd.classList.toggle('open', open)
+}
+
+const VIEWS = ['subs','trials','req','cat','inv','cloud']
+const NAV_ID = { subs:'navSubs', trials:'navTrials', req:'navReq', cat:'navCat', inv:'navInv', cloud:'navCloud' }
+const VIEW_ID = { subs:'viewSubs', trials:'viewTrials', req:'viewReq', cat:'viewCat', inv:'viewInv', cloud:'viewCloud' }
+
 async function switchView(v){
   view = v
-  $('viewSubs').style.display = v === 'subs' ? '' : 'none'
-  $('viewCat').style.display = v === 'cat' ? '' : 'none'
-  $('viewInv').style.display = v === 'inv' ? '' : 'none'
-  $('viewReq').style.display = v === 'req' ? '' : 'none'
-  $('viewCloud').style.display = v === 'cloud' ? '' : 'none'
-  $('navSubs').className = v === 'subs' ? 'active' : ''
-  $('navCat').className = v === 'cat' ? 'active' : ''
-  $('navInv').className = v === 'inv' ? 'active' : ''
-  $('navReq').className = v === 'req' ? 'active' : ''
-  $('navCloud').className = v === 'cloud' ? 'active' : ''
+  for (const k of VIEWS){
+    $(VIEW_ID[k]).style.display = k === v ? '' : 'none'
+    $(NAV_ID[k]).className = k === v ? 'active' : ''
+  }
+  toggleMenu(false)   // выбрал раздел — панель уезжает, как и ждут от мобильного меню
+  if (v === 'trials') await loadTrials()
   if (v === 'cat') await Promise.all([loadCatPending(), loadCatList()])
   if (v === 'inv') await loadInv()
   if (v === 'req') await loadReq()
   if (v === 'cloud') await loadCloud()
+}
+
+// ── Вкладка «Триалы»: воронка до оплаты ──
+// Разбор по состояниям, а не просто список: горящие и «истёк, но открывают» —
+// это разные разговоры с клиентом, и глазами по датам их не разделишь.
+const TRIAL_DAYS = 14   // как в кассе (license.service TRIAL_DAYS)
+const BIZ = { shop:'магазин', cafe:'кафе', sauna:'сауна' }
+
+function trialState(r, now){
+  const DAY = 86400000
+  const seenAgo = Math.floor((now - new Date(r.last_seen_at).getTime()) / DAY)
+  const startedAgo = r.started_at ? Math.floor((now - new Date(r.started_at).getTime()) / DAY) : null
+  const left = startedAgo == null ? null : TRIAL_DAYS - startedAgo
+  if (r.status === 'licensed') return { key:'licensed' }
+  if (r.status === 'expired' && seenAgo <= 3) return { key:'lapsed', label:'истёк, но кассу открывают', tone:'hot', seenAgo, left }
+  if (left != null && left <= 3 && left > 0) return { key:'hot', label: left === 1 ? 'заканчивается завтра' : 'осталось ' + left + ' дн', tone:'warn', seenAgo, left }
+  if (r.status === 'expired') return { key:'dead', label:'истёк, кассу не открывают', tone:'mut', seenAgo, left }
+  if (seenAgo >= 3) return { key:'quiet', label:'молчит ' + seenAgo + ' дн', tone:'mut', seenAgo, left }
+  return { key:'live', label: left == null ? 'идёт' : 'осталось ' + left + ' дн', tone:'ok', seenAgo, left }
+}
+
+let trialRows = []
+async function loadTrials(){
+  try {
+    const d = await api('trials')
+    trialRows = (d.rows || []).filter(r => r.status !== 'licensed')
+    const now = Date.now()
+    const states = trialRows.map(r => ({ r, s: trialState(r, now) }))
+    // Бейджем — только те, с кем есть что делать прямо сейчас. Тихие и мёртвые
+    // в счётчик не идут: он должен звать к действию, а не показывать объём базы.
+    const actionable = states.filter(x => x.s.key === 'lapsed' || x.s.key === 'hot').length
+    $('trialsCount').textContent = trialRows.length
+      ? (actionable ? 'требуют внимания: ' + actionable : 'всего ' + trialRows.length)
+      : ''
+    $('navTrialsBadge').style.display = actionable > 0 ? '' : 'none'
+    $('navTrialsBadge').textContent = actionable
+    const ORDER = { lapsed:0, hot:1, live:2, quiet:3, dead:4 }
+    states.sort((a,b) => (ORDER[a.s.key] - ORDER[b.s.key]) || (a.s.seenAgo - b.s.seenAgo))
+    renderTrials(states)
+  } catch(e){ toast(e.message, true) }
+}
+
+function renderTrials(states){
+  if (!states.length){ $('trialsList').innerHTML = ''; $('trialsEmpty').style.display = 'block'; return }
+  $('trialsEmpty').style.display = 'none'
+  const COLOR = { hot:'var(--warn)', warn:'var(--warn)', ok:'var(--mut)', mut:'var(--mut2)' }
+  $('trialsList').innerHTML = states.map(({ r, s }) =>
+    '<div class="tablewrap" style="padding:14px;margin-bottom:10px">' +
+      '<div style="font-weight:600;color:' + COLOR[s.tone] + '">' + esc(s.label) + '</div>' +
+      // Код компьютера целиком читать незачем — хвоста хватает, чтобы отличать
+      // установки друг от друга; полный код нужен только при одобрении заявки.
+      '<div class="exp">…' + esc(String(r.machine_id || '').slice(-6)) + ' · ' +
+        esc(BIZ[r.business_type] || r.business_type || 'тип не указан') +
+        (r.app_version ? ' · версия ' + esc(r.app_version) : '') + '</div>' +
+      '<div class="exp">начало ' + (r.started_at ? fmtDate(r.started_at) : '—') +
+        ' · последний раз ' + fmtDate(r.last_seen_at) + '</div>' +
+    '</div>').join('')
 }
 
 // ── Вкладка «Заявки на активацию» ──
@@ -1804,7 +1787,7 @@ function boot(){
   // без перехода на вкладку, и проект монитора получает активность (не заснёт).
   // Заявки и состояние облака — тем же приёмом: смысл в том, чтобы поломка
   // и новая заявка находили владельца сами, а не ждали, пока он зайдёт.
-  if (has){ load(); loadCatPending(); loadReq(); loadCloud() }
+  if (has){ load(); loadCatPending(); loadReq(); loadCloud(); loadTrials() }
 }
 ;[dlgIssue, dlg].forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close() }))
 // Диалоги правки категории (dlgCat, dlgBulkCat) НЕ закрываем случайным кликом по
