@@ -59,7 +59,7 @@ export function Suggest({ value, onChange, options, placeholder, autoFocus }) {
   // Пока не начали печатать — показываем всё, это и есть «выпадающий список».
   const list = (options || []).filter(o => !term || o.toLowerCase().includes(term)).slice(0, 50)
   return (
-    <div className="suggest">
+    <div>
       <input value={value} placeholder={placeholder} autoFocus={autoFocus}
         onChange={e => { onChange(e.target.value); setOpen(true) }}
         onFocus={() => setOpen(true)}

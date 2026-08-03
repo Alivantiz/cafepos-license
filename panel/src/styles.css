@@ -117,13 +117,15 @@ input, select, textarea {
   background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
   padding: 8px 11px; border-radius: 9px; width: 100%;
 }
-/* Поле с подсказкой значений — своё, в цветах панели. */
-.suggest { position: relative; }
+/* Поле с подсказкой значений — своё, в цветах панели.
+   Список стоит В ПОТОКЕ, а не поверх содержимого: у окна есть своя прокрутка
+   (overflow: auto), и всплывающий список она обрезала по нижнему краю — было
+   видно две с половиной категории из двадцати. В потоке окно просто становится
+   выше и прокручивается, а на телефоне это ещё и привычнее. */
 .suggest-list {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
-  max-height: 220px; overflow-y: auto; padding: 4px;
+  margin-top: 4px; max-height: 200px; overflow-y: auto; padding: 4px;
   background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 10px; box-shadow: var(--shadow);
+  border-radius: 10px;
 }
 .suggest-item {
   display: block; width: 100%; text-align: left; font: inherit; color: var(--fg);
@@ -213,6 +215,9 @@ tbody tr:hover td { background: var(--panel2); }
   /* Палец не попадает в кнопку высотой 26px */
   .btn.sm { padding: 8px 12px; font-size: 13px; }
   .btn.icon { width: 34px; height: 34px; }
+  /* 16px — не про красоту: Safari на iOS сам приближает страницу, когда фокус
+     попадает в поле с более мелким шрифтом, и обратно уже не отдаляет. */
+  input, select, textarea { font-size: 16px; }
   /* Намёк, что таблица прокручивается вбок */
   .tablewrap { position: relative; }
   .tablewrap::after {
