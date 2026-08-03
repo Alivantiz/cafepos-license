@@ -59,9 +59,21 @@ function Login({ onOk }) {
   )
 }
 
+// Вкладка и открытая карточка живут в адресе, а не только в памяти. Иначе F5
+// всегда выкидывал на сводку — а обновление страницы это первое, что делают
+// руками. Заодно работают «назад» и «вперёд» в браузере.
+function readHash() {
+  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''))
+  const [view, subject] = h.split('/')
+  return { view: view || 'summary', subject: subject || null }
+}
+
 function Panel() {
-  const [view, setView] = useState('summary')
-  const [openClient, setOpenClient] = useState(null)   // subject открытой карточки
+  const [route, setRoute] = useState(readHash)
+  const view = route.view
+  const openClient = route.subject
+  const setView = (v) => setRoute({ view: v, subject: null })
+  const setOpenClient = (subject) => setRoute(r => ({ ...r, subject }))
   const [menu, setMenu] = useState(false)
   const [issue, setIssue] = useState(null)   // null | {} | {machine_id, customer}
   const [theme, setTheme] = useState(localStorage.getItem('panel_theme') || 'dark')
@@ -72,6 +84,18 @@ function Panel() {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('panel_theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    const want = '#/' + route.view + (route.subject ? '/' + encodeURIComponent(route.subject) : '')
+    if (location.hash !== want) history.replaceState(null, '', want)
+  }, [route])
+
+  // Кнопки «назад»/«вперёд» браузера меняют адрес мимо нас — слушаем.
+  useEffect(() => {
+    const onHash = () => setRoute(readHash())
+    addEventListener('hashchange', onHash)
+    return () => removeEventListener('hashchange', onHash)
+  }, [])
 
   // Обновление без вебсокета. Данные меняются примерно раз в сутки (итоги
   // приходят одним пингом от кассы, лицензии правишь ты сам — и после каждого
@@ -129,7 +153,7 @@ function Panel() {
   const isOwnData = view === 'summary' || view === 'clients' || view === 'trials' || !!current
   const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
 
-  const goto = (v) => { setView(v); setOpenClient(null); setMenu(false); setViewReload(null) }
+  const goto = (v) => { setView(v); setMenu(false); setViewReload(null) }
   const open = (c) => { setOpenClient(c.subject); setMenu(false) }
 
   const all = [...(data?.licenses || []), ...trials]
@@ -168,14 +192,16 @@ function Panel() {
           {/* Время последней загрузки: без него не понять, свежие цифры или
               вкладка провисела ночь. Кнопка осталась — обновление само по себе
               работает, но иногда хочется дёрнуть прямо сейчас. */}
+          {/* Кнопки «Обновить» нет: панель перечитывает себя при возврате к
+              вкладке и раз в пять минут, а если хочется прямо сейчас — F5
+              теперь оставляет на той же вкладке (адрес хранит её). Время
+              загрузки оставлено: по нему видно, свежие цифры или нет. */}
           <span className="muted2 spacer">
-            {isOwnData && at
-              ? 'данные на ' + new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-              : ''}
+            {loading ? 'обновляю…'
+              : isOwnData && at
+                ? 'данные на ' + new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+                : ''}
           </span>
-          <button className="btn ghost sm" onClick={doReload} disabled={loading}>
-            {loading ? 'Обновляю…' : 'Обновить'}
-          </button>
         </div>
 
         {/* Ошибку фонового обновления не показываем баннером: он внезапно
