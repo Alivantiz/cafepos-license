@@ -2,11 +2,11 @@
 // Прежняя панель открывалась таблицей лицензий, отсортированной по дате
 // создания: чтобы понять, кому звонить, приходилось читать её глазами целиком.
 import { daysLeft, daysAgo, money, fmtDate } from '../api'
-import { Tile, Chart, Tag } from '../ui'
+import { Tile, Chart, Tag, calendar } from '../ui'
 
 const isLive = (c) => !c.revoked && (c.expires_at === null || daysLeft(c.expires_at) > 0)
 
-export default function Summary({ data, onOpen, onGoto }) {
+export default function Summary({ data, onOpen, onFilter }) {
   // Скрытые не участвуют в сводке ВООБЩЕ: тестовые кассы владельца, где чеки
   // пробиваются по сто тенге, тянули вниз средний чек всего парка и искажали
   // оборот — цифрам нельзя было верить.
@@ -19,7 +19,12 @@ export default function Summary({ data, onOpen, onGoto }) {
   // именно это и значит, что клиент отваливается.
   const silent = live.filter(c => c.telemetry && (daysAgo(c.last_sale_at) ?? 99) >= 3)
   const expiring = live.filter(c => { const d = daysLeft(c.expires_at); return d !== null && d <= 14 })
-  const expired = licenses.filter(c => !c.revoked && c.expires_at && daysLeft(c.expires_at) <= 0)
+  // Истёкшие берём только свежие: без окна клиент, ушедший год назад, висел бы
+  // в списке «сегодня» вечно, и через полгода блок перестали бы читать.
+  const expired = licenses.filter(c =>
+    !c.revoked && c.expires_at && daysLeft(c.expires_at) <= 0 && daysLeft(c.expires_at) > -30)
+  const lost = licenses.filter(c =>
+    !c.revoked && c.expires_at && daysLeft(c.expires_at) <= -30).length
   const hotTrials = trials.filter(t => (t.receipts7 || 0) > 0)
 
   // Выручка всех заведений за 30 дней — не твои деньги, а масштаб парка:
@@ -31,22 +36,30 @@ export default function Summary({ data, onOpen, onGoto }) {
   for (const c of licenses) for (const d of c.days || []) {
     byDay.set(d.day, (byDay.get(d.day) || 0) + d.revenue)
   }
-  const series = [...byDay.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1)
-    .slice(-30).map(([day, revenue]) => ({ day, revenue }))
+  const series = calendar(
+    [...byDay.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([day, revenue]) => ({ day, revenue })), 30)
 
   const noTelemetry = live.filter(c => !c.telemetry).length
+
+  // Ноль клиентов: плитки писали «все лицензии живы» и «всё спокойно» —
+  // экран выглядел рабочим, хотя данных нет вовсе.
+  if (!licenses.length && !trials.length) {
+    return <div className="empty">
+      Клиентов пока нет. Выпустите первую лицензию на вкладке «Клиенты».
+    </div>
+  }
 
   return (
     <>
       <div className="grid tiles" style={{ marginBottom: 16 }}>
-        <Tile label="Платящих" value={live.length}
+        <Tile label="Платящих" value={live.length} onClick={() => onFilter("live")}
           hint={licenses.length > live.length ? `${licenses.length - live.length} неактивных` : 'все лицензии живы'} />
-        <Tile label="На пробе" value={trials.length}
+        <Tile label="На пробе" value={trials.length} onClick={() => onFilter("trial")}
           hint={hotTrials.length ? `${hotTrials.length} уже торгуют` : 'торгующих нет'} />
-        <Tile label="Истекает за 14 дней" value={expiring.length}
+        <Tile label="Истекает за 14 дней" value={expiring.length} onClick={() => onFilter("expiring")}
           tone={expiring.length ? 'warn' : undefined}
-          hint={expired.length ? `${expired.length} уже истекли` : 'просроченных нет'} />
-        <Tile label="Молчат 3+ дня" value={silent.length}
+          hint={expired.length ? `${expired.length} уже истекли` : lost ? `${lost} потеряны давно` : 'просроченных нет'} />
+        <Tile label="Молчат 3+ дня" value={silent.length} onClick={() => onFilter("silent")}
           tone={silent.length ? 'bad' : undefined} hint="нет продаж" />
         <Tile label="Оборот парка за 30 дней" value={money(gmv30, true)}
           hint={noTelemetry ? `${noTelemetry} без телеметрии` : 'по всем заведениям'} />
@@ -62,7 +75,7 @@ export default function Summary({ data, onOpen, onGoto }) {
 
       <Upcoming licenses={licenses} onOpen={onOpen} />
 
-      <Attention title="Требует внимания сегодня" onGoto={onGoto} items={[
+      <Attention title="Требует внимания сегодня" items={[
         ...expired.map(c => ({ c, why: 'лицензия истекла', tone: 'bad' })),
         ...expiring.map(c => ({ c, why: `истекает через ${daysLeft(c.expires_at)} дн`, tone: 'warn' })),
         ...silent.map(c => ({ c, why: `нет продаж ${daysAgo(c.last_sale_at)} дн`, tone: 'bad' })),
@@ -102,7 +115,7 @@ function Upcoming({ licenses, onOpen }) {
           <span className="spacer" />
           <span className="muted2">{fmtDate(c.expires_at)}</span>
           <Tag tone={left <= 0 ? 'bad' : left <= 7 ? 'warn' : null}>
-            {left <= 0 ? `просрочено ${-left} дн` : left === 0 ? 'сегодня' : `через ${left} дн`}
+            {left < 0 ? `просрочено ${-left} дн` : left === 0 ? 'сегодня' : `через ${left} дн`}
           </Tag>
         </div>
       ))}
@@ -131,6 +144,13 @@ function Attention({ title, items, onOpen }) {
           <button className="btn ghost sm" onClick={() => onOpen(c)} style={{ fontWeight: 550 }}>
             {c.customer || c.machine_id || c.subject}
           </button>
+          {/* Блок отвечает на «кому звонить» — значит номер должен быть здесь,
+              а не в двух действиях отсюда. */}
+          {c.contact && <><a className="tag" href={`tel:${String(c.contact).replace(/[^\d+]/g, '')}`}>{c.contact}</a>
+            {/* Переписка в Казахстане идёт в вотсапе — без ссылки номер
+                приходится копировать в другое приложение руками. */}
+            <a className="tag" target="_blank" rel="noreferrer"
+              href={`https://wa.me/${String(c.contact).replace(/\D/g, '')}`}>WhatsApp</a></>}
           <span className="muted2" style={{ color: `var(--${tone})` }}>{whys.join(' · ')}</span>
         </div>
       ))}

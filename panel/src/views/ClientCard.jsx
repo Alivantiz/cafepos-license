@@ -3,14 +3,16 @@
 // а на вопрос «как у них дела» ответа не было нигде.
 import { useState } from 'react'
 import { api, fmtDate, daysLeft, daysAgo, money, agoText } from '../api'
-import { Tile, Chart, Tag, Modal, toast, confirmDialog } from '../ui'
+import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar } from '../ui'
 
-export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
+export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFor }) {
   const [renew, setRenew] = useState(false)
   const [edit, setEdit] = useState(false)
   const [notes, setNotes] = useState(c.notes || '')
   const [busy, setBusy] = useState(false)
-  const days = (c.days || []).slice(-30)
+  // Календарь, а не порядок точек: дни без продаж в данных отсутствуют,
+  // и без раскладки провал «неделю не работали» на графике не виден.
+  const days = calendar(c.days, 30)
   const trial = c.kind === 'trial'
 
   const save = async () => {
@@ -48,13 +50,24 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
+  // Уход с карточки терял набранную заметку молча. Предупреждаем.
+  const dirty = notes !== (c.notes || '')
+  const leave = async () => {
+    if (dirty && !await confirmDialog({
+      title: 'Заметка не сохранена',
+      message: 'Уйти и потерять набранный текст?',
+      confirmText: 'Уйти',
+    })) return
+    onBack()
+  }
+
   const left = daysLeft(c.expires_at)
   const grow = c.prevRevenue7 > 0 ? Math.round((c.revenue7 - c.prevRevenue7) / c.prevRevenue7 * 100) : null
 
   return (
     <>
       <div className="row" style={{ marginBottom: 16 }}>
-        <button className="btn ghost" onClick={onBack}>← Клиенты</button>
+        <button className="btn ghost" onClick={leave}>← Назад</button>
         <h1 style={{ marginLeft: 4 }}>{c.customer || c.machine_id || c.subject}</h1>
         {trial ? <Tag tone="warn">пробная установка</Tag>
           : c.revoked ? <Tag tone="bad">отозвана</Tag>
@@ -76,10 +89,10 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
       )}
 
       <div className="grid tiles" style={{ marginBottom: 16 }}>
-        <Tile label="Выручка за 7 дней" value={money(c.revenue7 || 0, true)}
+        <Tile label="Выручка за 7 дней" value={money(c.revenue7 || 0)}
           hint={grow !== null ? `${grow >= 0 ? '+' : ''}${grow}% к прошлой неделе` : 'сравнить не с чем'}
           tone={grow !== null && grow < -30 ? 'bad' : undefined} />
-        <Tile label="Выручка за 30 дней" value={money(c.revenue30 || 0, true)}
+        <Tile label="Выручка за 30 дней" value={money(c.revenue30 || 0)}
           hint={`${c.receipts30 || 0} чеков`} />
         <Tile label="Средний чек" value={c.avgCheck ? money(c.avgCheck) : '—'} hint="за 30 дней" />
         <Tile label="Последняя продажа" value={agoText(c.last_sale_at)}
@@ -107,14 +120,26 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
                 navigator.clipboard.writeText(c.subject); toast.ok('Скопировано')
               }}>копировать</button>
             </dd>
-            <dt className="muted2">Компьютер</dt>
-            <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
-              {c.machine_id || 'не привязана'}</dd>
-            <dt className="muted2">Терминалов</dt><dd style={{ margin: 0 }}>{c.terminals ?? 1}</dd>
-            <dt className="muted2">Заведена</dt><dd style={{ margin: 0 }}>{fmtDate(c.created_at)}</dd>
+            {/* У пробы код и «компьютер» — одно и то же, а терминалы и дата
+                выпуска лицензии смысла не имеют: показывать их незачем. */}
+            {!trial && <>
+              <dt className="muted2">Компьютер</dt>
+              <dd style={{ margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
+                {c.machine_id || 'не привязана'}</dd>
+              <dt className="muted2">Терминалов</dt><dd style={{ margin: 0 }}>{c.terminals ?? 1}</dd>
+              <dt className="muted2">Заведена</dt><dd style={{ margin: 0 }}>{fmtDate(c.created_at)}</dd>
+            </>}
             <dt className="muted2">Связь</dt><dd style={{ margin: 0 }}>{agoText(c.last_seen_at)}</dd>
             {trial && <><dt className="muted2">Проба с</dt><dd style={{ margin: 0 }}>{fmtDate(c.started_at)}</dd></>}
           </dl>
+          {/* Горячий триал — главный повод действовать, а действия из карточки
+              не было: приходилось идти в «Клиенты» и копировать код компьютера
+              из другой вкладки. */}
+          {trial && (
+            <div className="row" style={{ marginTop: 14 }}>
+              <button className="btn pri" onClick={() => onIssueFor?.(c)}>Выпустить лицензию</button>
+            </div>
+          )}
           {!trial && (
             <div className="row" style={{ marginTop: 14 }}>
               <button className="btn pri" onClick={() => setRenew(true)}>Продлить</button>
@@ -135,7 +160,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged }) {
               placeholder="Чем занимаются, кто контактное лицо, о чём договорились"
               style={{ marginTop: 10, resize: 'vertical' }} />
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn" disabled={busy || notes === (c.notes || '')} onClick={save}>Сохранить</button>
+              <button className="btn" disabled={busy || !dirty} onClick={save}>Сохранить</button>
             </div>
           </div>
         )}
@@ -169,7 +194,7 @@ function EditModal({ c, onClose, onDone }) {
   }
 
   return (
-    <Modal title="Изменить клиента" onClose={onClose}>
+    <Modal title="Изменить клиента" onClose={onClose} keepOpen>
       <label>Название<input value={f.customer} onChange={set('customer')} autoFocus /></label>
       <label>Телефон<input value={f.contact} onChange={set('contact')} placeholder="+7…" inputMode="tel" /></label>
       <label>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
@@ -187,6 +212,7 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
   const [days, setDays] = useState(30)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const n = Number(days) || 0
 
   const go = async () => {
     setBusy(true)
@@ -204,13 +230,18 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
   }
 
   return (
-    <Modal title="Продлить подписку" onClose={onClose}>
+    <Modal title="Продлить подписку" onClose={onClose} keepOpen>
       <div className="muted2">{c.customer}</div>
       <div className="row">
         <input type="number" min="1" value={days} onChange={e => setDays(e.target.value)} style={{ maxWidth: 110 }} />
         {[30, 90, 365].map(d => (
           <button key={d} className="btn sm" onClick={() => setDays(d)}>{d === 365 ? '1 год' : d + ' дн'}</button>
         ))}
+      </div>
+      {/* Дату видно ДО нажатия: раньше она появлялась только в ответе сервера */}
+      <div className="muted2">
+        {n > 0 ? `Продлится до ${fmtDate(new Date(Math.max(Date.now(), new Date(c.expires_at || 0).getTime()) + n * 86400000))}`
+          : 'Укажите число дней'}
       </div>
       {msg && <>
         <textarea readOnly rows={3} value={msg} />
@@ -220,7 +251,7 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
       </>}
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Закрыть</button>
-        <button className="btn pri" disabled={busy} onClick={go}>{busy ? 'Секунду…' : 'Продлить'}</button>
+        <button className="btn pri" disabled={busy || n <= 0} onClick={go}>{busy ? 'Секунду…' : 'Продлить'}</button>
       </div>
     </Modal>
   )

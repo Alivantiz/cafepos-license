@@ -10,6 +10,10 @@ import Catalog from './views/Catalog'
 import Invoices from './views/Invoices'
 import Cloud, { brokenCount } from './views/Cloud'
 
+// Срочное — то, где ждут ответа или что-то сломалось. Каталог и накладные
+// разбираются когда удобно, тревожить ими незачем.
+const URGENT = new Set(['requests', 'cloud', 'trials'])
+
 const VIEWS = [
   { id: 'summary', label: 'Сводка' },
   { id: 'clients', label: 'Клиенты' },
@@ -59,7 +63,7 @@ function Panel() {
   const [view, setView] = useState('summary')
   const [openClient, setOpenClient] = useState(null)   // subject открытой карточки
   const [menu, setMenu] = useState(false)
-  const [issue, setIssue] = useState(false)
+  const [issue, setIssue] = useState(null)   // null | {} | {machine_id, customer}
   const [theme, setTheme] = useState(localStorage.getItem('panel_theme') || 'dark')
   const [badges, setBadges] = useState({})
   const { data, error, loading, reload, at } = useApi('clients')
@@ -121,6 +125,7 @@ function Panel() {
   // владелец жал и решал, что новых заявок нет. Вкладка регистрирует здесь свою
   // перезагрузку, шапка вызывает именно её.
   const [viewReload, setViewReload] = useState(null)
+  const [clientsFilter, setClientsFilter] = useState('all')
   const isOwnData = view === 'summary' || view === 'clients' || view === 'trials' || !!current
   const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
 
@@ -142,7 +147,9 @@ function Panel() {
           return (
             <button key={v.id} className={'nav' + (view === v.id && !current ? ' active' : '')}
               onClick={() => goto(v.id)}>
-              {v.label}{n > 0 && <span className="count">{n}</span>}
+              {v.label}{n > 0 && (
+                <span className={'count' + (URGENT.has(v.id) ? ' urgent' : '')}>{n}</span>
+              )}
             </button>
           )
         })}
@@ -171,18 +178,30 @@ function Panel() {
           </button>
         </div>
 
-        {error && <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>}
+        {/* Ошибку фонового обновления не показываем баннером: он внезапно
+            выталкивал содержимое вниз каждые пять минут. Баннер — только когда
+            показывать вообще нечего. */}
+        {error && !data && (
+          <div className="card" style={{ borderColor: 'var(--bad)' }}>
+            <b>Не удалось загрузить данные.</b>
+            <div className="muted" style={{ margin: '6px 0 12px' }}>{error}</div>
+            <button className="btn pri" onClick={doReload}>Повторить</button>
+          </div>
+        )}
         {!data && loading && <div className="empty">Загрузка…</div>}
 
         {data && current && (
           <ClientCard c={current} kaspiPhone={data.kaspiPhone} onBack={() => setOpenClient(null)}
-            onChanged={reload} />
+            onChanged={reload}
+            onIssueFor={(t) => setIssue({ machine_id: t.machine_id, customer: t.shop || '' })} />
         )}
         {data && !current && view === 'summary' && (
-          <Summary data={cleanData} onOpen={open} onGoto={goto} />
+          <Summary data={cleanData} onOpen={open}
+            onFilter={(f) => { setClientsFilter(f); goto('clients') }} />
         )}
         {data && !current && view === 'clients' && (
-          <Clients data={cleanData} onOpen={open} onIssue={() => setIssue(true)} />
+          <Clients key={clientsFilter} data={cleanData} onOpen={open}
+            onIssue={() => setIssue({})} initialFilter={clientsFilter} />
         )}
         {data && !current && view === 'trials' && <Trials data={cleanData} onOpen={open} />}
         {!current && view === 'requests' && (
@@ -195,15 +214,20 @@ function Panel() {
         {!current && view === 'cloud' && <Cloud onReload={setViewReload} />}
       </main>
 
-      {issue && <IssueModal onClose={() => setIssue(false)} onDone={reload} />}
+      {issue && <IssueModal pre={issue} onClose={() => setIssue(null)} onDone={reload} />}
       <Toasts />
       <Confirms />
     </div>
   )
 }
 
-function IssueModal({ onClose, onDone }) {
-  const [f, setF] = useState({ customer: '', contact: '', days: 30, terminals: 1, notes: '' })
+function IssueModal({ pre, onClose, onDone }) {
+  const [f, setF] = useState({
+    customer: pre?.customer || '', contact: '', days: 30, terminals: 1, notes: '',
+    // Из карточки триала лицензия сразу привязывается к его компьютеру —
+    // иначе код приходилось копировать руками из другой вкладки.
+    machine_id: pre?.machine_id || '',
+  })
   const [busy, setBusy] = useState(false)
   const [code, setCode] = useState('')
   const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
@@ -222,7 +246,7 @@ function IssueModal({ onClose, onDone }) {
   }
 
   return (
-    <Modal title="Выпустить лицензию" onClose={onClose}>
+    <Modal title="Выпустить лицензию" onClose={onClose} keepOpen>
       {code ? (
         <>
           <div className="muted">Код активации — клиент вводит его в кассе:</div>
@@ -234,6 +258,9 @@ function IssueModal({ onClose, onDone }) {
         </>
       ) : (
         <>
+          {f.machine_id && (
+            <div className="muted2">Для пробной установки …{f.machine_id.slice(-6)} — касса заберёт лицензию сама.</div>
+          )}
           <label>Клиент<input value={f.customer} onChange={set('customer')} autoFocus /></label>
           {/* Телефон спрашиваем сразу: потом, когда касса замолчит и надо будет
               звонить, искать его будет негде. */}

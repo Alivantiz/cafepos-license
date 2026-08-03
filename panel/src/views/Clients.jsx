@@ -3,7 +3,7 @@
 // выручка за неделю, средний чек, когда последняя продажа.
 import { useMemo, useState } from 'react'
 import { daysLeft, daysAgo, fmtDate, money, agoText } from '../api'
-import { Tag, Spark } from '../ui'
+import { Tag, Spark, calendar } from '../ui'
 
 const status = (c) => {
   if (c.kind === 'trial') return { tone: 'warn', text: 'проба' }
@@ -24,9 +24,9 @@ const FILTERS = [
   { id: 'hidden', label: 'Скрытые' },
 ]
 
-export default function Clients({ data, onOpen, onIssue }) {
+export default function Clients({ data, onOpen, onIssue, initialFilter }) {
   const [q, setQ] = useState('')
-  const [filter, setFilter] = useState('all')
+  const [filter, setFilter] = useState(initialFilter || 'all')
   const [sort, setSort] = useState({ col: 'revenue7', dir: 'desc' })
 
   const all = useMemo(
@@ -135,7 +135,7 @@ function Row({ c, onOpen }) {
                   {grow >= 0 ? '+' : ''}{grow}%
                 </span>
               )}
-              <Spark days={(c.days || []).slice(-30)} />
+              <Spark days={calendar(c.days, 30)} />
             </div>
           </td>
           <td className="num">{c.avgCheck ? money(c.avgCheck) : '—'}</td>

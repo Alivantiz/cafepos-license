@@ -22,7 +22,7 @@
   --line: #dfe3e8;
   --fg: #171a1f;
   --mut: #5b636e;
-  --mut2: #8b939e;
+  --mut2: #6d7480;
   --accent: #1668d6;
   --ok: #12855a;
   --warn: #9a6208;
@@ -57,10 +57,13 @@ button { font: inherit; }
 }
 .nav:hover { background: var(--panel2); color: var(--fg); }
 .nav.active { background: var(--accent); color: #fff; }
+/* Красный — только для срочного (заявки ждут ответа, облако лежит). Каталог и
+   накладные красным обесценивали цвет: тревожно выглядело всё сразу. */
 .nav .count {
   margin-left: auto; font-size: 11px; font-weight: 700; padding: 1px 7px;
-  border-radius: 999px; background: var(--bad); color: #fff;
+  border-radius: 999px; background: var(--panel2); color: var(--mut);
 }
+.nav .count.urgent { background: var(--bad); color: #fff; }
 .nav.active .count { background: rgba(255,255,255,.25); }
 .main { flex: 1; min-width: 0; padding: 24px 28px 48px; }
 .topbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
@@ -78,6 +81,9 @@ h1 { font-size: 21px; margin: 0; font-weight: 650; letter-spacing: -.02em; }
 .tile-value { font-size: 25px; font-weight: 650; letter-spacing: -.02em; margin-top: 4px;
   font-variant-numeric: tabular-nums; }
 .tile-hint { color: var(--mut2); font-size: 11.5px; margin-top: 3px; }
+button.card { font: inherit; text-align: left; width: 100%; }
+.tile-link { cursor: pointer; }
+.tile-link:hover { border-color: var(--accent); }
 
 .btn {
   border: 1px solid var(--line); background: var(--panel2); color: var(--fg);
@@ -86,6 +92,8 @@ h1 { font-size: 21px; margin: 0; font-weight: 650; letter-spacing: -.02em; }
 .btn:hover { border-color: var(--mut2); }
 .btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.ghost { background: transparent; }
+.btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn.danger:hover { filter: brightness(1.08); }
 .btn.sm { padding: 4px 9px; font-size: 12.5px; }
 .btn:disabled { opacity: .45; cursor: default; }
 
@@ -104,6 +112,10 @@ input, select, textarea {
 .tag.ok { color: var(--ok); }
 .tag.warn { color: var(--warn); }
 .tag.bad { color: var(--bad); }
+/* Телефон — самый важный кликабельный элемент панели: сводка зовёт звонить.
+   Класс .tag перебивал цвет ссылки, номер красился серым и не читался. */
+a.tag { color: var(--accent); text-decoration: none; }
+a.tag:hover { text-decoration: underline; }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* ── Таблица ──────────────────────────────────────────────────────── */
@@ -116,6 +128,10 @@ th {
 th.sortable { cursor: pointer; }
 th.num, td.num { text-align: right; }
 td { padding: 11px 12px; border-top: 1px solid var(--line); }
+/* Прокрутил таблицу вправо — имя клиента должно остаться на виду, иначе
+   непонятно, чья это строка. */
+th:first-child, td:first-child { position: sticky; left: 0; background: var(--panel); }
+tbody tr:hover td:first-child { background: var(--panel2); }
 tbody tr { cursor: pointer; }
 tbody tr:hover td { background: var(--panel2); }
 .name { font-weight: 550; }
@@ -164,5 +180,14 @@ tbody tr:hover td { background: var(--panel2); }
   .scrim { position: fixed; inset: 0; z-index: 35; background: rgba(0,0,0,.45); }
   .main { padding: 16px 14px 40px; }
   h1 { font-size: 18px; }
+  /* Палец не попадает в кнопку высотой 26px */
+  .btn.sm { padding: 8px 12px; font-size: 13px; }
+  /* Намёк, что таблица прокручивается вбок */
+  .tablewrap { position: relative; }
+  .tablewrap::after {
+    content: ''; position: sticky; right: 0; top: 0; float: right; width: 24px; height: 100%;
+    background: linear-gradient(to right, transparent, var(--panel));
+    pointer-events: none;
+  }
 }
 @media (prefers-reduced-motion: reduce) { .side { transition: none; } }

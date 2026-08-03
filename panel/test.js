@@ -122,6 +122,20 @@ async function testServerRoutes() {
   const editForbidden = await authed('/api/edit', { id: 'x', expires_at: '2099-01-01', machine_id: 'AAA', revoked: true })
   assert.strictEqual(editForbidden.status, 400, 'поля вне белого списка не проходят')
 
+  // Выпуск лицензии сразу на компьютер (из карточки пробной установки): такая
+  // лицензия забирается кассой сама. Вторая живая лицензия на ту же машину
+  // сломала бы claim — проверка обязана сработать ДО вставки.
+  {
+    const real = global.fetch
+    global.fetch = async (url) => String(url).includes('machine_id=eq.')
+      ? new Response(JSON.stringify([{ id: 'уже-есть', revoked: false }]), { status: 200 })
+      : new Response('[]', { status: 200 })
+    const r = await authed('/api/issue', { customer: 'Кафе', days: 30, machine_id: 'aaaa-bbbb' })
+    global.fetch = real
+    assert.strictEqual(r.status, 409, 'дубль лицензии на ту же машину — отказ')
+    assert.ok((await r.json()).error.includes('уже-есть'), 'в ошибке назван номер существующей лицензии')
+  }
+
   // Колонки contact/hidden добавляются отдельными ALTER. Пока их нет, Supabase
   // отвечает «PGRST204 column ... does not exist» — владельцу это не говорит
   // ничего. Подменяем fetch и проверяем, что наружу уходит инструкция.

@@ -54,8 +54,12 @@ export const daysAgo = (s) => s ? Math.floor((Date.now() - new Date(s)) / 864000
  *  а не точная цифра; точная видна в карточке. */
 export function money(n, short = false) {
   const v = Math.round(Number(n) || 0)
-  if (short && Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(1).replace('.0', '') + ' млн ₸'
-  if (short && Math.abs(v) >= 10_000) return Math.round(v / 1000) + ' тыс ₸'
+  // Порог сокращения — миллион, а не десять тысяч: раньше в одной колонке
+  // оказывались «9 999 ₸» и «12 тыс ₸», и сравнить их глазами было нельзя.
+  // Разряды и у сокращённых сумм разделяем так же, как у полных.
+  if (short && Math.abs(v) >= 1_000_000) {
+    return (v / 1_000_000).toFixed(1).replace('.0', '').replace('.', ',') + ' млн ₸'
+  }
   return v.toLocaleString('ru-RU') + ' ₸'
 }
 

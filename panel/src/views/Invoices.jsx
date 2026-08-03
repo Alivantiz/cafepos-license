@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 // Разбор ИИ-распознаваний накладных: фото, что распозналось, и решение —
 // «разобрано» (фото удаляется) или «удалить целиком».
 import { api, useApi } from '../api'
@@ -9,18 +9,25 @@ export default function Invoices({ onReload }) {
   useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const rows = data?.rows || []
 
+  // На медленной связи «Разобрано» нажимают дважды: второй запрос падал и
+  // показывал ошибку поверх успеха. Блокируем строку на время запроса.
+  const [busy, setBusy] = useState(null)
   const review = async (id) => {
+    if (busy) return
+    setBusy(id)
     try { await api('invoices/review', { id: Number(id) }); toast.ok('Разобрано — фото удалено'); reload() }
-    catch (e) { toast.err(e.message) }
+    catch (e) { toast.err(e.message) } finally { setBusy(null) }
   }
   const remove = async (id) => {
+    if (busy) return
     if (!await confirmDialog({
       title: 'Удалить распознавание',
       message: 'Запись и фото накладной будут удалены без возможности вернуть.',
       confirmText: 'Удалить',
     })) return
+    setBusy(id)
     try { await api('invoices/delete', { id: Number(id) }); toast.ok('Удалено'); reload() }
-    catch (e) { toast.err(e.message) }
+    catch (e) { toast.err(e.message) } finally { setBusy(null) }
   }
 
   if (error) return <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>
@@ -29,8 +36,12 @@ export default function Invoices({ onReload }) {
 
   return (
     <>
+      {/* Раньше писали «показано 40 из 137», а посмотреть остальное было
+          нечем. Объясняем, что список сам сократится по мере разбора. */}
       {data?.total != null && (
-        <div className="muted2" style={{ marginBottom: 10 }}>показано {rows.length} из {data.total}</div>
+        <div className="muted2" style={{ marginBottom: 10 }}>
+          показано {rows.length} из {data.total} — остальные появятся здесь по мере разбора
+        </div>
       )}
       {rows.map(r => (
         <div className="card" key={r.id} style={{ marginBottom: 14 }}>
@@ -70,8 +81,10 @@ export default function Invoices({ onReload }) {
             </div>
           </div>
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="btn pri" onClick={() => review(r.id)}>Разобрано</button>
-            <button className="btn ghost" onClick={() => remove(r.id)}>Удалить</button>
+            <button className="btn pri" disabled={busy === r.id} onClick={() => review(r.id)}>
+              {busy === r.id ? 'Секунду…' : 'Разобрано'}
+            </button>
+            <button className="btn ghost" disabled={busy === r.id} onClick={() => remove(r.id)}>Удалить</button>
           </div>
         </div>
       ))}

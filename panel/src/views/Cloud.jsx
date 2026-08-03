@@ -14,6 +14,7 @@ export default function Cloud({ onReload }) {
   if (error) return <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>
   if (loading && !data) return <div className="empty">Опрашиваю функции…</div>
   const rows = data?.rows || []
+  if (!rows.length) return <div className="empty">Функции не опрошены — проверьте настройки проектов Supabase</div>
   return (
     <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
       {rows.map(r => (

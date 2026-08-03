@@ -1,6 +1,6 @@
 // Общий справочник штрихкодов: очередь на модерацию (карточки, присланные
 // кассами) и сам каталог с поиском, страницами и массовой сменой категории.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { Modal, toast, confirmDialog } from '../ui'
 
@@ -8,12 +8,12 @@ const PER_PAGE = 200
 const key = (r) => r.venue_id + '::' + r.barcode
 
 export default function Catalog({ onCounts, onReload }) {
-  const [pending, setPending] = useState([])
+  const [pending, setPending] = useState(null)   // null — ещё не грузили
   const [pendTotal, setPendTotal] = useState(null)
   const [sel, setSel] = useState(() => new Set())
   const [similar, setSimilar] = useState({})
 
-  const [rows, setRows] = useState([])
+  const [rows, setRows] = useState(null)
   const [total, setTotal] = useState(null)
   const [q, setQ] = useState('')
   const [page, setPage] = useState(0)
@@ -30,15 +30,20 @@ export default function Catalog({ onCounts, onReload }) {
     } catch (e) { toast.err(e.message) }
   }, [onCounts])
 
+  // Запрос на каждую букву возвращался вразнобой: в таблице оказывались
+  // результаты позапрошлого запроса. Задержка + счётчик отсекают устаревшие.
+  const seq = useRef(0)
   const loadList = useCallback(async () => {
+    const my = ++seq.current
     try {
       const d = await api('catalog/list', { q, page })
+      if (my !== seq.current) return
       setRows(d.rows || []); setTotal(d.total ?? null)
-    } catch (e) { toast.err(e.message) }
+    } catch (e) { if (my === seq.current) toast.err(e.message) }
   }, [q, page])
 
   useEffect(() => { loadPending() }, [loadPending])
-  useEffect(() => { loadList() }, [loadList])
+  useEffect(() => { const t = setTimeout(loadList, 300); return () => clearTimeout(t) }, [loadList])
   // Кнопка «Обновить» в шапке должна перечитывать ИМЕННО эту вкладку.
   useEffect(() => { onReload?.(() => () => { loadPending(); loadList() }) }, [loadPending, loadList, onReload])
 
@@ -53,6 +58,13 @@ export default function Catalog({ onCounts, onReload }) {
   }
 
   const decide = async (r, action) => {
+    // «Отклонить» — это DELETE на сервере. Массовое отклонение спрашивало,
+    // одиночное нет, хотя кнопка вплотную к «Одобрить».
+    if (action === 'reject' && !await confirmDialog({
+      title: 'Отклонить карточку',
+      message: `«${r.name || r.barcode}» будет удалена из очереди без возможности вернуть.`,
+      confirmText: 'Отклонить',
+    })) return
     try {
       await api('catalog/' + action, { venue_id: r.venue_id, barcode: r.barcode })
       toast.ok(action === 'approve' ? 'Одобрено' : 'Отклонено')
@@ -61,7 +73,7 @@ export default function Catalog({ onCounts, onReload }) {
   }
 
   const bulk = async (action) => {
-    const items = pending.filter(r => sel.has(key(r)))
+    const items = (pending || []).filter(r => sel.has(key(r)))
     if (!items.length) return
     if (action === 'reject' && !await confirmDialog({
       title: 'Отклонить выбранные',
@@ -88,7 +100,8 @@ export default function Catalog({ onCounts, onReload }) {
           <h2 style={{ fontSize: 16, margin: 0 }}>На модерации</h2>
           <span className="muted2">{pendTotal !== null ? `${pending.length} из ${pendTotal}` : ''}</span>
         </div>
-        {!pending.length ? <div className="empty">Очередь пуста</div> : (
+        {pending === null ? <div className="empty">Загрузка…</div>
+          : !pending.length ? <div className="empty">Очередь пуста</div> : (
           <div className="card" style={{ padding: '14px 4px 4px' }}>
             {sel.size > 0 && (
               <div className="row" style={{ padding: '0 12px 10px' }}>
@@ -128,9 +141,9 @@ export default function Catalog({ onCounts, onReload }) {
                         <td>
                           <div className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                             <button className="btn ghost sm" title="Похожие карточки в каталоге"
-                              onClick={() => showSimilar(r)}>≈</button>
+                              onClick={() => showSimilar(r)}>≈ похожие</button>
                             <button className="btn ghost sm" title="Править перед одобрением"
-                              onClick={() => setEdit({ row: r, pending: true })}>✎</button>
+                              onClick={() => setEdit({ row: r, pending: true })}>✎ править</button>
                             <button className="btn pri sm" onClick={() => decide(r, 'approve')}>Одобрить</button>
                             <button className="btn sm" onClick={() => decide(r, 'reject')}>Отклонить</button>
                           </div>
@@ -155,7 +168,9 @@ export default function Catalog({ onCounts, onReload }) {
       <section>
         <div className="row" style={{ marginBottom: 10 }}>
           <h2 style={{ fontSize: 16, margin: 0 }}>Каталог</h2>
-          <span className="muted2">{total !== null ? `${total} всего` : ''}</span>
+          {/* «Всего» считается сервером до схлопывания дублей по штрихкоду,
+              поэтому оно не сходится с числом строк — говорим это прямо. */}
+          <span className="muted2">{total !== null ? `${total} записей, дубли по штрихкоду схлопнуты` : ''}</span>
           <input placeholder="Поиск по названию или штрихкоду" value={q}
             onChange={e => { setQ(e.target.value); setPage(0) }} style={{ maxWidth: 280, marginLeft: 12 }} />
           <button className="btn spacer" onClick={() => setEdit({ row: null })}>Добавить штрихкод</button>
@@ -169,7 +184,8 @@ export default function Catalog({ onCounts, onReload }) {
           </div>
         )}
 
-        {!rows.length ? <div className="empty">Ничего не найдено</div> : (
+        {rows === null ? <div className="empty">Загрузка…</div>
+          : !rows.length ? <div className="empty">Ничего не найдено</div> : (
           <div className="card" style={{ padding: '14px 4px 4px' }}>
             <div className="tablewrap">
               <table>
@@ -201,7 +217,7 @@ export default function Catalog({ onCounts, onReload }) {
                       <td className="num">{r.price ?? '—'}</td>
                       <td className="muted">{r.unit || '—'}</td>
                       <td style={{ textAlign: 'right' }}>
-                        <button className="btn ghost sm" onClick={() => setEdit({ row: r })}>✎</button>
+                        <button className="btn ghost sm" onClick={() => setEdit({ row: r })}>✎ править</button>
                       </td>
                     </tr>
                   ))}
@@ -273,7 +289,7 @@ function EditModal({ row, pending, onClose, onSaved }) {
   const remove = async () => {
     if (!await confirmDialog({
       title: 'Удалить из каталога',
-      message: `Штрихкод ${f.barcode} исчезнет из общего справочника.`,
+      message: `Карточка этого заведения со штрихкодом ${f.barcode} будет удалена. Карточки других заведений с тем же штрихкодом останутся.`,
       confirmText: 'Удалить',
     })) return
     try {
@@ -294,7 +310,7 @@ function EditModal({ row, pending, onClose, onSaved }) {
       <div className="row">
         {row && !pending && <button className="btn ghost" onClick={remove}>Удалить</button>}
         <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
-        <button className="btn pri" disabled={busy || !f.barcode.trim()} onClick={save}>
+        <button className="btn pri" disabled={busy || !f.barcode.trim() || !f.name.trim()} onClick={save}>
           {pending ? 'Сохранить и одобрить' : 'Сохранить'}
         </button>
       </div>
@@ -315,10 +331,14 @@ function BulkCategory({ count, barcodes, onClose, onDone }) {
   return (
     <Modal title="Сменить категорию" onClose={onClose}>
       <div className="muted2">Товаров выбрано: {count}</div>
+      {/* Меняется у ВСЕХ заведений с этими штрихкодами, а не только там, откуда
+          пришла карточка — про это окно раньше молчало. */}
+      <div className="muted2">Категория поменяется у всех заведений с этими штрихкодами. Отката нет.</div>
       <label>Категория<input value={category} onChange={e => setCategory(e.target.value)} autoFocus /></label>
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
-        <button className="btn pri" disabled={busy} onClick={go}>Применить</button>
+        {/* Пустое поле стирало категорию у всех выбранных одним нажатием */}
+        <button className="btn pri" disabled={busy || !category.trim()} onClick={go}>Применить</button>
       </div>
     </Modal>
   )

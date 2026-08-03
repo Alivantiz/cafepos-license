@@ -1,8 +1,8 @@
 // Воронка ДО оплаты. Разбор по состояниям, а не просто список: «истёк, но
 // кассу открывают» и «истёк и не открывают» — это разные разговоры с клиентом,
 // и глазами по датам их не разделить.
-import { fmtDate, daysAgo, money } from '../api'
-import { Tag, Spark } from '../ui'
+import { fmtDate, money, agoText } from '../api'
+import { Tag, Spark, calendar } from '../ui'
 
 const TRIAL_DAYS = 14   // как в кассе (license.service TRIAL_DAYS)
 export const BIZ = { shop: 'магазин', cafe: 'кафе', sauna: 'сауна' }
@@ -71,11 +71,12 @@ export default function Trials({ data, onOpen }) {
                 <td className="num">
                   <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
                     {r.telemetry ? money(r.revenue7, true) : <span className="muted2">нет данных</span>}
-                    <Spark days={(r.days || []).slice(-14)} />
+                    <Spark days={calendar(r.days, 14)} />
                   </div>
                 </td>
                 <td className="num muted">{fmtDate(r.started_at)}</td>
-                <td className="num muted">{daysAgo(r.last_seen_at) === 0 ? 'сегодня' : `${daysAgo(r.last_seen_at)} дн назад`}</td>
+                {/* agoText разбирает и пустую дату: раньше писалось «null дн назад» */}
+                <td className="num muted">{agoText(r.last_seen_at)}</td>
               </tr>
             ))}
           </tbody>

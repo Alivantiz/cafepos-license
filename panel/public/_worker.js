@@ -191,7 +191,7 @@ export default {
       if (pathname === '/api/issue') {
         // Новая лицензия под активацию по коду: строка в таблице, id = код
         // активации (его вводят на кассе; .lic подписывает функция activate).
-        const { customer, days, terminals, notes, contact } = await request.json()
+        const { customer, days, terminals, notes, contact, machine_id } = await request.json()
         if (!customer || !String(customer).trim()) return json({ error: 'Укажите клиента' }, 400)
         const n = Number(days)
         const body = {
@@ -204,6 +204,19 @@ export default {
         // поле уронило бы весь выпуск лицензии.
         const phone = (contact || '').trim()
         if (phone) body.contact = phone
+
+        // Выпуск для конкретного компьютера (из карточки пробной установки):
+        // лицензия сразу привязана, и касса забирает её сама функцией claim —
+        // код клиенту диктовать не надо. Та же защита от дубля, что у одобрения
+        // заявки: вторая живая лицензия на ту же машину сломала бы claim.
+        const mid = String(machine_id || '').trim().toUpperCase()
+        if (mid) {
+          const dup = await fetch(`${db.url}/rest/v1/licenses?machine_id=eq.${encodeURIComponent(mid)}&select=id,revoked`, { headers: db.headers })
+          if (!dup.ok) return json({ error: `Supabase: ${dup.status} ${await dup.text()}` }, 502)
+          const live = (await dup.json()).filter(l => l.revoked !== true)
+          if (live.length) return json({ error: `На этот компьютер уже выпущена лицензия ${live[0].id}` }, 409)
+          body.machine_id = mid
+        }
         const ins = await fetch(`${db.url}/rest/v1/licenses`, {
           method: 'POST',
           headers: { ...db.headers, Prefer: 'return=representation' },

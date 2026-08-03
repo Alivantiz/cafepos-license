@@ -14,26 +14,46 @@ export default function Requests({ onApproved, onReload }) {
   const { data, error, loading, reload } = useApi('requests/list')
   useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const [approve, setApprove] = useState(null)
+  const [tab, setTab] = useState('waiting')
+  const [busy, setBusy] = useState(null)
   const rows = data?.rows || []
 
   const reject = async (r) => {
+    if (busy) return
     if (!await confirmDialog({
       title: 'Отклонить заявку',
       message: `Заявка от «${r.shop || 'без названия'}» будет отклонена. Касса лицензию не получит.`,
       confirmText: 'Отклонить',
     })) return
+    setBusy(r.machine_id)
     try { await api('requests/reject', { machine_id: r.machine_id }); toast.ok('Отклонена'); reload() }
-    catch (e) { toast.err(e.message) }
+    catch (e) { toast.err(e.message) } finally { setBusy(null) }
   }
 
   if (error) return <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>
   if (loading && !data) return <div className="empty">Загрузка…</div>
   if (!rows.length) return <div className="empty">Заявок нет</div>
 
+  // Ждущие решения отдельно от истории: иначе через год это стена из двух сотен
+  // карточек, среди которых надо найти одну новую.
+  const waiting = rows.filter(r => r.status !== 'rejected' && !r.license_id)
+  const history = rows.filter(r => !waiting.includes(r))
+  const shown = tab === 'waiting' ? waiting : history
+
   return (
     <>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className={'btn sm' + (tab === 'waiting' ? ' pri' : '')} onClick={() => setTab('waiting')}>
+          Ждут решения{waiting.length ? ` ${waiting.length}` : ''}
+        </button>
+        <button className={'btn sm' + (tab === 'history' ? ' pri' : '')} onClick={() => setTab('history')}>
+          История{history.length ? ` ${history.length}` : ''}
+        </button>
+      </div>
+      {!shown.length && <div className="empty">
+        {tab === 'waiting' ? 'Все заявки разобраны' : 'История пуста'}</div>}
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
-        {rows.map(r => {
+        {shown.map(r => {
           const waiting = r.status !== 'rejected' && !r.license_id
           return (
             <div className="card" key={r.machine_id}>
@@ -54,7 +74,7 @@ export default function Requests({ onApproved, onReload }) {
               {waiting && (
                 <div className="row" style={{ marginTop: 12 }}>
                   <button className="btn pri" onClick={() => setApprove(r)}>Одобрить</button>
-                  <button className="btn" onClick={() => reject(r)}>Отклонить</button>
+                  <button className="btn" disabled={busy === r.machine_id} onClick={() => reject(r)}>Отклонить</button>
                 </div>
               )}
             </div>

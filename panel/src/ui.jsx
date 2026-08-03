@@ -3,18 +3,43 @@
 import { useEffect, useState } from 'react'
 import { money } from './api'
 
-export function Tile({ label, value, hint, tone }) {
+export function Tile({ label, value, hint, tone, onClick }) {
+  // Кликабельная плитка — не украшение: «Молчат 4» без перехода означало идти
+  // в «Клиенты» и выбирать фильтр руками, в главном же сценарии.
+  const Box = onClick ? 'button' : 'div'
   return (
-    <div className="card">
+    <Box className={'card' + (onClick ? ' tile-link' : '')} onClick={onClick}
+      type={onClick ? 'button' : undefined}>
       <div className="tile-label">{label}</div>
       <div className="tile-value" style={tone ? { color: `var(--${tone})` } : undefined}>{value}</div>
       {hint && <div className="tile-hint">{hint}</div>}
-    </div>
+    </Box>
   )
 }
 
 export function Tag({ tone, children }) {
   return <span className={'tag' + (tone ? ' ' + tone : '')}><i className="dot" />{children}</span>
+}
+
+/**
+ * Раскладка по календарю. usage_daily НЕ содержит дней без продаж, поэтому
+ * рисовать по порядку точек нельзя: заведение, отработавшее четыре дня из
+ * тридцати, давало такую же гладкую линию, как работавшее каждый день, а
+ * провал «пять дней стояли» не был виден вовсе — хотя именно его и ищут.
+ */
+export function calendar(days, tail) {
+  if (!days || !days.length) return []
+  const byDay = new Map(days.map(d => [d.day, d.revenue]))
+  const last = new Date(days[days.length - 1].day + 'T00:00:00Z')
+  const out = []
+  for (let i = tail - 1; i >= 0; i--) {
+    const t = new Date(last.getTime() - i * 86400000).toISOString().slice(0, 10)
+    out.push({ day: t, revenue: byDay.get(t) || 0 })
+  }
+  // Хвост обрезаем по первому дню, о котором вообще есть данные: у нового
+  // клиента иначе рисовались бы три недели нулей до его появления.
+  const from = days[0].day
+  return out.filter(d => d.day >= from)
 }
 
 /** Линия выручки по дням. days: [{day, revenue}] уже отсортированы по дате. */
@@ -27,13 +52,23 @@ export function Chart({ days, height = 160 }) {
   const line = days.map((d, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(d.revenue).toFixed(1)}`).join(' ')
   const area = `${line} L${x(days.length - 1).toFixed(1)},${h - pad} L${x(0).toFixed(1)},${h - pad} Z`
   return (
+    <>
     <svg className="chart" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img"
       aria-label={`Выручка по дням, максимум ${money(max)}`}>
       <path d={area} fill="var(--accent)" opacity=".12" />
       <path d={line} fill="none" stroke="var(--accent)" strokeWidth="2"
         vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-      <circle cx={x(days.length - 1)} cy={y(days[days.length - 1].revenue)} r="3.5" fill="var(--accent)" />
+      {/* Овал вместо точки: preserveAspectRatio="none" тянет всё по X, поэтому
+          круг рисуем эллипсом с обратной пропорцией и не у самого края. */}
+      <ellipse cx={Math.min(x(days.length - 1), w - 6)} cy={y(days[days.length - 1].revenue)}
+        rx={w / 220} ry="3.5" fill="var(--accent)" />
     </svg>
+    <div className="row" style={{ justifyContent: 'space-between', marginTop: 6 }}>
+      <span className="muted2">{days[0].day.slice(8) + '.' + days[0].day.slice(5, 7)}</span>
+      <span className="muted2">максимум {money(max, true)}</span>
+      <span className="muted2">{money(days[days.length - 1].revenue, true)} — последний день</span>
+    </div>
+    </>
   )
 }
 
@@ -52,14 +87,17 @@ export function Spark({ days }) {
   )
 }
 
-export function Modal({ title, onClose, children }) {
+export function Modal({ title, onClose, children, keepOpen }) {
   useEffect(() => {
-    const esc = e => { if (e.key === 'Escape') onClose() }
+    const esc = e => { if (e.key === 'Escape' && !keepOpen) onClose() }
     addEventListener('keydown', esc)
     return () => removeEventListener('keydown', esc)
-  }, [onClose])
+  }, [onClose, keepOpen])
   return (
-    <div className="backdrop" onClick={onClose}>
+    // Клик по фону закрывает только там, где терять нечего. У форм промах мимо
+    // окна стирал введённое без предупреждения — а у выпуска лицензии уносил
+    // ещё и показанный код активации.
+    <div className="backdrop" onClick={keepOpen ? undefined : onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>{title}</h3>
         {children}
@@ -86,10 +124,13 @@ export function Confirms() {
     <Modal title={state.title || 'Подтвердите'} onClose={() => done(false)}>
       <div className="muted">{state.message}</div>
       <div className="row">
-        <button className="btn ghost spacer" onClick={() => done(false)}>
+        {/* Фокус на «Отмена», а не на подтверждении: случайный Enter не должен
+            удалять. Подтверждение опасного действия — красное, чтобы не
+            выглядело как «Сохранить». */}
+        <button className="btn ghost spacer" autoFocus onClick={() => done(false)}>
           {state.cancelText || 'Отмена'}
         </button>
-        <button className="btn pri" autoFocus onClick={() => done(true)}>
+        <button className="btn danger" onClick={() => done(true)}>
           {state.confirmText || 'Да'}
         </button>
       </div>
