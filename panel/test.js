@@ -1,30 +1,31 @@
-// Смоук-тест панели подписок: гоняет серверный fetch() и клиентский <script>
-// из PAGE через DOM-заглушку, проверяет, что типовые сценарии не сломаны.
+// Смоук-тест панели: серверные маршруты воркера + свёртки дневных итогов.
+// Клиентская половина прежнего теста гоняла <script> из константы PAGE через
+// DOM-заглушку — с переездом интерфейса на React страницы больше нет, и вместе
+// с ней ушли те проверки. Осталось то, что реально может молча сломаться:
+// маршруты, права, разбор ответов облака и арифметика денег.
 // Запуск: node panel/test.js
-'use strict'
-const assert = require('assert')
-const fs = require('fs')
-const os = require('os')
-const path = require('path')
-const { pathToFileURL } = require('url')
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { pathToFileURL, fileURLToPath } from 'node:url'
+import { window_, isoDay } from './public/_worker.js'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
 
-function makeEl(id) {
-  // classList настоящий (поверх Set): на нём держится выездное меню, и
-  // заглушка-пустышка молча делала бы вид, что оно открывается и закрывается.
-  const cls = new Set()
-  return {
-    id, value: '', textContent: '', innerHTML: '', style: {}, dataset: {}, disabled: false,
-    className: '', checked: false,
-    classList: {
-      add: c => cls.add(c),
-      remove: c => cls.delete(c),
-      contains: c => cls.has(c),
-      toggle: (c, on) => { const v = on === undefined ? !cls.has(c) : !!on; v ? cls.add(c) : cls.delete(c); return v },
-    },
-    addEventListener() {}, focus() {}, showModal() {}, close() {}
-  }
+// Статику в «Advanced mode» отдаёт платформа, в тесте её нет — подставляем
+// минимальную заглушку, иначе воркер честно ответит «сборка не найдена».
+const ASSETS = {
+  async fetch(req) {
+    const u = new URL(req instanceof URL ? req.href : typeof req === 'string' ? req : req.url)
+    if (u.pathname === '/' || u.pathname === '/index.html') {
+      return new Response('<!doctype html><title>iMag — панель</title>', {
+        status: 200, headers: { 'Content-Type': 'text/html' },
+      })
+    }
+    return new Response('not found', { status: 404 })
+  },
 }
 
 async function testServerRoutes() {
@@ -38,15 +39,20 @@ async function testServerRoutes() {
     fs.unlinkSync(tmp)
   }
 
-  const home = await worker.fetch(new Request('https://x.test/'), {})
-  assert.strictEqual(home.status, 200, 'GET / should return 200')
-  const html = await home.text()
-  assert.ok(html.includes('<title>iMag'), 'home page should contain the panel title')
+  const home = await worker.fetch(new Request('https://x.test/'), { ASSETS })
+  assert.strictEqual(home.status, 200, 'корень отдаёт собранное приложение')
+  assert.ok((await home.text()).includes('<title>iMag'), 'это именно страница панели')
 
-  const notFound = await worker.fetch(new Request('https://x.test/nope'), {})
-  assert.strictEqual(notFound.status, 404, 'unknown non-api path should 404')
+  // Неизвестный путь — не 404, а маршрут внутри одностраничного приложения.
+  const spa = await worker.fetch(new Request('https://x.test/clients'), { ASSETS })
+  assert.strictEqual(spa.status, 200, 'неизвестный путь отдаёт index.html, а не 404')
 
-  const noAuth = await worker.fetch(new Request('https://x.test/api/list', { method: 'POST' }), { PANEL_PASSWORD: 'secret' })
+  // Без ASSETS воркер обязан сказать, ЧТО не так, а не отдать пустоту.
+  const noAssets = await worker.fetch(new Request('https://x.test/'), {})
+  assert.strictEqual(noAssets.status, 500, 'без сборки — внятная ошибка')
+  assert.ok((await noAssets.text()).includes('Сборка не найдена'))
+
+  const noAuth = await worker.fetch(new Request('https://x.test/api/clients', { method: 'POST' }), { PANEL_PASSWORD: 'secret' })
   assert.strictEqual(noAuth.status, 401, 'missing x-panel-key should 401')
 
   // keepalive доступен без пароля и методом GET; без секретов оба пинга падают → 502
@@ -119,246 +125,58 @@ async function testServerRoutes() {
   assert.strictEqual(byName.activate.ok, false, 'missing signing key should mark activate as broken')
   assert.ok(byName.activate.verdict.includes('LICENSE_PRIVATE_KEY'), 'activate verdict should name the missing key')
 
-  console.log('server routes: OK')
+  console.log('серверные маршруты: OK')
 }
 
-async function testClientScript() {
-  const elements = {}
-  global.document = {
-    getElementById(id) { if (!elements[id]) elements[id] = makeEl(id); return elements[id] },
-    documentElement: { setAttribute() {} },
-    createElement() { return makeEl('_dyn') },
-    body: { appendChild() {} }
-  }
-  global.localStorage = {
-    _d: {},
-    getItem(k) { return this._d[k] ?? null },
-    setItem(k, v) { this._d[k] = v },
-    removeItem(k) { delete this._d[k] }
-  }
-  // Node 21+ ships a built-in read-only `navigator` global — override via defineProperty.
-  Object.defineProperty(global, 'navigator', {
-    value: { clipboard: { writeText() { return Promise.resolve() } } },
-    configurable: true, writable: true
-  })
-  global.confirm = () => true
-  global.fetch = async (url) => ({ ok: true, status: 200, json: async () => {
-    const u = String(url)
-    if (u.includes('/api/catalog/pending')) return { total: 1, rows: [
-      { venue_id: 'venue-1', barcode: '4870001234567', name: 'Кола 0.5', category: 'Напитки', price: 350, unit: 'шт', status: 'pending' }
-    ] }
-    if (u.includes('/api/catalog/similar')) return { rows: [
-      { barcode: '4870005555555', name: 'Кола 0,5 ПЭТ', match_kind: 'fuzzy', score: 0.62 },
-      { barcode: '4870001234567', name: 'Кола 0.5', match_kind: 'fuzzy', score: 0.95 }
-    ] }
-    if (u.includes('/api/catalog/list')) return { total: 1, rows: [
-      { venue_id: 'panel-owner', barcode: '4870009999999', name: 'Хлеб', category: null, price: 200, unit: 'шт', status: 'approved' }
-    ] }
-    if (u.includes('/api/requests/list')) return { rows: [
-      // ждёт решения — по ней и считается бейдж
-      { machine_id: 'AAAA-BBBB', shop: 'Кафе «Тест»', contact: '+77001234567', business_type: 'cafe',
-        app_version: '1.23.0', status: 'pending', license_id: null, created_at: new Date().toISOString() },
-      // уже одобрена: касса забрала лицензию — в бейдж не попадает
-      { machine_id: 'CCCC-DDDD', shop: 'Магазин', contact: null, business_type: 'shop',
-        app_version: '1.23.0', status: 'approved', license_id: 'lic-1', created_at: new Date().toISOString() }
-    ] }
-    if (u.includes('/api/trials')) {
-      const DAY = 86400000, at = d => new Date(Date.now() + d * DAY).toISOString()
-      return { rows: [
-        // истёк, но кассу открывают — самый тёплый, должен быть первым
-        { machine_id: 'AAAA-LAPSED', status: 'expired', business_type: 'sauna',
-          started_at: at(-20), created_at: at(-20), last_seen_at: at(-1) },
-        // горит: осталось 2 дня
-        { machine_id: 'AAAA-HOT', status: 'trial', business_type: 'shop', app_version: '1.24.1',
-          started_at: at(-12), created_at: at(-12), last_seen_at: at(0) },
-        // молчит неделю
-        { machine_id: 'AAAA-QUIET', status: 'trial', business_type: 'cafe',
-          started_at: at(-5), created_at: at(-5), last_seen_at: at(-7) },
-        // уже купил — в воронке ему не место
-        { machine_id: 'AAAA-PAID', status: 'licensed', business_type: 'cafe',
-          started_at: at(-30), created_at: at(-30), last_seen_at: at(0) },
-      ] }
-    }
-    if (u.includes('/api/cloud')) return { rows: [
-      { name: 'activate', what: 'выдаёт лицензию', ok: false, verdict: 'не выложена' },
-      { name: 'claim', what: 'забирает заявку', ok: true, version: '1', verdict: 'работает' }
-    ] }
-    return { rows: global.__TEST_ROWS__, kaspiPhone: '' }
-  } })
+// ── Свёртки дневных итогов ────────────────────────────────────────────
+// Единственная в панели логика, где можно молча посчитать деньги неверно.
+function testUsageWindows() {
+  const day = (shift) => isoDay(shift)
 
-  const src = fs.readFileSync(WORKER_PATH, 'utf8')
-  const idx = src.indexOf('const PAGE')
-  const PAGE = eval(src.slice(idx).replace(/^const PAGE = /, ''))
-  const scripts = [...PAGE.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
-  assert.strictEqual(scripts.length, 2, 'expected theme-restore script + main script')
-  const mainScript = scripts[1]
+  // Ровно на границе окна: -7 входит, -8 нет. Иначе «выручка за неделю»
+  // незаметно превращается в выручку за восемь дней.
+  let w = window_([
+    { day: day(-8), revenue: 1000, receipts: 1 },
+    { day: day(-7), revenue: 2000, receipts: 2 },
+    { day: day(0), revenue: 3000, receipts: 3 },
+  ])
+  assert.equal(w.revenue7, 5000, 'в неделю входят -7 и сегодня')
+  assert.equal(w.receipts7, 5)
+  assert.equal(w.revenue30, 6000, 'в месяц входит всё')
 
-  ;['pw', 'login', 'app', 'themeBtn', 'q', 'stats', 'tabs', 'count', 'bulkbar', 'thead', 'tbody', 'cards', 'empty',
-    'dlgIssue', 'dlg', 'isCust', 'isDays', 'isTerm', 'isMsg', 'isCopyBtn', 'dlgTitle', 'dlgDays', 'dlgMsg', 'rnCopyBtn',
-    'doIssueBtn', 'doRenewBtn', 'refreshBtn',
-    'navSubs', 'navCat', 'viewSubs', 'viewCat', 'catq', 'catBulkbar', 'catPendAll', 'catPendBody', 'catPendEmpty',
-    'catPendCount', 'catListCount', 'catBody', 'catEmpty', 'dlgCat', 'dlgCatTitle', 'catBarcode', 'catName',
-    'catCategory', 'catUnit', 'catPrice', 'catDelBtn', 'catSaveBtn', 'navCatBadge',
-    'navInv', 'navInvBadge', 'viewInv', 'invCount', 'invEmpty', 'invList',
-    'navReq', 'navReqBadge', 'viewReq', 'reqCount', 'reqEmpty', 'reqList',
-    'navCloud', 'navCloudBadge', 'viewCloud', 'cloudList'].forEach(id => document.getElementById(id))
+  // Средний чек считается от тридцати дней, а не от недели.
+  w = window_([
+    { day: day(-20), revenue: 10000, receipts: 5 },
+    { day: day(-1), revenue: 5000, receipts: 5 },
+  ])
+  assert.equal(w.avgCheck, 1500, '15000 / 10')
 
-  const day = 86400000, now = Date.now()
-  global.__TEST_ROWS__ = [
-    { id: 'a', customer: 'Expired Co', expires_at: new Date(now - 3 * day).toISOString(), terminals: 1, activated_at: new Date(now - 10 * day).toISOString(), last_seen_at: new Date(now - 9 * day).toISOString(), revoked: false, notes: null, created_at: new Date(now - 50 * day).toISOString() },
-    { id: 'b', customer: 'Soon Co', expires_at: new Date(now + 3 * day).toISOString(), terminals: 1, activated_at: new Date(now - 5 * day).toISOString(), last_seen_at: new Date().toISOString(), revoked: false, notes: 'важный клиент', created_at: new Date(now - 20 * day).toISOString() },
-    { id: 'c', customer: 'Revoked Co', expires_at: new Date(now + 30 * day).toISOString(), terminals: 1, activated_at: new Date(now - 5 * day).toISOString(), last_seen_at: new Date().toISOString(), revoked: true, notes: null, created_at: new Date(now - 5 * day).toISOString() },
-    { id: 'd', customer: 'Active Co', expires_at: new Date(now + 60 * day).toISOString(), terminals: 3, activated_at: new Date(now - 5 * day).toISOString(), last_seen_at: new Date().toISOString(), revoked: false, notes: null, created_at: new Date(now - 1 * day).toISOString() }
-  ]
+  // Ноль чеков не должен давать NaN или деление на ноль.
+  w = window_([{ day: day(-1), revenue: 0, receipts: 0 }])
+  assert.equal(w.avgCheck, 0)
 
-  // Driver runs INSIDE the same eval() as the script itself, so it shares its
-  // real `let rows`/`render`/etc bindings (a separate eval() call would not).
-  const driver = `
-;(async () => {
-  await load()
-  global.__RESULT__ = {
-    rowsLen: rows.length,
-    bucketA: bucket(rows.find(r=>r.id==='a')),
-    bucketB: bucket(rows.find(r=>r.id==='b')),
-    bucketC: bucket(rows.find(r=>r.id==='c')),
-    bucketD: bucket(rows.find(r=>r.id==='d')),
-    tbodyLen: document.getElementById('tbody').innerHTML.length,
-    cardsLen: document.getElementById('cards').innerHTML.length,
-    chartBuckets: chartData().length,
-    countText: document.getElementById('count').textContent
-  }
-  setFilter('revoked')
-  global.__RESULT__.afterRevokedFilterCount = document.getElementById('count').textContent
-  setFilter('revoked')
-  global.__RESULT__.afterToggleBackCount = document.getElementById('count').textContent
-  await switchView('cat')
-  global.__RESULT__.navBadgeText = document.getElementById('navCatBadge').textContent
-  global.__RESULT__.navBadgeShown = document.getElementById('navCatBadge').style.display
-  global.__RESULT__.catPendingLen = catPending.length
-  global.__RESULT__.catRowsLen = catRows.length
-  global.__RESULT__.catPendBodyHtml = document.getElementById('catPendBody').innerHTML
-  global.__RESULT__.catBodyHtml = document.getElementById('catBody').innerHTML
-  global.__RESULT__.catPendCountText = document.getElementById('catPendCount').textContent
-  global.__RESULT__.catListCountText = document.getElementById('catListCount').textContent
-  global.__RESULT__.catViewShown = document.getElementById('viewCat').style.display
-  global.__RESULT__.subsViewHidden = document.getElementById('viewSubs').style.display
-  toggleCatPendAll(true)
-  global.__RESULT__.catSelectedAfterAll = catSelected.size
-  await showCatSimilar('venue-1', '4870001234567')
-  global.__RESULT__.simHtml = document.getElementById('catPendBody').innerHTML
-  await showCatSimilar('venue-1', '4870001234567')
-  global.__RESULT__.simHtmlAfterToggle = document.getElementById('catPendBody').innerHTML
-  await switchView('subs')
-  global.__RESULT__.catViewHiddenBack = document.getElementById('viewCat').style.display
-  await switchView('req')
-  global.__RESULT__.reqBadgeText = document.getElementById('navReqBadge').textContent
-  global.__RESULT__.reqBadgeShown = document.getElementById('navReqBadge').style.display
-  global.__RESULT__.reqCountText = document.getElementById('reqCount').textContent
-  global.__RESULT__.reqListHtml = document.getElementById('reqList').innerHTML
-  global.__RESULT__.reqViewShown = document.getElementById('viewReq').style.display
-  await switchView('cloud')
-  global.__RESULT__.cloudBadgeText = document.getElementById('navCloudBadge').textContent
-  global.__RESULT__.cloudListHtml = document.getElementById('cloudList').innerHTML
-  global.__RESULT__.cloudViewShown = document.getElementById('viewCloud').style.display
-  await switchView('trials')
-  global.__RESULT__.trialsBadgeText = document.getElementById('navTrialsBadge').textContent
-  global.__RESULT__.trialsCountText = document.getElementById('trialsCount').textContent
-  global.__RESULT__.trialsListHtml = document.getElementById('trialsList').innerHTML
-  global.__RESULT__.trialsViewShown = document.getElementById('viewTrials').style.display
-  // Меню: открылось по гамбургеру и закрылось само при выборе раздела
-  toggleMenu()
-  global.__RESULT__.menuOpenAfterToggle = document.getElementById('nav').classList.contains('open')
-  global.__RESULT__.backdropOpen = document.getElementById('navBackdrop').classList.contains('open')
-  await switchView('subs')
-  global.__RESULT__.menuOpenAfterPick = document.getElementById('nav').classList.contains('open')
-  global.__RESULT__.cloudViewHiddenBack = document.getElementById('viewCloud').style.display
-  global.__RESULT__.reqViewHiddenBack = document.getElementById('viewReq').style.display
-})()
-`
-  eval(mainScript + driver)
-  await new Promise(r => setTimeout(r, 50))
-  const res = global.__RESULT__
+  // Прошлая неделя — окно [-14,-7), без пересечения с текущей: иначе процент
+  // роста считался бы от куска самого себя и всегда выглядел бы приличным.
+  w = window_([
+    { day: day(-13), revenue: 1000, receipts: 1 },
+    { day: day(-7), revenue: 9999, receipts: 1 },
+    { day: day(-1), revenue: 2000, receipts: 1 },
+  ])
+  assert.equal(w.prevRevenue7, 1000, 'день -7 уже в текущей неделе, не в прошлой')
+  assert.equal(w.revenue7, 11999)
 
-  assert.strictEqual(res.rowsLen, 4, 'load() should populate rows from the fetch mock')
-  assert.strictEqual(res.bucketA, 'expired', 'past expires_at should bucket as expired')
-  assert.strictEqual(res.bucketB, 'soon', 'expires_at within 7 days should bucket as soon')
-  assert.strictEqual(res.bucketC, 'revoked', 'revoked flag wins regardless of dates')
-  assert.strictEqual(res.bucketD, 'active', 'far-future expires_at should bucket as active')
-  assert.ok(res.tbodyLen > 0, 'tbody should be populated after load()')
-  assert.ok(res.cardsLen > 0, 'cards should be populated after load()')
-  assert.strictEqual(res.chartBuckets, 6, 'chartData should always return 6 monthly buckets')
-  assert.strictEqual(res.countText, '4 из 4', 'count should reflect all rows shown with no filter')
-  assert.strictEqual(res.afterRevokedFilterCount, '1 из 4', 'revoked filter should narrow to the one revoked row')
-  assert.strictEqual(res.afterToggleBackCount, '4 из 4', 'clicking the active filter again should reset to all')
+  // Пустая история — все нули, ничего не падает.
+  w = window_([])
+  assert.deepEqual([w.revenue7, w.receipts7, w.revenue30, w.avgCheck, w.prevRevenue7], [0, 0, 0, 0, 0])
 
-  assert.strictEqual(res.navBadgeText, 1, 'nav badge should show the pending-queue total')
-  assert.strictEqual(res.navBadgeShown, '', 'nav badge should be visible when the queue is non-empty')
-  assert.strictEqual(res.catPendingLen, 1, 'switchView(cat) should load the pending queue')
-  assert.strictEqual(res.catRowsLen, 1, 'switchView(cat) should load the approved catalog')
-  assert.ok(res.catPendBodyHtml.includes('4870001234567'), 'pending queue should show the submitted barcode')
-  assert.ok(res.catBodyHtml.includes('4870009999999'), 'catalog list should show the approved barcode')
-  assert.strictEqual(res.catPendCountText, '1 из 1', 'pending count should reflect loaded rows and total')
-  // После появления постраничности подпись каталога — «N всего» (позиция
-  // страницы ушла в пагинатор). Тест остался на прежней формулировке и с тех
-  // пор был красным на main.
-  assert.strictEqual(res.catListCountText, '1 всего', 'catalog count should show the catalogue total')
-  assert.strictEqual(res.catViewShown, '', 'catalog view should be visible after switchView(cat)')
-  assert.strictEqual(res.subsViewHidden, 'none', 'subs view should hide when catalog view is active')
-  assert.strictEqual(res.catSelectedAfterAll, 1, 'select-all on the pending queue should select every row')
-  assert.ok(res.simHtml.includes('Кола 0,5 ПЭТ') && res.simHtml.includes('62%'), 'similar hint should list fuzzy matches with score')
-  assert.ok(res.simHtml.includes('тот же штрихкод'), 'similar hint should flag a match with the same barcode')
-  assert.ok(!res.simHtmlAfterToggle.includes('Похожие в каталоге'), 'second click should hide the similar hint')
-  assert.strictEqual(res.catViewHiddenBack, 'none', 'switching back should hide the catalog view')
-
-  // Заявки: бейдж считает только те, по которым ещё нет лицензии — иначе
-  // «одобрено» висело бы вечно и владелец перестал бы на него смотреть.
-  assert.strictEqual(res.reqBadgeText, 1, 'requests badge should count only undecided requests')
-  assert.strictEqual(res.reqBadgeShown, '', 'requests badge should be visible when something awaits a decision')
-  assert.strictEqual(res.reqCountText, 'ждут решения: 1', 'requests count should name what is pending')
-  assert.ok(res.reqListHtml.includes('AAAA-BBBB'), 'requests list should show the machine id to approve')
-  assert.ok(res.reqListHtml.includes('Одобрить'), 'an undecided request should offer the approve button')
-  assert.ok(res.reqListHtml.includes('одобрена, лицензия lic-1'), 'a claimed request should show its licence instead of buttons')
-  assert.strictEqual(res.reqViewShown, '', 'requests view should be visible after switchView(req)')
-
-  // Облако: бейдж — число неработающих функций, именно оно должно бросаться
-  // в глаза без захода на вкладку.
-  assert.strictEqual(res.cloudBadgeText, 1, 'cloud badge should count broken functions')
-  assert.ok(res.cloudListHtml.includes('не выложена'), 'cloud list should spell out what is wrong')
-  assert.ok(res.cloudListHtml.includes('❌ activate'), 'a broken function should be marked as such')
-  assert.ok(res.cloudListHtml.includes('✅ claim'), 'a healthy function should be marked as such')
-  assert.strictEqual(res.cloudViewShown, '', 'cloud view should be visible after switchView(cloud)')
-  assert.strictEqual(res.cloudViewHiddenBack, 'none', 'switching back should hide the cloud view')
-  assert.strictEqual(res.reqViewHiddenBack, 'none', 'switching back should hide the requests view')
-
-  // Триалы: разбор по состояниям — главное, ради чего вкладка и делалась.
-  assert.strictEqual(res.trialsViewShown, '', 'trials view should be visible after switchView(trials)')
-  assert.strictEqual(res.trialsBadgeText, 2, 'badge counts only lapsed+hot, not the whole base')
-  assert.ok(res.trialsCountText.includes('требуют внимания: 2'), 'header should call out actionable trials')
-  assert.ok(res.trialsListHtml.includes('истёк, но кассу открывают'), 'warmest lead must be labelled')
-  assert.ok(res.trialsListHtml.includes('осталось 2 дн'), 'hot trial should show days left')
-  assert.ok(res.trialsListHtml.includes('молчит 7 дн'), 'quiet trial should show silence length')
-  assert.ok(!res.trialsListHtml.includes('AAAA-PAID'.slice(-6)), 'licensed install must not appear in the funnel')
-  const order = ['истёк, но кассу открывают', 'осталось 2 дн', 'молчит 7 дн']
-    .map(t => res.trialsListHtml.indexOf(t))
-  assert.ok(order[0] < order[1] && order[1] < order[2], 'rows must be sorted by urgency')
-
-  // Мобильное меню: шесть вкладок в строку не влезают, поэтому открывается и
-  // закрывается выездная панель. Закрытие при выборе — половина смысла.
-  assert.strictEqual(res.menuOpenAfterToggle, true, 'hamburger should open the drawer')
-  assert.strictEqual(res.backdropOpen, true, 'backdrop should appear with the drawer')
-  assert.strictEqual(res.menuOpenAfterPick, false, 'picking a section should close the drawer')
-
-  console.log('client script: OK')
+  console.log('свёртки итогов: OK')
 }
 
-
-;(async () => {
-  try {
-    await testServerRoutes()
-    await testClientScript()
-    console.log('ALL OK')
-  } catch (e) {
-    console.error('FAILED:', e.message)
-    process.exit(1)
-  }
-})()
+try {
+  await testServerRoutes()
+  testUsageWindows()
+  console.log('ВСЁ OK')
+} catch (e) {
+  console.error('УПАЛО:', e.message)
+  process.exit(1)
+}
