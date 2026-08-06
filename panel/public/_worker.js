@@ -189,7 +189,19 @@ export default {
         }
         const licenses = (await licR.json()).map(r =>
           ({ ...decorate(r, r.id, 'license'), renewals: byRenewal.get(r.id) || [] }))
-        const trials = (await trialR.json()).map(r => decorate(r, r.machine_id, 'trial'))
+        // Один ПК — одна карточка. После активации касса перестаёт слать /trial
+        // (license.service.ts: с лицензией работает /status), поэтому строка в
+        // trials навсегда застывает в статусе «пробный» и клиент двоился — и в
+        // пробных, и в платящих. Отсекаем по machine_id, а не по статусу:
+        // статус «licensed» этой строке никто никогда не проставлял. По факту
+        // лицензии чинятся и уже накопленные строки, без переустановки касс.
+        const licensedMachines = new Set(
+          licenses.map(l => String(l.machine_id || '').trim()).filter(Boolean))
+        // Лицензия выдана, но ещё не активирована (machine_id пустой) — триал
+        // прятать нечем и не нужно: человек всё ещё на пробе.
+        const trials = (await trialR.json())
+          .filter(r => !licensedMachines.has(String(r.machine_id || '').trim()))
+          .map(r => decorate(r, r.machine_id, 'trial'))
         return json({ licenses, trials, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
       }
 

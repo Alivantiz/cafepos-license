@@ -339,8 +339,59 @@ async function testViewsRender() {
   console.log('отрисовка вкладок: OK')
 }
 
+// ── Один ПК — одна карточка ───────────────────────────────────────────
+// Купивший клиент оставался и в пробных, и в платящих: касса после активации
+// перестаёт слать /trial, и строка в trials замирает навсегда. Отсекаем её по
+// machine_id лицензии — здесь проверяем, что отсекаем ровно ту, что нужно.
+async function testTrialsMerge() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_merge_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try {
+    const mod = await import(pathToFileURL(tmp).href)
+    worker = mod.default
+  } finally {
+    fs.unlinkSync(tmp)
+  }
+
+  const rows = (url) => {
+    if (url.includes('/rest/v1/licenses')) return [
+      { id: 1, customer: 'Магазин у дома', machine_id: 'PC-КУПИЛ', expires_at: null, revoked: false },
+      { id: 2, customer: 'Выдана, но не ставили', machine_id: null, expires_at: null, revoked: false },
+    ]
+    if (url.includes('/rest/v1/trials')) return [
+      { machine_id: 'PC-КУПИЛ', status: 'trial' },      // тот же ПК — карточка уже есть в лицензиях
+      { machine_id: 'PC-ПРОБУЕТ', status: 'trial' },    // честный триал
+      { machine_id: '', status: 'trial' },              // мусорная строка без ПК
+    ]
+    return []
+  }
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => new Response(JSON.stringify(rows(String(url))), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  })
+  let data
+  try {
+    const res = await worker.fetch(new Request('https://x.test/api/clients', {
+      method: 'POST', headers: { 'x-panel-key': 'secret' }, body: '{}',
+    }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+    assert.strictEqual(res.status, 200, '/api/clients отвечает')
+    data = await res.json()
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  const machines = data.trials.map(t => t.machine_id)
+  assert.ok(!machines.includes('PC-КУПИЛ'), 'купивший не двоится в пробных')
+  assert.ok(machines.includes('PC-ПРОБУЕТ'), 'настоящий триал остался')
+  assert.ok(machines.includes(''), 'лицензия без machine_id не прячет чужие триалы')
+  assert.strictEqual(data.licenses.length, 2, 'лицензии не тронуты')
+  console.log('склейка пробных с лицензиями: OK')
+}
+
 try {
   await testServerRoutes()
+  await testTrialsMerge()
   testUsageWindows()
   await testViewsRender()
   console.log('ВСЁ OK')
