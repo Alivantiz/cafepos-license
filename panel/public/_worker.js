@@ -47,6 +47,47 @@ async function sqlHint(res, cols) {
   return `Supabase: ${res.status} ${text}`
 }
 
+// ── Словарь написаний: строка на заведение, решение — одно ──────────────
+// В mon_invoice_aliases ключ (venue_id, raw_name_norm): одно и то же написание
+// присылает КАЖДОЕ заведение своей строкой. Для вендора это одна работа, а не
+// пять: и очередь схлопываем по написанию, и решение применяем ко всем строкам
+// с ним разом. Иначе «Маккофи 3в1» разбирается столько раз, сколько магазинов
+// его возит, а кассы всё равно берут словарь через distinct on (raw_name_norm).
+export function groupAliases(rows) {
+  const by = new Map()
+  for (const r of rows || []) {
+    const cur = by.get(r.raw_name_norm)
+    if (!cur) {
+      by.set(r.raw_name_norm, { ...r, hits: Number(r.hits) || 1, venues: 1 })
+      continue
+    }
+    // hits складываем: очередь по частоте должна считать все точки, иначе
+    // товар, который возят все понемногу, всегда уступает одному активному.
+    cur.hits += Number(r.hits) || 1
+    cur.venues += 1
+    if (!cur.supplier && r.supplier) cur.supplier = r.supplier
+    if (!cur.supplier_code && r.supplier_code) cur.supplier_code = r.supplier_code
+  }
+  return [...by.values()].sort((a, b) => b.hits - a.hits)
+}
+
+// Написание берём из базы по id, а НЕ из запроса: по нему решение уедет на все
+// строки с этим написанием, и подменённая норма увела бы чужой товар на этот
+// штрихкод — а это уже неверный остаток во всех магазинах.
+async function aliasNorm(db2, id) {
+  const r = await sbFetch(
+    `${db2.url}/rest/v1/mon_invoice_aliases?id=eq.${encodeURIComponent(id)}&select=raw_name_norm`,
+    { headers: db2.headers })
+  if (!r.ok) return { ok: false, res: json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502) }
+  const [row] = await r.json()
+  if (!row) return { ok: false, res: json({ error: 'Строка не найдена' }, 404) }
+  return { ok: true, value: row.raw_name_norm }
+}
+
+// Только ещё не разобранные: уже одобренное чужим кодом переписывать нельзя.
+const aliasByNorm = (db2, norm) =>
+  `${db2.url}/rest/v1/mon_invoice_aliases?raw_name_norm=eq.${encodeURIComponent(norm)}&status=eq.pending`
+
 // YYYY-MM-DD со сдвигом в днях. Панель и касса считают дни по-разному (у кассы
 // местное время заведения), поэтому окна тут — грубые, «за последние N дней»,
 // а не бухгалтерские периоды.
@@ -495,15 +536,22 @@ export default {
         if (pathname === '/api/aliases/list') {
           const { status, countOnly } = await request.json().catch(() => ({}))
           const st = status === 'approved' || status === 'rejected' ? status : 'pending'
-          const qs = countOnly
-            ? `select=id&status=eq.${st}&limit=1`
-            : `status=eq.${st}&order=hits.desc,updated_at.desc&limit=300`
-          const r = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases?${qs}`, {
-            headers: { ...db2.headers, Prefer: 'count=exact' }
-          })
+          // Считаем РАЗНЫЕ написания, а не строки: одно и то же название
+          // присылает каждое заведение своей строкой, и бейдж, считающий строки,
+          // обещал бы работы втрое больше, чем есть на самом деле.
+          if (countOnly) {
+            const r = await sbFetch(
+              `${db2.url}/rest/v1/mon_invoice_aliases?select=raw_name_norm&status=eq.${st}&limit=5000`,
+              { headers: db2.headers })
+            if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+            return json({ rows: [], total: new Set((await r.json()).map(x => x.raw_name_norm)).size })
+          }
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_invoice_aliases?status=eq.${st}&order=hits.desc,updated_at.desc&limit=1000`,
+            { headers: db2.headers })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-          const total = Number((r.headers.get('content-range') || '').split('/')[1])
-          return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
+          const rows = groupAliases(await r.json())
+          return json({ rows, total: rows.length })
         }
 
         // Подсказка модератору: что вообще лежит в справочнике под похожим
@@ -526,7 +574,9 @@ export default {
           const { id, barcode } = await request.json()
           const bc = String(barcode || '').trim()
           if (!id || !/^\d{8,14}$/.test(bc)) return json({ error: 'Нужны id и штрихкод из 8–14 цифр' }, 400)
-          const patch = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases?id=eq.${encodeURIComponent(id)}`, {
+          const norm = await aliasNorm(db2, id)
+          if (!norm.ok) return norm.res
+          const patch = await sbFetch(aliasByNorm(db2, norm.value), {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ barcode: bc, status: 'approved', updated_at: new Date().toISOString() })
@@ -540,7 +590,9 @@ export default {
         if (pathname === '/api/aliases/reject') {
           const { id } = await request.json()
           if (!id) return json({ error: 'Нужен id' }, 400)
-          const patch = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases?id=eq.${encodeURIComponent(id)}`, {
+          const norm = await aliasNorm(db2, id)
+          if (!norm.ok) return norm.res
+          const patch = await sbFetch(aliasByNorm(db2, norm.value), {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ status: 'rejected', updated_at: new Date().toISOString() })

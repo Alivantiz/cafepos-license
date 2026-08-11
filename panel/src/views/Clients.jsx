@@ -2,7 +2,7 @@
 // торгует ли заведение и сколько, было негде. Теперь в строке — живое:
 // выручка за неделю, средний чек, когда последняя продажа.
 import { useMemo, useState } from 'react'
-import { daysLeft, daysAgo, fmtDate, money, agoText } from '../api'
+import { daysLeft, daysAgo, fmtDate, money, agoText, isLive } from '../api'
 import { Tag, Spark, calendar } from '../ui'
 
 const status = (c) => {
@@ -42,10 +42,12 @@ export default function Clients({ data, onOpen, onIssue, initialFilter }) {
       // Скрытые видны только в своём фильтре — за этим их и скрывали.
       if (filter === 'hidden') return !!c.hidden
       if (c.hidden) return false
-      if (filter === 'live') return c.kind === 'license' && !c.revoked && (d === null || d > 0)
+      // Наборы обязаны совпадать с плитками сводки: оттуда сюда приходят
+      // кликом по плитке, и «Молчат 4» не должно раскрываться в семь строк.
+      if (filter === 'live') return isLive(c)
       if (filter === 'trial') return c.kind === 'trial'
-      if (filter === 'silent') return c.telemetry && (daysAgo(c.last_sale_at) ?? 99) >= 3
-      if (filter === 'expiring') return c.kind === 'license' && !c.revoked && d !== null && d <= 14
+      if (filter === 'silent') return isLive(c) && c.telemetry && (daysAgo(c.last_sale_at) ?? 99) >= 3
+      if (filter === 'expiring') return isLive(c) && d !== null && d <= 14
       return true
     })
     const val = (c) => {

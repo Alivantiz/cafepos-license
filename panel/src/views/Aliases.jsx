@@ -88,6 +88,9 @@ function AliasCard({ r, onDone, readOnly }) {
         {r.supplier ? `${r.supplier} · ` : ''}
         {r.supplier_code ? `арт. ${r.supplier_code} · ` : ''}
         встречалось {r.hits || 1} раз{(r.hits || 1) > 1 ? 'а' : ''}
+        {/* Из скольких магазинов пришло: сколько точек ждут этой привязки —
+            главный довод разобрать строку сейчас, а не потом. */}
+        {r.venues > 1 ? ` в ${r.venues} точках` : ''}
         {r.updated_at ? ` · ${fmtDate(r.updated_at)}` : ''}
       </div>
 

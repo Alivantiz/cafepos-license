@@ -65,6 +65,12 @@ export const fmtDate = (s) => s ? new Date(s).toLocaleDateString('ru-RU') : '—
 export const daysLeft = (s) => s ? Math.ceil((new Date(s) - Date.now()) / 86400000) : null
 export const daysAgo = (s) => s ? Math.floor((Date.now() - new Date(s)) / 86400000) : null
 
+// Живая лицензия. Общий предикат для сводки и списка: плитки сводки
+// кликабельные и ведут в «Клиенты» с фильтром — если считать по-разному,
+// плитка обещает одно число, а список показывает другое.
+export const isLive = (c) =>
+  c.kind !== 'trial' && !c.revoked && (c.expires_at === null || daysLeft(c.expires_at) > 0)
+
 /** Тенге без копеек. Крупные суммы сокращаем — в таблице важен порядок,
  *  а не точная цифра; точная видна в карточке. */
 export function money(n, short = false) {

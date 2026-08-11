@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay } from './public/_worker.js'
+import { window_, isoDay, groupAliases } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -418,6 +418,47 @@ async function testAliasRoutes() {
   const short = await call('/api/aliases/suggest', { q: 'ко' })
   assert.strictEqual(short.status, 200)
   assert.deepStrictEqual((await short.json()).rows, [], 'запрос короче трёх букв — пустой ответ без похода в базу')
+
+  // Ключ таблицы — (venue_id, raw_name_norm): одно написание лежит СТРОКОЙ НА
+  // КАЖДОЕ заведение. Решение вендора обязано уходить на все строки с этим
+  // написанием, иначе одобренное всплывает в очереди снова у каждой точки.
+  {
+    const real = global.fetch
+    let patched = ''
+    global.fetch = async (url, init) => {
+      if (init?.method === 'PATCH') { patched = String(url); return new Response(null, { status: 204 }) }
+      return new Response(JSON.stringify([{ raw_name_norm: 'маккофи 3в1' }]), { status: 200 })
+    }
+    const r = await call('/api/aliases/bind', { id: 7, barcode: '4870204391234' })
+    global.fetch = real
+    assert.strictEqual(r.status, 200, 'привязка проходит')
+    assert.ok(patched.includes('raw_name_norm=eq.'), 'решение уходит по написанию, а не по id: ' + patched)
+    assert.ok(!patched.includes('id=eq.7'), 'одна строка из многих не патчится в одиночку')
+    assert.ok(patched.includes('status=eq.pending'), 'уже разобранное чужим кодом не переписываем')
+  }
+
+  // Написание берётся из базы по id, а не из тела запроса: подменённая норма
+  // увела бы чужой товар на этот штрихкод во всех магазинах разом.
+  {
+    const real = global.fetch
+    global.fetch = async () => new Response('[]', { status: 200 })
+    const r = await call('/api/aliases/bind', { id: 999, barcode: '4870204391234', raw_name_norm: 'чужое' })
+    global.fetch = real
+    assert.strictEqual(r.status, 404, 'несуществующая строка — отказ, а не привязка по присланной норме')
+  }
+
+  // Очередь схлопывается по написанию, hits складываются: товар, который возят
+  // все понемногу, иначе всегда уступал бы одной активной точке.
+  const grouped = groupAliases([
+    { id: 1, raw_name_norm: 'а', raw_name: 'А', hits: 2, supplier: null },
+    { id: 2, raw_name_norm: 'б', raw_name: 'Б', hits: 5, supplier: 'Поставщик' },
+    { id: 3, raw_name_norm: 'а', raw_name: 'А', hits: 4, supplier: 'Второй' },
+  ])
+  assert.strictEqual(grouped.length, 2, 'одно написание — одна карточка')
+  assert.strictEqual(grouped[0].raw_name_norm, 'а', 'сверху то, что встречается чаще суммарно')
+  assert.strictEqual(grouped[0].hits, 6, 'hits всех точек сложены')
+  assert.strictEqual(grouped[0].venues, 2, 'видно, сколько точек ждут привязки')
+  assert.strictEqual(grouped[0].supplier, 'Второй', 'поставщик подхвачен у той строки, где он есть')
   console.log('маршруты словаря написаний: OK')
 }
 

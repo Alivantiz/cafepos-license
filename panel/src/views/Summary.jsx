@@ -1,10 +1,8 @@
 // Главная — не список, а ответ на вопрос «что сегодня требует внимания».
 // Прежняя панель открывалась таблицей лицензий, отсортированной по дате
 // создания: чтобы понять, кому звонить, приходилось читать её глазами целиком.
-import { daysLeft, daysAgo, money, fmtDate } from '../api'
+import { daysLeft, daysAgo, money, fmtDate, isLive } from '../api'
 import { Tile, Chart, Tag, calendar } from '../ui'
-
-const isLive = (c) => !c.revoked && (c.expires_at === null || daysLeft(c.expires_at) > 0)
 
 export default function Summary({ data, onOpen, onFilter }) {
   // Скрытые не участвуют в сводке ВООБЩЕ: тестовые кассы владельца, где чеки
@@ -107,7 +105,11 @@ function Upcoming({ licenses, onOpen }) {
   const rows = licenses
     .filter(c => !c.revoked && c.expires_at)
     .map(c => ({ c, left: daysLeft(c.expires_at) }))
-    .filter(x => x.left <= 45)
+    // Нижняя граница — та же, что у «истекли» в плитках: без неё ушедший
+    // полгода назад клиент не просто висел в календаре, а занимал место в
+    // первой десятке (сортировка по возрастанию) и вытеснял тех, кто платит
+    // на следующей неделе. Итог по колонке при этом считал и его цену.
+    .filter(x => x.left <= 45 && x.left > -30)
     .sort((a, b) => a.left - b.left)
     .slice(0, 10)
 
