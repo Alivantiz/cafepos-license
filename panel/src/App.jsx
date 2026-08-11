@@ -7,6 +7,7 @@ import ClientCard from './views/ClientCard'
 import Trials, { actionableTrials } from './views/Trials'
 import Requests, { pendingCount } from './views/Requests'
 import Catalog from './views/Catalog'
+import Aliases from './views/Aliases'
 import Invoices from './views/Invoices'
 import Cloud, { brokenCount } from './views/Cloud'
 
@@ -23,6 +24,7 @@ const VIEWS = [
   { id: 'trials', label: 'Пробные' },
   { id: 'requests', label: 'Заявки' },
   { id: 'catalog', label: 'Каталог' },
+  { id: 'aliases', label: 'Названия' },
   { id: 'invoices', label: 'Накладные' },
   { id: 'cloud', label: 'Облако' },
 ]
@@ -138,6 +140,8 @@ function Panel() {
       setBadges(b => ({ ...b, catalog: d.total ?? (d.rows || []).length }))).catch(() => {})
     api('invoices/pending', { countOnly: true }).then(d =>
       setBadges(b => ({ ...b, invoices: d.total ?? (d.rows || []).length }))).catch(() => {})
+    api('aliases/list', { countOnly: true }).then(d =>
+      setBadges(b => ({ ...b, aliases: d.total ?? (d.rows || []).length }))).catch(() => {})
   }, [])
 
   // ОБЯЗАТЕЛЬНО useCallback. Стрелка прямо в JSX — новая функция на каждую
@@ -146,6 +150,9 @@ function Panel() {
   // бесконечный поток запросов, браузер начинал их отклонять
   // (ERR_INSUFFICIENT_RESOURCES), а на экран сыпались ошибки связи.
   const setCatalogCount = useCallback((n) => setBadges(b => ({ ...b, catalog: n })), [])
+  // Та же причина, что и у «Каталога»: стрелка прямо в JSX закольцевала бы
+  // загрузку очереди через счётчик.
+  const setAliasCount = useCallback((n) => setBadges(b => ({ ...b, aliases: n })), [])
 
   useEffect(() => {
     reloadBadges()
@@ -258,6 +265,9 @@ function Panel() {
         )}
         {!current && view === 'catalog' && (
           <Catalog onReload={setViewReload} onCounts={setCatalogCount} />
+        )}
+        {!current && view === 'aliases' && (
+          <Aliases onReload={setViewReload} onCounts={setAliasCount} />
         )}
         {!current && view === 'invoices' && <Invoices onReload={setViewReload} />}
         {!current && view === 'cloud' && <Cloud onReload={setViewReload} />}

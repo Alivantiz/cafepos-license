@@ -331,7 +331,7 @@ async function testViewsRender() {
   const { default: App } = await import(pathToFileURL(out).href)
   fs.unlinkSync(out)
 
-  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'invoices', 'cloud']) {
+  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'aliases', 'invoices', 'cloud']) {
     globalThis.location = { hash: '#/' + view, href: 'https://x.test/#/' + view }
     const html = renderToString(React.createElement(App))
     assert.ok(html.includes('iMag'), `вкладка «${view}» отрисовалась`)
@@ -389,8 +389,41 @@ async function testTrialsMerge() {
   console.log('склейка пробных с лицензиями: OK')
 }
 
+// Маршруты словаря написаний: их четыре, и половина принимает id/штрихкод —
+// молча проглоченный мусор здесь означает привязку не к тому товару во всех
+// магазинах сразу.
+async function testAliasRoutes() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_alias_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+
+  const call = (p, body) => worker.fetch(new Request('https://x.test' + p, {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: JSON.stringify(body || {})
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k',
+       MONITOR_SUPABASE_URL: 'https://mon.test', MONITOR_SUPABASE_SERVICE_ROLE_KEY: 'mk' })
+
+  assert.strictEqual((await call('/api/aliases/bind', { id: 1 })).status, 400, 'привязка без штрихкода — 400')
+  assert.strictEqual((await call('/api/aliases/bind', { id: 1, barcode: '123' })).status, 400, 'короткий штрихкод — 400')
+  assert.strictEqual((await call('/api/aliases/bind', { barcode: '4870071003189' })).status, 400, 'привязка без id — 400')
+  assert.strictEqual((await call('/api/aliases/reject', {})).status, 400, 'отклонение без id — 400')
+  assert.strictEqual((await call('/api/aliases/нет-такого', {})).status, 404, 'неизвестный маршрут словаря — 404')
+
+  const noSecrets = await worker.fetch(new Request('https://x.test/api/aliases/list', {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: '{}'
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+  assert.strictEqual(noSecrets.status, 500, 'без секретов облака — внятная ошибка, а не пустота')
+
+  // Подсказка по слишком короткому запросу не идёт в базу вовсе
+  const short = await call('/api/aliases/suggest', { q: 'ко' })
+  assert.strictEqual(short.status, 200)
+  assert.deepStrictEqual((await short.json()).rows, [], 'запрос короче трёх букв — пустой ответ без похода в базу')
+  console.log('маршруты словаря написаний: OK')
+}
+
 try {
   await testServerRoutes()
+  await testAliasRoutes()
   await testTrialsMerge()
   testUsageWindows()
   await testViewsRender()

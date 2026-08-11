@@ -481,6 +481,77 @@ export default {
       }
 
       // --- Вкладка «Штрихкоды»: общий словарь mon_barcodes (проект монитора) ---
+      // ── Словарь написаний из накладных ────────────────────────────────
+      // Кассы шлют сюда имена, которые у них не сопоставились. Вендор
+      // привязывает штрихкод один раз — и все магазины начинают распознавать
+      // эту строку сами. Очередь отсортирована по частоте: сперва то, что
+      // реально возят, а не то, что пришло последним.
+      if (pathname.startsWith('/api/aliases/')) {
+        const db2 = sb2(env)
+        if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
+          return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
+        }
+
+        if (pathname === '/api/aliases/list') {
+          const { status, countOnly } = await request.json().catch(() => ({}))
+          const st = status === 'approved' || status === 'rejected' ? status : 'pending'
+          const qs = countOnly
+            ? `select=id&status=eq.${st}&limit=1`
+            : `status=eq.${st}&order=hits.desc,updated_at.desc&limit=300`
+          const r = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases?${qs}`, {
+            headers: { ...db2.headers, Prefer: 'count=exact' }
+          })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const total = Number((r.headers.get('content-range') || '').split('/')[1])
+          return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
+        }
+
+        // Подсказка модератору: что вообще лежит в справочнике под похожим
+        // именем. Иначе штрихкод пришлось бы искать в другой вкладке и носить
+        // его сюда руками.
+        if (pathname === '/api/aliases/suggest') {
+          const { q } = await request.json().catch(() => ({}))
+          const needle = String(q || '').trim()
+          if (needle.length < 3) return json({ rows: [] })
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_barcodes?select=barcode,name,category,unit&status=eq.approved&name=ilike.*${encodeURIComponent(needle)}*&limit=20`,
+            { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          return json({ rows: await r.json() })
+        }
+
+        // Привязка кода = одобрение. Кассы тянут только строки со статусом
+        // approved И непустым кодом, поэтому одно без другого смысла не имеет.
+        if (pathname === '/api/aliases/bind') {
+          const { id, barcode } = await request.json()
+          const bc = String(barcode || '').trim()
+          if (!id || !/^\d{8,14}$/.test(bc)) return json({ error: 'Нужны id и штрихкод из 8–14 цифр' }, 400)
+          const patch = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases?id=eq.${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ barcode: bc, status: 'approved', updated_at: new Date().toISOString() })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        // Мусор из распознавания («итого», «н д с», обрывки шапки) — в
+        // отклонённые, а не удалять: иначе та же касса пришлёт его снова.
+        if (pathname === '/api/aliases/reject') {
+          const { id } = await request.json()
+          if (!id) return json({ error: 'Нужен id' }, 400)
+          const patch = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases?id=eq.${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ status: 'rejected', updated_at: new Date().toISOString() })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        return json({ error: 'Неизвестный маршрут' }, 404)
+      }
+
       if (pathname.startsWith('/api/catalog/')) {
         const db2 = sb2(env)
         if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
