@@ -295,13 +295,20 @@ function IssueModal({ pre, onClose, onDone }) {
   })
   const [busy, setBusy] = useState(false)
   const [code, setCode] = useState('')
+  // Бессрочная лицензия — ОСОЗНАННОЕ действие, а не пустое поле. Раньше
+  // Number('') давало 0, воркер на 0 ставил expires_at = null, и лицензия
+  // навсегда выдавалась молча: стёр поле, чтобы вписать 90, отвлёкся — и
+  // клиент бесплатно получил вечную. В списке это выглядело просто прочерком
+  // в сроке, неотличимо от «ещё не активирована».
+  const [forever, setForever] = useState(false)
   const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
+  const daysOk = forever || Number(f.days) > 0
 
   const go = async () => {
     setBusy(true)
     try {
       const r = await api('issue', {
-        ...f, days: Number(f.days), terminals: Number(f.terminals),
+        ...f, days: forever ? 0 : Number(f.days), terminals: Number(f.terminals),
         price: f.price === '' ? null : Number(f.price),
       })
       setCode(r.id)
@@ -334,19 +341,28 @@ function IssueModal({ pre, onClose, onDone }) {
               звонить, искать его будет негде. */}
           <label>Телефон<input value={f.contact} onChange={set('contact')} placeholder="+7…" inputMode="tel" /></label>
           <div className="row">
-            <label style={{ flex: 1 }}>Дней<input type="number" min="1" value={f.days} onChange={set('days')} /></label>
+            <label style={{ flex: 1 }}>
+              Дней
+              {forever
+                ? <input value="без срока" readOnly disabled />
+                : <input type="number" min="1" value={f.days} onChange={set('days')} />}
+            </label>
             <label style={{ flex: 1 }}>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
           </div>
+          <label className="row" style={{ alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={forever} onChange={e => setForever(e.target.checked)} style={{ width: 'auto' }} />
+            Бессрочная — без даты окончания
+          </label>
           {/* Цена спрашивается здесь, а не потом в карточке: договариваются о
               ней ровно сейчас, а через неделю уже не вспомнить. */}
-          <label>Цена подписки за {f.days || 30} дн, ₸
+          <label>Цена подписки{forever ? '' : ` за ${f.days || 30} дн`}, ₸
             <input type="number" min="0" value={f.price} onChange={set('price')} />
           </label>
           <label>Заметка<input value={f.notes} onChange={set('notes')} placeholder="необязательно" /></label>
           <div className="row">
             <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
-            <button className="btn pri" disabled={busy || !f.customer.trim()} onClick={go}>
-              {busy ? 'Секунду…' : 'Выпустить'}
+            <button className="btn pri" disabled={busy || !f.customer.trim() || !daysOk} onClick={go}>
+              {busy ? 'Секунду…' : forever ? 'Выпустить бессрочную' : 'Выпустить'}
             </button>
           </div>
         </>
