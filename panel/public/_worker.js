@@ -84,9 +84,13 @@ async function aliasNorm(db2, id) {
   return { ok: true, value: row.raw_name_norm }
 }
 
-// Только ещё не разобранные: уже одобренное чужим кодом переписывать нельзя.
-const aliasByNorm = (db2, norm) =>
-  `${db2.url}/rest/v1/mon_invoice_aliases?raw_name_norm=eq.${encodeURIComponent(norm)}&status=eq.pending`
+// По умолчанию — только ещё не разобранные: уже одобренное чужим кодом
+// переписывать нельзя, иначе запоздалый клик по старому списку увёл бы товар.
+// Исправление ошибки — отдельное осознанное действие (all: true), его шлёт
+// вкладка «Привязанные» кнопками «Изменить код» и «Отвязать».
+const aliasByNorm = (db2, norm, all = false) =>
+  `${db2.url}/rest/v1/mon_invoice_aliases?raw_name_norm=eq.${encodeURIComponent(norm)}`
+  + (all ? '' : '&status=eq.pending')
 
 // YYYY-MM-DD со сдвигом в днях. Панель и касса считают дни по-разному (у кассы
 // местное время заведения), поэтому окна тут — грубые, «за последние N дней»,
@@ -571,15 +575,32 @@ export default {
         // Привязка кода = одобрение. Кассы тянут только строки со статусом
         // approved И непустым кодом, поэтому одно без другого смысла не имеет.
         if (pathname === '/api/aliases/bind') {
-          const { id, barcode } = await request.json()
+          const { id, barcode, force } = await request.json()
           const bc = String(barcode || '').trim()
           if (!id || !/^\d{8,14}$/.test(bc)) return json({ error: 'Нужны id и штрихкод из 8–14 цифр' }, 400)
           const norm = await aliasNorm(db2, id)
           if (!norm.ok) return norm.res
-          const patch = await sbFetch(aliasByNorm(db2, norm.value), {
+          const patch = await sbFetch(aliasByNorm(db2, norm.value, force === true), {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ barcode: bc, status: 'approved', updated_at: new Date().toISOString() })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        // Ошиблись кодом — строка возвращается в очередь без кода. Кассы
+        // забирают только approved с непустым кодом и замещают зеркало целиком,
+        // поэтому снятая привязка исчезает и у них (при следующем запуске).
+        if (pathname === '/api/aliases/unbind') {
+          const { id } = await request.json()
+          if (!id) return json({ error: 'Нужен id' }, 400)
+          const norm = await aliasNorm(db2, id)
+          if (!norm.ok) return norm.res
+          const patch = await sbFetch(aliasByNorm(db2, norm.value, true), {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ barcode: null, status: 'pending', updated_at: new Date().toISOString() })
           })
           if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
           return json({ ok: true })

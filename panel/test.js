@@ -437,6 +437,28 @@ async function testAliasRoutes() {
     assert.ok(patched.includes('status=eq.pending'), 'уже разобранное чужим кодом не переписываем')
   }
 
+  // Исправление ошибки: «Изменить код» и «Отвязать» правят УЖЕ разобранные
+  // строки — без force они бы молча не нашли ни одной (фильтр pending).
+  {
+    const real = global.fetch
+    let patched = '', body = null
+    global.fetch = async (url, init) => {
+      if (init?.method === 'PATCH') { patched = String(url); body = JSON.parse(init.body); return new Response(null, { status: 204 }) }
+      return new Response(JSON.stringify([{ raw_name_norm: 'маккофи 3в1' }]), { status: 200 })
+    }
+    const r = await call('/api/aliases/bind', { id: 7, barcode: '4870204391234', force: true })
+    assert.strictEqual(r.status, 200, 'замена кода проходит')
+    assert.ok(!patched.includes('status=eq.pending'), 'с force правим и разобранные: ' + patched)
+
+    const u = await call('/api/aliases/unbind', { id: 7 })
+    global.fetch = real
+    assert.strictEqual(u.status, 200, 'отвязка проходит')
+    assert.strictEqual(body.status, 'pending', 'отвязанное возвращается в очередь')
+    assert.strictEqual(body.barcode, null, 'код снимается — кассы тянут только строки с кодом')
+    assert.ok(!patched.includes('status=eq.pending'), 'отвязка ищет строку без фильтра по статусу')
+  }
+  assert.strictEqual((await call('/api/aliases/unbind', {})).status, 400, 'отвязка без id — 400')
+
   // Написание берётся из базы по id, а не из тела запроса: подменённая норма
   // увела бы чужой товар на этот штрихкод во всех магазинах разом.
   {

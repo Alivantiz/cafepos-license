@@ -40,13 +40,17 @@ export default function Aliases({ onCounts, onReload }) {
       )}
 
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
-        {rows.map(r => <AliasCard key={r.id} r={r} onDone={reload} readOnly={tab !== 'pending'} />)}
+        {rows.map(r => <AliasCard key={r.id} r={r} onDone={reload} tab={tab} />)}
       </div>
     </>
   )
 }
 
-function AliasCard({ r, onDone, readOnly }) {
+function AliasCard({ r, onDone, tab }) {
+  // На «Привязанных» карточка тоже редактируемая: ошибиться кодом легко, а
+  // исправить это раньше было нечем — только руками в базе.
+  const bound = tab === 'approved'
+  const editable = tab === 'pending' || bound
   const [bc, setBc] = useState(r.barcode || '')
   const [busy, setBusy] = useState(false)
   const [hints, setHints] = useState(null)
@@ -65,8 +69,28 @@ function AliasCard({ r, onDone, readOnly }) {
 
   const bind = async () => {
     if (!/^\d{8,14}$/.test(bc.trim())) { toast.err('Штрихкод — 8–14 цифр'); return }
+    if (bound && !await confirmDialog({
+      title: 'Изменить штрихкод',
+      message: `«${r.raw_name}» сейчас привязано к ${r.barcode}. Заменить на ${bc.trim()}? Новый код уедет на все кассы при следующем их запуске.`,
+      confirmText: 'Заменить',
+    })) return
     setBusy(true)
-    try { await api('aliases/bind', { id: r.id, barcode: bc.trim() }); toast.ok('Привязано — уедет на кассы'); onDone() }
+    try {
+      // force — осознанная правка уже разобранной строки (см. aliasByNorm)
+      await api('aliases/bind', { id: r.id, barcode: bc.trim(), force: bound })
+      toast.ok(bound ? 'Код заменён — уедет на кассы' : 'Привязано — уедет на кассы'); onDone()
+    }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  const unbind = async () => {
+    if (!await confirmDialog({
+      title: 'Отвязать штрихкод',
+      message: `«${r.raw_name}» вернётся в очередь «Ждут кода», а на кассах эта привязка пропадёт при следующем запуске. Продолжить?`,
+      confirmText: 'Отвязать',
+    })) return
+    setBusy(true)
+    try { await api('aliases/unbind', { id: r.id }); toast.ok('Отвязано'); onDone() }
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
@@ -94,7 +118,13 @@ function AliasCard({ r, onDone, readOnly }) {
         {r.updated_at ? ` · ${fmtDate(r.updated_at)}` : ''}
       </div>
 
-      {readOnly ? (
+      {bound && (
+        <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
+          штрихкод <b>{r.barcode}</b>
+        </div>
+      )}
+
+      {!editable ? (
         <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
           {r.barcode ? <>штрихкод <b>{r.barcode}</b></> : 'без кода'}
         </div>
@@ -119,8 +149,10 @@ function AliasCard({ r, onDone, readOnly }) {
           )}
 
           <div className="row" style={{ marginTop: 10, gap: 8 }}>
-            <button className="btn sm pri" disabled={busy} onClick={bind}>Привязать</button>
-            <button className="btn sm" disabled={busy} onClick={reject}>Мусор</button>
+            <button className="btn sm pri" disabled={busy} onClick={bind}>{bound ? 'Изменить код' : 'Привязать'}</button>
+            {bound
+              ? <button className="btn sm" disabled={busy} onClick={unbind}>Отвязать</button>
+              : <button className="btn sm" disabled={busy} onClick={reject}>Мусор</button>}
           </div>
         </>
       )}
