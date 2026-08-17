@@ -17,6 +17,21 @@ export default function Aliases({ onCounts, onReload }) {
   const rows = data?.rows || []
   useEffect(() => { if (tab === 'pending') onCounts?.(data?.total ?? rows.length) }, [data, tab])
 
+  // Бесспорные — те, где сами магазины с трёх независимых точек привязали один
+  // и тот же код. Искать в них нечего, а разбирать по одной — терять вечер.
+  const trustedCount = rows.filter(r => r.trusted).length
+  const [approving, setApproving] = useState(false)
+  const approveTrusted = async () => {
+    if (!await confirmDialog({
+      title: 'Одобрить бесспорные?',
+      message: `${trustedCount} — их код независимо привязали по три и больше магазинов. Спорные и одиночные останутся вам.`,
+      confirmText: 'Одобрить',
+    })) return
+    setApproving(true)
+    try { const r = await api('aliases/approve-trusted', {}); toast.ok(`Одобрено: ${r.approved}`); reload() }
+    catch (e) { toast.err(e.message) } finally { setApproving(false) }
+  }
+
   if (error) return <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>
   if (loading && !data) return <div className="empty">Загрузка…</div>
 
@@ -26,6 +41,11 @@ export default function Aliases({ onCounts, onReload }) {
         {[['pending', 'Ждут кода'], ['approved', 'Привязанные'], ['rejected', 'Отклонённые']].map(([id, label]) => (
           <button key={id} className={'btn sm' + (tab === id ? ' pri' : '')} onClick={() => setTab(id)}>{label}</button>
         ))}
+        {tab === 'pending' && trustedCount > 0 && (
+          <button className="btn sm pri" disabled={approving} onClick={approveTrusted}>
+            {approving ? 'Одобряю…' : `Одобрить бесспорные · ${trustedCount}`}
+          </button>
+        )}
         <span className="muted" style={{ marginLeft: 'auto', fontSize: 13 }}>
           {data?.total != null ? `${data.total} всего` : ''}
         </span>
@@ -121,6 +141,21 @@ function AliasCard({ r, onDone, tab }) {
       {bound && (
         <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
           штрихкод <b>{r.barcode}</b>
+        </div>
+      )}
+
+      {/* Код, который магазины привязали сами сканером в приёмке. Это не
+          заявка «привяжите нам», а готовый ответ: остаётся согласиться. */}
+      {editable && r.proposed && (
+        <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
+          {r.disputed
+            ? <>точки прислали <b>разные</b> коды — нужен ваш выбор</>
+            : <>магазины уже привязали <b>{r.proposed}</b> ({r.proposed_venues} {r.proposed_venues === 1 ? 'точка' : r.proposed_venues < 5 ? 'точки' : 'точек'})</>}
+          {!r.disputed && (
+            <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => setBc(r.proposed)}>
+              подставить
+            </button>
+          )}
         </div>
       )}
 

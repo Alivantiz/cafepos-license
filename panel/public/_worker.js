@@ -53,12 +53,23 @@ async function sqlHint(res, cols) {
 // пять: и очередь схлопываем по написанию, и решение применяем ко всем строкам
 // с ним разом. Иначе «Маккофи 3в1» разбирается столько раз, сколько магазинов
 // его возит, а кассы всё равно берут словарь через distinct on (raw_name_norm).
+// Порог автодоверия: столько РАЗНЫХ точек должны независимо привязать один и
+// тот же код к одному написанию, чтобы вендору осталось согласиться, а не
+// искать код руками. Три — потому что две точки одной сети могут повторить
+// одну и ту же ошибку внедренца, а три независимых магазина уже нет.
+export const TRUST_VENUES = 3
+
 export function groupAliases(rows) {
   const by = new Map()
   for (const r of rows || []) {
     const cur = by.get(r.raw_name_norm)
     if (!cur) {
-      by.set(r.raw_name_norm, { ...r, hits: Number(r.hits) || 1, venues: 1 })
+      // codes: какой код прислали САМИ магазины (они привязали его сканером в
+      // приёмке). Для очереди это не заявка, а готовый ответ — считаем, сколько
+      // точек за каждый вариант.
+      const codes = new Map()
+      if (r.barcode) codes.set(String(r.barcode), 1)
+      by.set(r.raw_name_norm, { ...r, hits: Number(r.hits) || 1, venues: 1, codes })
       continue
     }
     // hits складываем: очередь по частоте должна считать все точки, иначе
@@ -67,8 +78,26 @@ export function groupAliases(rows) {
     cur.venues += 1
     if (!cur.supplier && r.supplier) cur.supplier = r.supplier
     if (!cur.supplier_code && r.supplier_code) cur.supplier_code = r.supplier_code
+    if (r.barcode) cur.codes.set(String(r.barcode), (cur.codes.get(String(r.barcode)) || 0) + 1)
   }
-  return [...by.values()].sort((a, b) => b.hits - a.hits)
+  return [...by.values()]
+    .map(g => {
+      // Лидер по числу точек. Спорное (две точки прислали РАЗНЫЕ коды) —
+      // никогда не бесспорно: пусть смотрит человек.
+      const sorted = [...g.codes.entries()].sort((a, b) => b[1] - a[1])
+      const [barcode, venues] = sorted[0] ?? []
+      const disputed = sorted.length > 1
+      const { codes, ...rest } = g
+      return {
+        ...rest,
+        proposed: barcode ?? null,
+        proposed_venues: venues ?? 0,
+        disputed,
+        // Бесспорная строка: один вариант кода и он пришёл с трёх точек.
+        trusted: !!barcode && !disputed && venues >= TRUST_VENUES,
+      }
+    })
+    .sort((a, b) => b.hits - a.hits)
 }
 
 // Написание берём из базы по id, а НЕ из запроса: по нему решение уедет на все
@@ -587,6 +616,28 @@ export default {
           })
           if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
           return json({ ok: true })
+        }
+
+        // Бесспорные строки — одним нажатием. Одобряем только то, где сами
+        // магазины независимо привязали ОДИН и тот же код с трёх точек: искать
+        // такой код руками нечего, а очередь без этого растёт быстрее, чем
+        // вендор успевает её разбирать.
+        if (pathname === '/api/aliases/approve-trusted') {
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_invoice_aliases?status=eq.pending&limit=5000`,
+            { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const trusted = groupAliases(await r.json()).filter(g => g.trusted)
+          let approved = 0
+          for (const g of trusted) {
+            const patch = await sbFetch(aliasByNorm(db2, g.raw_name_norm), {
+              method: 'PATCH',
+              headers: { ...db2.headers, Prefer: 'return=minimal' },
+              body: JSON.stringify({ barcode: g.proposed, status: 'approved', updated_at: new Date().toISOString() })
+            })
+            if (patch.ok) approved++
+          }
+          return json({ ok: true, approved })
         }
 
         // Ошиблись кодом — строка возвращается в очередь без кода. Кассы

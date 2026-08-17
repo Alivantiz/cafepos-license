@@ -481,6 +481,37 @@ async function testAliasRoutes() {
   assert.strictEqual(grouped[0].hits, 6, 'hits всех точек сложены')
   assert.strictEqual(grouped[0].venues, 2, 'видно, сколько точек ждут привязки')
   assert.strictEqual(grouped[0].supplier, 'Второй', 'поставщик подхвачен у той строки, где он есть')
+
+  // Магазины сами привязывают коды сканером в приёмке и присылают их сюда.
+  // Сошлись три независимые точки на одном коде — вендору остаётся согласиться.
+  const trusted = groupAliases([
+    { id: 1, raw_name_norm: 'к', raw_name: 'К', hits: 1, barcode: '4870000000011' },
+    { id: 2, raw_name_norm: 'к', raw_name: 'К', hits: 1, barcode: '4870000000011' },
+    { id: 3, raw_name_norm: 'к', raw_name: 'К', hits: 1, barcode: '4870000000011' },
+  ])[0]
+  assert.strictEqual(trusted.proposed, '4870000000011', 'код предложен самими магазинами')
+  assert.strictEqual(trusted.proposed_venues, 3, 'посчитано, сколько точек за него')
+  assert.strictEqual(trusted.trusted, true, 'три точки — бесспорно')
+
+  const twoOnly = groupAliases([
+    { id: 1, raw_name_norm: 'д', raw_name: 'Д', hits: 1, barcode: '4870000000022' },
+    { id: 2, raw_name_norm: 'д', raw_name: 'Д', hits: 1, barcode: '4870000000022' },
+  ])[0]
+  assert.strictEqual(twoOnly.trusted, false, 'двух точек мало: одна сеть может повторить ошибку внедренца')
+
+  const conflict = groupAliases([
+    { id: 1, raw_name_norm: 'с', raw_name: 'С', hits: 1, barcode: '4870000000033' },
+    { id: 2, raw_name_norm: 'с', raw_name: 'С', hits: 1, barcode: '4870000000033' },
+    { id: 3, raw_name_norm: 'с', raw_name: 'С', hits: 1, barcode: '4870000000033' },
+    { id: 4, raw_name_norm: 'с', raw_name: 'С', hits: 1, barcode: '4870000000044' },
+  ])[0]
+  assert.strictEqual(conflict.disputed, true, 'точки прислали разные коды — это спор');
+  assert.strictEqual(conflict.trusted, false, 'спорное не одобряем автоматом даже при трёх точках')
+
+  const noCodes = groupAliases([{ id: 1, raw_name_norm: 'п', raw_name: 'П', hits: 3 }])[0]
+  assert.strictEqual(noCodes.proposed, null, 'никто кода не прислал — предлагать нечего')
+  assert.strictEqual(noCodes.trusted, false, 'без кода одобрять нечего')
+
   console.log('маршруты словаря написаний: OK')
 }
 
