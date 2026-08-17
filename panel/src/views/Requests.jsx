@@ -42,7 +42,7 @@ export default function Requests({ onApproved, onReload }) {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 14 }}>
+      <div className="row stickybar" style={{ marginBottom: 14 }}>
         <button className={'btn sm' + (tab === 'waiting' ? ' pri' : '')} onClick={() => setTab('waiting')}>
           Ждут решения{waiting.length ? ` ${waiting.length}` : ''}
         </button>

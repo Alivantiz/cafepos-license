@@ -37,7 +37,7 @@ export default function Aliases({ onCounts, onReload }) {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 14 }}>
+      <div className="row stickybar" style={{ marginBottom: 14 }}>
         {[['pending', 'Ждут кода'], ['approved', 'Привязанные'], ['rejected', 'Отклонённые']].map(([id, label]) => (
           <button key={id} className={'btn sm' + (tab === id ? ' pri' : '')} onClick={() => setTab(id)}>{label}</button>
         ))}
