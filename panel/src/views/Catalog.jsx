@@ -679,7 +679,8 @@ function BulkCategory({ count, barcodes, cats, onClose, onDone }) {
 function CategoriesModal({ onClose, onDone }) {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
-  const [editing, setEditing] = useState(null)   // { from, to }
+  const [editing, setEditing] = useState(null)   // { from, to } — переименование
+  const [moving, setMoving] = useState(null)    // { from, to, cnt } — перенос
   const [busy, setBusy] = useState(false)
 
   const load = () => {
@@ -693,20 +694,37 @@ function CategoriesModal({ onClose, onDone }) {
     try {
       const d = await api('catalog/renameCategory', { from, to })
       toast.ok(to ? 'Категория переименована' : 'Категория очищена')
-      setEditing(null); load(); onDone?.()
+      setEditing(null); setMoving(null); load(); onDone?.()
       return d
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
-  const clear = async (name, cnt) => {
-    // Числа может не быть: старая версия mon_categories счётчик не отдаёт.
-    // Тогда говорим «у всех карточек», а не печатаем ноль — вопрос, который
-    // врёт цифрой, хуже вопроса без цифры.
-    const many = cnt > 0 ? `${cnt} карточек` : 'всех карточек с этой категорией'
+  // Числа может не быть: старая версия mon_categories счётчик не отдаёт. Тогда
+  // говорим «все карточки», а не печатаем ноль — вопрос, который врёт цифрой,
+  // хуже вопроса без цифры.
+  const howMany = (cnt) => (cnt > 0 ? `${cnt} карточек` : 'все карточки с этой категорией')
+
+  // Перенос = переименование в имя другой категории: карточки просто сходятся
+  // под ним. Отдельного «удалить категорию» нет и быть не может — товары надо
+  // куда-то деть, иначе они останутся без категории, а этого никто не просил.
+  const move = async (from, to, cnt) => {
+    const dst = String(to || '').trim()
+    if (!dst) return
     if (!await confirmDialog({
-      title: 'Очистить категорию',
-      message: `«${name}» пропадёт у ${many}. Сами карточки останутся — у них просто не будет категории.`,
-      confirmText: 'Очистить',
+      title: 'Перенести товары',
+      message: `${howMany(cnt)} из «${from}» перейдут в «${dst}». Категория «${from}» исчезнет из списка.`,
+      confirmText: 'Перенести',
+    })) return
+    apply(from, dst)
+  }
+
+  // Отдельный, намеренно неудобный путь: убрать категорию совсем. Нужен редко —
+  // когда категория ошибочная, а куда девать товар, ещё не решили.
+  const clear = async (name, cnt) => {
+    if (!await confirmDialog({
+      title: 'Оставить без категории',
+      message: `${howMany(cnt)} из «${name}» останутся без категории. Сами карточки не пропадут, но искать их придётся поиском.`,
+      confirmText: 'Оставить без категории',
     })) return
     apply(name, '')
   }
@@ -743,7 +761,21 @@ function CategoriesModal({ onClose, onDone }) {
               <button className="btn ghost sm spacer" disabled={busy}
                 onClick={() => setEditing({ from: r.category, to: r.category })}>Переименовать</button>
               <button className="btn ghost sm" disabled={busy}
-                onClick={() => clear(r.category, r.cnt)}>Очистить</button>
+                onClick={() => setMoving({ from: r.category, to: '', cnt: r.cnt })}>Перенести…</button>
+            </div>
+          )}
+          {moving?.from === r.category && (
+            <div className="row" style={{ gap: 8, marginTop: 8 }}>
+              <div style={{ flex: '1 1 220px' }}>
+                <Suggest value={moving.to} onChange={v => setMoving({ ...moving, to: v })}
+                  options={(rows || []).map(x => x.category).filter(x => x !== r.category)}
+                  placeholder="в какую категорию перенести" autoFocus />
+              </div>
+              <button className="btn pri sm" disabled={busy || !moving.to.trim()}
+                onClick={() => move(moving.from, moving.to, moving.cnt)}>Перенести</button>
+              <button className="btn ghost sm" disabled={busy}
+                onClick={() => clear(r.category, r.cnt)}>Без категории</button>
+              <button className="btn ghost sm" onClick={() => setMoving(null)}>Отмена</button>
             </div>
           )}
         </div>
@@ -751,8 +783,8 @@ function CategoriesModal({ onClose, onDone }) {
 
       <div className="row">
         <span className="muted2 spacer">
-          Переименование в существующее имя сливает категории. Очистка убирает
-          категорию у карточек, сами карточки остаются.
+          «Перенести» — товары уходят в выбранную категорию, а эта исчезает.
+          Переименование в существующее имя сливает категории так же.
         </span>
         <button className="btn" onClick={onClose}>Закрыть</button>
       </div>
