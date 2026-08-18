@@ -443,13 +443,28 @@ export default {
         }
         if (!Object.keys(patch).length) return json({ error: 'Нечего менять' }, 400)
 
-        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+        const patchLic = (p) => sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { ...db.headers, Prefer: 'return=minimal' },
-          body: JSON.stringify(patch)
+          body: JSON.stringify(p)
         })
-        if (!r.ok) return json({ error: await sqlHint(r, ['contact', 'hidden', 'price', 'snoozed_until']) }, 502)
-        return json({ ok: true })
+        const r = await patchLic(patch)
+        if (r.ok) return json({ ok: true })
+        // Колонка city добавлена ALTER-ом позже остальных. Пока SQL не выполнен,
+        // PATCH с ней падает ЦЕЛИКОМ — и правка имени, телефона и цены пропадает
+        // заодно с городом, хотя к городу отношения не имеет. Сохраняем всё
+        // остальное и честно говорим, что город не записан.
+        if ('city' in patch) {
+          const { city, ...rest } = patch
+          if (Object.keys(rest).length) {
+            const r2 = await patchLic(rest)
+            if (r2.ok) return json({
+              ok: true,
+              warning: 'Всё сохранено, кроме города: в базе нет колонки city. Выполните SQL из license-server/supabase/schema.sql в Supabase → SQL Editor.'
+            })
+          }
+        }
+        return json({ error: await sqlHint(r, ['contact', 'hidden', 'price', 'snoozed_until', 'city']) }, 502)
       }
 
       // --- Вкладка «Облако»: живы ли облачные функции ------------------------

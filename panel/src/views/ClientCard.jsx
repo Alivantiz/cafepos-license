@@ -276,11 +276,14 @@ function EditModal({ c, cities, onClose, onDone }) {
   const go = async () => {
     setBusy(true)
     try {
-      await api('edit', {
+      const r = await api('edit', {
         id: c.id, customer: f.customer, contact: f.contact, terminals: Number(f.terminals),
         price: f.price === '' ? null : Number(f.price), city: f.city,
       })
-      toast.ok('Сохранено'); onDone()
+      // Частичное сохранение обязано быть видно: молчаливое «Сохранено» после
+      // того, как город не записался, — худший исход.
+      if (r?.warning) toast.err(r.warning); else toast.ok('Сохранено')
+      onDone()
     } catch (e) { toast.err(e.message); setBusy(false) }
   }
 
