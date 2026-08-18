@@ -8,6 +8,25 @@ const PER_PAGE = 200
 const PEND_PER = 200   // размер страницы очереди — тот же, что limit на сервере
 const key = (r) => r.venue_id + '::' + r.barcode
 
+// Телефон. За 700px семь колонок перестают помещаться: таблица уезжает вбок,
+// и на экране остаётся один столбец штрихкодов — модерировать нечем.
+function useNarrow() {
+  const q = '(max-width: 700px)'
+  // matchMedia может не быть — смоук-тест рендерит вкладки без настоящего окна.
+  // Нет способа спросить ширину — считаем экран широким: таблица работает
+  // везде, просто на телефоне неудобно, а падение ломает всю вкладку.
+  const mq = () => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(q) : null)
+  const [narrow, setNarrow] = useState(() => mq()?.matches ?? false)
+  useEffect(() => {
+    const m = mq()
+    if (!m?.addEventListener) return
+    const on = () => setNarrow(m.matches)
+    m.addEventListener('change', on)
+    return () => m.removeEventListener('change', on)
+  }, [])
+  return narrow
+}
+
 export default function Catalog({ onCounts, onReload }) {
   const [pending, setPending] = useState(null)   // null — ещё не грузили
   const [pendTotal, setPendTotal] = useState(null)
@@ -28,6 +47,7 @@ export default function Catalog({ onCounts, onReload }) {
   // Разбор мусора: очередь и каталог смотрят по одним и тем же двум признакам —
   // «только внутренние коды» и «изменено с такого-то дня». Отсюда общий фильтр
   // на обе таблицы: разбирать удобнее порциями, а не всё сразу сверху вниз.
+  const narrow = useNarrow()
   const [internalOnly, setInternalOnly] = useState(false)
   const [since, setSince] = useState('')
   const [sort, setSort] = useState('barcode')
@@ -206,7 +226,7 @@ export default function Catalog({ onCounts, onReload }) {
   return (
     <>
       <div className="card" style={{ marginBottom: 16, padding: '10px 12px' }}>
-        <div className="row">
+        <div className="row filterbar">
           <label className="row" style={{ gap: 6, margin: 0 }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={internalOnly}
               onChange={e => { setInternalOnly(e.target.checked); setPage(0); setPendPage(0) }} />
@@ -237,9 +257,11 @@ export default function Catalog({ onCounts, onReload }) {
         <div className="row" style={{ marginBottom: 10 }}>
           <h2 style={{ fontSize: 16, margin: 0 }}>На модерации</h2>
           <span className="muted2">{pendTotal !== null ? `${pending?.length ?? 0} из ${pendTotal}` : ''}</span>
-          <span className="muted2" style={{ marginLeft: 'auto' }}>
-            ↑↓ — по строкам · A — одобрить · D — пометить на отклонение
-          </span>
+          {!narrow && (
+            <span className="muted2" style={{ marginLeft: 'auto' }}>
+              ↑↓ — по строкам · A — одобрить · D — пометить на отклонение
+            </span>
+          )}
         </div>
         {pending === null ? <div className="empty">Загрузка…</div>
           : !pending.length ? <div className="empty">Очередь пуста</div> : (
@@ -252,6 +274,40 @@ export default function Catalog({ onCounts, onReload }) {
                 <button className="btn ghost sm" onClick={() => setSel(new Set())}>Снять</button>
               </div>
             )}
+            {narrow && (
+              <div className="rowcards" style={{ padding: '0 8px 8px' }}>
+                {pending.map(r => {
+                  const k = key(r), sim = similar[k]
+                  return (
+                    <div key={k} className={'rowcard' + (sel.has(k) ? ' sel' : '')}>
+                      <div className="nm">{r.name || 'без названия'}</div>
+                      <div className="code">{r.barcode}</div>
+                      <div className="meta">
+                        {[r.category || 'без категории', r.price != null ? r.price + ' ₸' : null, r.unit]
+                          .filter(Boolean).join(' · ')}
+                      </div>
+                      {sim && <div className="meta"><Similar r={r} sim={sim} /></div>}
+                      <div className="acts">
+                        <button className="btn pri" onClick={() => decide(r, 'approve')}>Одобрить</button>
+                        <button className="btn" onClick={() => decide(r, 'reject')}>Отклонить</button>
+                        <button className="btn ghost" title="Похожие в каталоге"
+                          onClick={() => showSimilar(r)}>≈</button>
+                        <button className="btn ghost" title="Править перед одобрением"
+                          onClick={() => setEdit({ row: r, pending: true })}>✎</button>
+                      </div>
+                      <label className="pick">
+                        <input type="checkbox" style={{ width: 'auto' }} checked={sel.has(k)}
+                          onChange={e => setSel(s => {
+                            const n = new Set(s); e.target.checked ? n.add(k) : n.delete(k); return n
+                          })} />
+                        отметить для массового действия
+                      </label>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {!narrow && (
             <div className="tablewrap">
               <table>
                 <thead>
@@ -303,6 +359,7 @@ export default function Catalog({ onCounts, onReload }) {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         )}
 
@@ -346,6 +403,31 @@ export default function Catalog({ onCounts, onReload }) {
         {rows === null ? <div className="empty">Загрузка…</div>
           : !rows.length ? <div className="empty">Ничего не найдено</div> : (
           <div className="card" style={{ padding: '14px 4px 4px' }}>
+            {narrow && (
+              <div className="rowcards" style={{ padding: '0 8px 8px' }}>
+                {rows.map(r => (
+                  <div key={r.barcode} className={'rowcard' + (listSel.has(r.barcode) ? ' sel' : '')}>
+                    <div className="nm">{r.name || 'без названия'}</div>
+                    <div className="code">{r.barcode}</div>
+                    <div className="meta">
+                      {[r.category || 'без категории', r.price != null ? r.price + ' ₸' : null, r.unit,
+                        r.updated_at ? String(r.updated_at).slice(0, 10) : null].filter(Boolean).join(' · ')}
+                    </div>
+                    <div className="acts">
+                      <button className="btn ghost" onClick={() => setEdit({ row: r })}>✎ править</button>
+                    </div>
+                    <label className="pick">
+                      <input type="checkbox" style={{ width: 'auto' }} checked={listSel.has(r.barcode)}
+                        onChange={e => setListSel(s => {
+                          const n = new Set(s); e.target.checked ? n.add(r.barcode) : n.delete(r.barcode); return n
+                        })} />
+                      отметить
+                    </label>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!narrow && (
             <div className="tablewrap">
               <table>
                 <thead>
@@ -384,6 +466,7 @@ export default function Catalog({ onCounts, onReload }) {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         )}
 
