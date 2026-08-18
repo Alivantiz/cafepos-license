@@ -271,6 +271,18 @@ tbody tr:hover td { background: var(--panel2); }
 .rowcard .acts .btn { flex: 1 1 auto; justify-content: center; min-height: 40px; }
 .rowcard .pick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); }
 
+/* Непросмотренное — под плёнкой. Так видно, что ты уже открывал и отложил,
+   а что не трогал вовсе. */
+tr.unseen td { opacity: .5; }
+.rowcard.unseen { opacity: .55; }
+
+.toast .undo {
+  margin-left: 12px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+  background: transparent; color: inherit; font: inherit; font-weight: 600;
+  border: 1px solid currentColor; opacity: .85;
+}
+.toast .undo:hover { opacity: 1; }
+
 @media (max-width: 700px) {
   /* Полоса фильтров на телефоне: поле даты и выпадающий список в 160-200px
      обрезают собственный текст («каталог: по штрихкод…»). Даём каждому строку

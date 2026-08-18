@@ -230,22 +230,37 @@ let push = () => {}
 export const toast = {
   ok: (m) => push(m, false),
   err: (m) => push(m, true),
+  // Действие с возвратом. Живёт дольше обычного тоста: за 3 секунды понять,
+  // что одобрил не то, и попасть в кнопку — нереально.
+  undo: (m, onUndo) => push(m, false, onUndo),
 }
 export function Toasts() {
   const [items, setItems] = useState([])
   useEffect(() => {
-    push = (text, err) => {
+    push = (text, err, onUndo) => {
       const id = Date.now() + Math.random()
       // Одно и то же сообщение не дублируем: при череде отказов подряд экран
       // забивался десятком одинаковых плашек, за которыми не было видно ни
       // содержимого, ни того, что ошибка, вообще-то, одна.
-      setItems(v => v.some(t => t.text === text) ? v : [...v, { id, text, err }])
-      setTimeout(() => setItems(v => v.filter(t => t.id !== id)), 3400)
+      // Тосты с «Отменить» — исключение: каждый относится к своей карточке,
+      // и схлопнув их, мы отняли бы возможность вернуть одну из двух.
+      setItems(v => (!onUndo && v.some(t => t.text === text)) ? v : [...v, { id, text, err, onUndo }])
+      setTimeout(() => setItems(v => v.filter(t => t.id !== id)), onUndo ? 9000 : 3400)
     }
   }, [])
   return (
     <div className="toasts">
-      {items.map(t => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.text}</div>)}
+      {items.map(t => (
+        <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>
+          {t.text}
+          {t.onUndo && (
+            <button className="undo" onClick={() => {
+              setItems(v => v.filter(x => x.id !== t.id))
+              t.onUndo()
+            }}>Отменить</button>
+          )}
+        </div>
+      ))}
     </div>
   )
 }

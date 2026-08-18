@@ -775,7 +775,9 @@ export default {
           // коды идут подряд и дубли схлопываются в пределах страницы. Сортировка
           // по дате нужна для разбора «что приехало недавно» — там дубли уже
           // могут разъехаться по страницам, это плата за свежесть сверху.
-          const order = sort === 'updated' ? 'updated_at.desc' : 'barcode.asc'
+          const order = sort === 'updated' ? 'updated_at.desc'
+            : sort === 'stale' ? 'updated_at.asc'   // «сначала нетронутые»: то, что правил только что, уезжает в хвост
+            : 'barcode.asc'
           let qs = `status=eq.approved&order=${order}&limit=${per}&offset=${off}`
           qs += sinceFilter(since)
           if (term) qs += `&or=(barcode.ilike.*${encodeURIComponent(term)}*,name.ilike.*${encodeURIComponent(term)}*)`
@@ -803,6 +805,21 @@ export default {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=minimal' },
             body: JSON.stringify({ status: 'approved' })
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true })
+        }
+
+        // Отмена одобрения: карточка возвращается в очередь. Нужна кнопке
+        // «Отменить» в тосте — одобрить по ошибке легко, а искать потом эту
+        // строку в каталоге из сотен тысяч записей нечем.
+        if (pathname === '/api/catalog/unapprove') {
+          const { venue_id, barcode } = await request.json()
+          if (!venue_id || !barcode) return json({ error: 'Нужны venue_id и barcode' }, 400)
+          const patch = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?venue_id=eq.${encodeURIComponent(venue_id)}&barcode=eq.${encodeURIComponent(barcode)}`, {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=minimal' },
+            body: JSON.stringify({ status: 'pending' })
           })
           if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
           return json({ ok: true })
@@ -873,7 +890,7 @@ export default {
         }
 
         if (pathname === '/api/catalog/upsert') {
-          const { venue_id, barcode, name, category, price, unit } = await request.json()
+          const { venue_id, barcode, name, category, price, unit, status } = await request.json()
           if (!barcode || !String(barcode).trim()) return json({ error: 'Укажите штрихкод' }, 400)
           if (!name || !String(name).trim()) return json({ error: 'Укажите название' }, 400)
           const n = price === '' || price === null || price === undefined ? null : Number(price)
@@ -885,7 +902,10 @@ export default {
             category: String(category || '').trim() || null,
             price: n,
             unit: String(unit || '').trim() || null,
-            status: 'approved',
+            // По умолчанию — одобрено: руками вендор заводит уже готовую строку.
+            // 'pending' приходит только от кнопки «Отменить» после отклонения:
+            // карточка возвращается ровно туда, откуда её убрали, — в очередь.
+            status: status === 'pending' ? 'pending' : 'approved',
             updated_at: new Date().toISOString()
           }
           const r = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?on_conflict=venue_id,barcode`, {

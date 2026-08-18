@@ -249,6 +249,40 @@ async function testServerRoutes() {
     assert.ok(decodeURIComponent(url).includes('barcode=match.^2[0-9]{12}$'), 'фильтр внутренних кодов')
   }
 
+  // Отмена одобрения возвращает карточку в очередь — без venue_id непонятно,
+  // чью строку возвращать, значит запрос обязан отсекаться до базы.
+  const unapNoKey = await authed('/api/catalog/unapprove', { barcode: '123' })
+  assert.strictEqual(unapNoKey.status, 400, 'отмена одобрения без venue_id — отказ')
+
+  // Отмена отклонения возвращает строку ИМЕННО в очередь: если бы upsert
+  // молча ставил approved, отменённое отклонение втащило бы карточку в каталог.
+  {
+    const real = global.fetch
+    let body = null
+    global.fetch = async (u, init) => { body = JSON.parse(init.body); return new Response('[{}]', { status: 200 }) }
+    await authed('/api/catalog/upsert', { venue_id: 'v1', barcode: '123', name: 'Товар', status: 'pending' })
+    global.fetch = real
+    assert.strictEqual(body.status, 'pending', 'статус pending доходит до базы')
+  }
+  {
+    const real = global.fetch
+    let body = null
+    global.fetch = async (u, init) => { body = JSON.parse(init.body); return new Response('[{}]', { status: 200 }) }
+    await authed('/api/catalog/upsert', { venue_id: 'v1', barcode: '123', name: 'Товар', status: 'что угодно' })
+    global.fetch = real
+    assert.strictEqual(body.status, 'approved', 'посторонний статус не проходит')
+  }
+
+  // Сортировка «сначала нетронутые» — правленое только что уезжает в хвост.
+  {
+    const real = global.fetch
+    let url = ''
+    global.fetch = async (u) => { url = String(u); return new Response('[]', { status: 200, headers: { 'content-range': '0-0/9' } }) }
+    await authed('/api/catalog/list', { q: '', page: 0, sort: 'stale' })
+    global.fetch = real
+    assert.ok(url.includes('order=updated_at.asc'), 'нетронутые идут первыми')
+  }
+
   const bulkDelEmpty = await authed('/api/catalog/bulkDelete', { barcodes: [] })
   assert.strictEqual(bulkDelEmpty.status, 400, 'массовое удаление без выбора — отказ')
 

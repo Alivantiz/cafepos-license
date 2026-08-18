@@ -8,6 +8,18 @@ const PER_PAGE = 200
 const PEND_PER = 200   // размер страницы очереди — тот же, что limit на сервере
 const key = (r) => r.venue_id + '::' + r.barcode
 
+// «Я эту карточку открывал» — личная метка модератора, а не свойство товара:
+// другому вендору она ничего не сказала бы, а писать в облако на каждое
+// открытие — лишние запросы. Поэтому браузер, а не база.
+const SEEN_KEY = 'catalog_seen'
+const seenLoad = () => {
+  try { return new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]')) } catch { return new Set() }
+}
+const seenSave = (set) => {
+  // Очередь идёт годами, localStorage не резиновый — держим последние 3000.
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify([...set].slice(-3000))) } catch { /* приватный режим */ }
+}
+
 // Телефон. За 700px семь колонок перестают помещаться: таблица уезжает вбок,
 // и на экране остаётся один столбец штрихкодов — модерировать нечем.
 function useNarrow() {
@@ -48,6 +60,11 @@ export default function Catalog({ onCounts, onReload }) {
   // «только внутренние коды» и «изменено с такого-то дня». Отсюда общий фильтр
   // на обе таблицы: разбирать удобнее порциями, а не всё сразу сверху вниз.
   const narrow = useNarrow()
+  const [seen, setSeen] = useState(seenLoad)
+  const markSeen = (r) => setSeen(s => { const n = new Set(s); n.add(key(r)); seenSave(n); return n })
+  // Открыл «править» — значит, посмотрел. «Похожие» не в счёт: их жмут, не
+  // читая карточку, и плёнка сходила бы с того, что ты не разбирал.
+  const openEdit = (r, pending) => { if (pending) markSeen(r); setEdit({ row: r, pending }) }
   const [internalOnly, setInternalOnly] = useState(false)
   const [since, setSince] = useState('')
   const [sort, setSort] = useState('barcode')
@@ -118,17 +135,36 @@ export default function Catalog({ onCounts, onReload }) {
     return () => clearTimeout(t)
   }, [focused, similar, loadSimilar])
 
+  // Вернуть карточку туда, откуда её только что убрали. Одобрение снимается
+  // на сервере, отклонение (DELETE) восстанавливается из строки, которая всё
+  // ещё лежит в браузере, — и возвращается в очередь, а не в каталог.
+  const undoDecide = async (r, action) => {
+    try {
+      if (action === 'approve') await api('catalog/unapprove', { venue_id: r.venue_id, barcode: r.barcode })
+      else await api('catalog/upsert', {
+        venue_id: r.venue_id, barcode: r.barcode, name: r.name,
+        category: r.category, price: r.price, unit: r.unit, status: 'pending',
+      })
+      toast.ok('Возвращено в очередь')
+      loadPending(); loadList()
+    } catch (e) { toast.err(e.message) }
+  }
+
   const decide = async (r, action) => {
-    // «Отклонить» — это DELETE на сервере. Массовое отклонение спрашивало,
-    // одиночное нет, хотя кнопка вплотную к «Одобрить».
-    if (action === 'reject' && !await confirmDialog({
+    // Спрашиваем только там, где вернуть нечем: отклонение — это DELETE, и
+    // восстановить строку можно лишь из данных, которые есть в браузере. Есть
+    // название — предложим «Отменить» в тосте, и лишний вопрос не нужен.
+    const undoable = !!String(r.name || '').trim()
+    if (action === 'reject' && !undoable && !await confirmDialog({
       title: 'Отклонить карточку',
-      message: `«${r.name || r.barcode}» будет удалена из очереди без возможности вернуть.`,
+      message: `«${r.barcode}» без названия — вернуть её будет нечем.`,
       confirmText: 'Отклонить',
     })) return
     try {
       await api('catalog/' + action, { venue_id: r.venue_id, barcode: r.barcode })
-      toast.ok(action === 'approve' ? 'Одобрено' : 'Отклонено')
+      const word = action === 'approve' ? 'Одобрено' : 'Отклонено'
+      if (action === 'approve' || undoable) toast.undo(word, () => undoDecide(r, action))
+      else toast.ok(word)
       // Строку убираем на месте, а не перечитываем очередь. При разборе с
       // клавиатуры перезагрузка после каждой карточки сбрасывала бы курсор в
       // начало и заново гоняла двести строк — работать стало бы медленнее, чем
@@ -238,6 +274,7 @@ export default function Catalog({ onCounts, onReload }) {
           <select value={sort} onChange={e => { setSort(e.target.value); setPage(0) }} style={{ maxWidth: 200 }}>
             <option value="barcode">каталог: по штрихкоду</option>
             <option value="updated">каталог: сначала свежие</option>
+            <option value="stale">каталог: сначала нетронутые</option>
           </select>
           {(internalOnly || since || sort !== 'barcode') && (
             <button className="btn ghost sm" onClick={() => { setInternalOnly(false); setSince(''); setSort('barcode'); setPage(0); setPendPage(0) }}>
@@ -279,7 +316,7 @@ export default function Catalog({ onCounts, onReload }) {
                 {pending.map(r => {
                   const k = key(r), sim = similar[k]
                   return (
-                    <div key={k} className={'rowcard' + (sel.has(k) ? ' sel' : '')}>
+                    <div key={k} className={'rowcard' + (sel.has(k) ? ' sel' : '') + (seen.has(k) ? '' : ' unseen')}>
                       <div className="nm">{r.name || 'без названия'}</div>
                       <div className="code">{r.barcode}</div>
                       <div className="meta">
@@ -293,7 +330,7 @@ export default function Catalog({ onCounts, onReload }) {
                         <button className="btn ghost" title="Похожие в каталоге"
                           onClick={() => showSimilar(r)}>≈</button>
                         <button className="btn ghost" title="Править перед одобрением"
-                          onClick={() => setEdit({ row: r, pending: true })}>✎</button>
+                          onClick={() => openEdit(r, true)}>✎</button>
                       </div>
                       <label className="pick">
                         <input type="checkbox" style={{ width: 'auto' }} checked={sel.has(k)}
@@ -326,6 +363,7 @@ export default function Catalog({ onCounts, onReload }) {
                     const k = key(r), sim = similar[k]
                     return [
                       <tr key={k} ref={i === cur ? curRef : null} onClick={() => setCur(i)}
+                        className={seen.has(k) ? undefined : 'unseen'}
                         style={i === cur ? { background: 'var(--sel, rgba(125,125,255,.12))' } : undefined}>
                         <td><input type="checkbox" style={{ width: 'auto' }} checked={sel.has(k)}
                           onChange={e => setSel(s => {
@@ -341,7 +379,7 @@ export default function Catalog({ onCounts, onReload }) {
                             <button className="btn ghost sm" title="Похожие карточки в каталоге"
                               onClick={() => showSimilar(r)}>≈ похожие</button>
                             <button className="btn ghost sm" title="Править перед одобрением"
-                              onClick={() => setEdit({ row: r, pending: true })}>✎ править</button>
+                              onClick={() => openEdit(r, true)}>✎ править</button>
                             <button className="btn pri sm" onClick={() => decide(r, 'approve')}>Одобрить</button>
                             <button className="btn sm" onClick={() => decide(r, 'reject')}>Отклонить</button>
                           </div>
