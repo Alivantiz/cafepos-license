@@ -277,6 +277,16 @@ tbody tr:hover td { background: var(--panel2); }
 tr.seen td { opacity: .45; }
 .rowcard.seen { opacity: .5; }
 
+/* Штрихкод — кнопка: по клику он копируется, а карточка считается разобранной.
+   Выглядит как код, ведёт себя как кнопка — поэтому подчёркивание пунктиром. */
+.codebtn {
+  font-family: ui-monospace, monospace; font-size: 13px; letter-spacing: .02em;
+  background: none; border: 0; padding: 2px 0; cursor: pointer; color: inherit;
+  border-bottom: 1px dashed var(--mut2); border-radius: 0;
+}
+.codebtn:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.rowcard .codebtn { font-size: 15px; align-self: flex-start; }
+
 .toast .undo {
   margin-left: 12px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
   background: transparent; color: inherit; font: inherit; font-weight: 600;

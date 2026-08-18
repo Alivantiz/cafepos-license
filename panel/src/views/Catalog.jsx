@@ -1,6 +1,6 @@
 // Общий справочник штрихкодов: очередь на модерацию (карточки, присланные
 // кассами) и сам каталог с поиском, страницами и массовой сменой категории.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { Modal, toast, confirmDialog, Suggest } from '../ui'
 
@@ -65,6 +65,24 @@ export default function Catalog({ onCounts, onReload }) {
   // Открыл «править» — значит, разобрал. «Похожие» не в счёт: их жмут, не
   // читая карточку, и плёнка ложилась бы на то, что ты не разбирал.
   const openEdit = (r, pending) => { if (pending) markSeen(r); setEdit({ row: r, pending }) }
+
+  // Клик по штрихкоду копирует его и считается «разобрал»: код нужен, чтобы
+  // проверить товар в НКТ или в поиске, и это ровно тот момент, когда карточку
+  // смотрят. Отмеченное уходит вниз списка и гаснет.
+  const copyCode = (r) => {
+    try { navigator.clipboard?.writeText(r.barcode) } catch { /* нет доступа к буферу */ }
+    markSeen(r)
+    toast.ok(`Скопировано: ${r.barcode}`)
+  }
+
+  // Разобранные — в хвост, порядок остальных не трогаем (сервер отдал их по
+  // свежести). Сортировка устойчивая: карточка не прыгает между соседями.
+  const view = useMemo(() => {
+    const rows = pending || []
+    return [...rows.map((r, i) => ({ r, i }))]
+      .sort((a, b) => (seen.has(key(a.r)) - seen.has(key(b.r))) || a.i - b.i)
+      .map(x => x.r)
+  }, [pending, seen])
   const [internalOnly, setInternalOnly] = useState(false)
   const [since, setSince] = useState('')
   const [sort, setSort] = useState('barcode')
@@ -127,7 +145,7 @@ export default function Catalog({ onCounts, onReload }) {
   // было нажать «≈ похожие», чтобы понять, не заведено ли это вчера под другим
   // именем; при разборе очереди это нажатие на каждую строку. Грузим только
   // одну — ту, на которую смотрят, а не двести сразу.
-  const focused = pending?.[cur]
+  const focused = view[cur]
   useEffect(() => {
     if (!focused) return
     if (similar[key(focused)]) return
@@ -212,22 +230,22 @@ export default function Catalog({ onCounts, onReload }) {
   // «отклонить» — это DELETE навсегда. Поэтому D копит выбор, а спрашиваем один
   // раз на всю пачку кнопкой «Отклонить выбранные».
   useEffect(() => {
-    if (!pending?.length || edit || bulkCat) return
+    if (!view.length || edit || bulkCat) return
     const onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return
       const t = e.target
       if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return
-      const last = pending.length - 1
+      const last = view.length - 1
       const k = e.key.toLowerCase()
       if (e.key === 'ArrowDown') { e.preventDefault(); setCur(c => Math.min(c + 1, last)) }
       else if (e.key === 'ArrowUp') { e.preventDefault(); setCur(c => Math.max(c - 1, 0)) }
       else if (k === 'a' || k === 'ф') {
         e.preventDefault()
-        const r = pending[Math.min(cur, last)]
+        const r = view[Math.min(cur, last)]
         if (r) decide(r, 'approve')
       } else if (k === 'd' || k === 'в' || e.key === ' ') {
         e.preventDefault()
-        const r = pending[Math.min(cur, last)]
+        const r = view[Math.min(cur, last)]
         if (!r) return
         const kk = key(r)
         setSel(s => { const n = new Set(s); n.has(kk) ? n.delete(kk) : n.add(kk); return n })
@@ -313,12 +331,13 @@ export default function Catalog({ onCounts, onReload }) {
             )}
             {narrow && (
               <div className="rowcards" style={{ padding: '0 8px 8px' }}>
-                {pending.map(r => {
+                {view.map(r => {
                   const k = key(r), sim = similar[k]
                   return (
                     <div key={k} className={'rowcard' + (sel.has(k) ? ' sel' : '') + (seen.has(k) ? ' seen' : '')}>
                       <div className="nm">{r.name || 'без названия'}</div>
-                      <div className="code">{r.barcode}</div>
+                      <button className="codebtn" title="Скопировать штрихкод"
+                        onClick={() => copyCode(r)}>{r.barcode}</button>
                       <div className="meta">
                         {[r.category || 'без категории', r.price != null ? r.price + ' ₸' : null, r.unit]
                           .filter(Boolean).join(' · ')}
@@ -351,15 +370,15 @@ export default function Catalog({ onCounts, onReload }) {
                   <tr>
                     <th style={{ width: 34 }}>
                       <input type="checkbox" style={{ width: 'auto' }}
-                        checked={pending.length > 0 && pending.every(r => sel.has(key(r)))}
-                        onChange={e => setSel(e.target.checked ? new Set(pending.map(key)) : new Set())} />
+                        checked={view.length > 0 && view.every(r => sel.has(key(r)))}
+                        onChange={e => setSel(e.target.checked ? new Set(view.map(key)) : new Set())} />
                     </th>
                     <th>Штрихкод</th><th>Название</th><th>Категория</th>
                     <th className="num">Цена</th><th>Ед.</th><th />
                   </tr>
                 </thead>
                 <tbody>
-                  {pending.map((r, i) => {
+                  {view.map((r, i) => {
                     const k = key(r), sim = similar[k]
                     return [
                       <tr key={k} ref={i === cur ? curRef : null} onClick={() => setCur(i)}
@@ -369,7 +388,10 @@ export default function Catalog({ onCounts, onReload }) {
                           onChange={e => setSel(s => {
                             const n = new Set(s); e.target.checked ? n.add(k) : n.delete(k); return n
                           })} /></td>
-                        <td style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{r.barcode}</td>
+                        <td>
+                          <button className="codebtn" title="Скопировать штрихкод"
+                            onClick={e => { e.stopPropagation(); copyCode(r) }}>{r.barcode}</button>
+                        </td>
                         <td className="name">{r.name || ''}</td>
                         <td className="muted">{r.category || '—'}</td>
                         <td className="num">{r.price ?? '—'}</td>
