@@ -84,9 +84,13 @@ export function money(n, short = false) {
   return v.toLocaleString('ru-RU') + ' ₸'
 }
 
-export function agoText(s) {
+// empty — что писать, когда даты нет. По умолчанию «связи не было», но у
+// последней ПРОДАЖИ пустая дата чаще значит другое: касса на связи и исправно
+// шлёт итоги, просто ещё ничего не продала. Одним текстом на оба случая панель
+// врала — и сама себе противоречила подписью «ни одной продажи».
+export function agoText(s, empty = 'связи не было') {
   const d = daysAgo(s)
-  if (d === null) return 'связи не было'
+  if (d === null) return empty
   if (d === 0) return 'сегодня'
   if (d === 1) return 'вчера'
   return d + ' дн назад'

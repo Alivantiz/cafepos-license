@@ -24,9 +24,10 @@ const FILTERS = [
   { id: 'hidden', label: 'Скрытые' },
 ]
 
-export default function Clients({ data, onOpen, onIssue, initialFilter }) {
+export default function Clients({ data, onOpen, onIssue, cities, initialFilter }) {
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState(initialFilter || 'all')
+  const [city, setCity] = useState('')
   const [sort, setSort] = useState({ col: 'revenue7', dir: 'desc' })
 
   const all = useMemo(
@@ -38,6 +39,10 @@ export default function Clients({ data, onOpen, onIssue, initialFilter }) {
     let list = all.filter(c => {
       if (needle && !((c.customer || '') + ' ' + (c.contact || '') + ' ' + (c.machine_id || '') + ' ' + c.subject)
         .toLowerCase().includes(needle)) return false
+      // Город есть только у лицензий и только там, где вендор его проставил;
+      // пробные без города при выбранном городе не показываем — иначе фильтр
+      // «Шиели» отвечал бы списком со всей страной.
+      if (city && String(c.city || '') !== city) return false
       const d = daysLeft(c.expires_at)
       // Скрытые видны только в своём фильтре — за этим их и скрывали.
       if (filter === 'hidden') return !!c.hidden
@@ -61,7 +66,7 @@ export default function Clients({ data, onOpen, onIssue, initialFilter }) {
       const r = x < y ? -1 : x > y ? 1 : 0
       return sort.dir === 'asc' ? r : -r
     })
-  }, [all, q, filter, sort])
+  }, [all, q, filter, city, sort])
 
   const th = (col, label, num) => (
     <th className={'sortable' + (num ? ' num' : '')} onClick={() =>
@@ -75,6 +80,12 @@ export default function Clients({ data, onOpen, onIssue, initialFilter }) {
       <div className="row" style={{ marginBottom: 14 }}>
         <input placeholder="Имя, код компьютера…" value={q} onChange={e => setQ(e.target.value)}
           style={{ maxWidth: 260 }} />
+        {(cities || []).length > 0 && (
+          <select value={city} onChange={e => setCity(e.target.value)} style={{ maxWidth: 160 }}>
+            <option value="">Все города</option>
+            {cities.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+        )}
         {FILTERS.map(f => (
           <button key={f.id} className={'btn sm' + (filter === f.id ? ' pri' : '')}
             onClick={() => setFilter(f.id)}>{f.label}</button>
@@ -141,7 +152,7 @@ function Row({ c, onOpen }) {
             </div>
           </td>
           <td className="num">{c.avgCheck ? money(c.avgCheck) : '—'}</td>
-          <td className="num" style={stale ? { color: 'var(--bad)' } : undefined}>{agoText(c.last_sale_at)}</td>
+          <td className="num" style={stale ? { color: 'var(--bad)' } : undefined}>{agoText(c.last_sale_at, c.telemetry ? 'продаж не было' : 'связи не было')}</td>
           <td className="num muted">{c.registers ?? '—'}</td>
         </>
       )}

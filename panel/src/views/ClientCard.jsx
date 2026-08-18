@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { api, fmtDate, daysLeft, daysAgo, money, agoText } from '../api'
 import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar, CopyBtn } from '../ui'
 
-export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFor }) {
+export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor }) {
   const [renew, setRenew] = useState(false)
   const [edit, setEdit] = useState(false)
   const [snooze, setSnooze] = useState(false)
@@ -88,6 +88,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
         {snoozedTill && <Tag>отложен до {fmtDate(snoozedTill)}</Tag>}
         {/* Телефон рядом с именем: сводка говорит «эта касса молчит, позвони» —
             значит звонить надо отсюда, а не искать контакт в заметке. */}
+        {c.city && <span className="tag">{c.city}</span>}
         {c.contact && <a className="tag" href={`tel:${String(c.contact).replace(/[^\d+]/g, '')}`}>{c.contact}</a>}
         {!trial && <button className="btn ghost sm spacer" onClick={() => setEdit(true)}>Изменить</button>}
       </div>
@@ -107,9 +108,12 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
         <Tile label="Выручка за 30 дней" value={money(c.revenue30 || 0)}
           hint={`${c.receipts30 || 0} чеков`} />
         <Tile label="Средний чек" value={c.avgCheck ? money(c.avgCheck) : '—'} hint="за 30 дней" />
-        <Tile label="Последняя продажа" value={agoText(c.last_sale_at)}
+        <Tile label="Последняя продажа"
+          value={agoText(c.last_sale_at, c.telemetry ? 'продаж не было' : 'связи не было')}
           tone={(daysAgo(c.last_sale_at) ?? 99) >= 3 ? 'bad' : undefined}
-          hint={c.last_sale_at ? fmtDate(c.last_sale_at) : 'ни одной продажи'} />
+          hint={c.last_sale_at ? fmtDate(c.last_sale_at)
+            : c.usage_at ? `итоги от кассы: ${agoText(c.usage_at)}`
+              : 'касса ещё не отчитывалась'} />
         <Tile label="Касс / точек" value={`${c.registers ?? '—'} / ${c.locations ?? '—'}`}
           hint={c.app_version ? 'версия ' + c.app_version : ''} />
       </div>
@@ -190,7 +194,7 @@ export default function ClientCard({ c, kaspiPhone, onBack, onChanged, onIssueFo
 
       {renew && <RenewModal c={c} kaspiPhone={kaspiPhone}
         onClose={() => setRenew(false)} onDone={onChanged} />}
-      {edit && <EditModal c={c} onClose={() => setEdit(false)}
+      {edit && <EditModal c={c} cities={cities} onClose={() => setEdit(false)}
         onDone={() => { setEdit(false); onChanged() }} />}
       {snooze && <SnoozeModal c={c} onClose={() => setSnooze(false)}
         onDone={() => { setSnooze(false); onChanged() }} />}
@@ -261,10 +265,10 @@ function SnoozeModal({ c, onClose, onDone }) {
 
 // Имя раньше задавалось один раз при выпуске и оставалось навсегда: опечатался —
 // живи с ней. Телефона не было вовсе, число терминалов тоже не менялось.
-function EditModal({ c, onClose, onDone }) {
+function EditModal({ c, cities, onClose, onDone }) {
   const [f, setF] = useState({
     customer: c.customer || '', contact: c.contact || '', terminals: c.terminals ?? 1,
-    price: c.price ?? '',
+    price: c.price ?? '', city: c.city || '',
   })
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
@@ -274,7 +278,7 @@ function EditModal({ c, onClose, onDone }) {
     try {
       await api('edit', {
         id: c.id, customer: f.customer, contact: f.contact, terminals: Number(f.terminals),
-        price: f.price === '' ? null : Number(f.price),
+        price: f.price === '' ? null : Number(f.price), city: f.city,
       })
       toast.ok('Сохранено'); onDone()
     } catch (e) { toast.err(e.message); setBusy(false) }
@@ -284,6 +288,12 @@ function EditModal({ c, onClose, onDone }) {
     <Modal title="Изменить клиента" onClose={onClose} keepOpen>
       <label>Название<input value={f.customer} onChange={set('customer')} autoFocus /></label>
       <label>Телефон<input value={f.contact} onChange={set('contact')} placeholder="+7…" inputMode="tel" /></label>
+      {/* Город — с подсказкой из уже заведённых: список сам сходится к одному
+          написанию, а новый город просто вписывается сюда же. */}
+      <label>Город
+        <input value={f.city} onChange={set('city')} list="cities-dl" placeholder="Шиели" />
+        <datalist id="cities-dl">{(cities || []).map(x => <option key={x} value={x} />)}</datalist>
+      </label>
       <label>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
       {/* Цена одного продления, а не «в месяц»: кто-то платит за месяц, кто-то
           за год — приводить к общему периоду значит гадать за клиента. */}

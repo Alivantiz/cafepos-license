@@ -111,6 +111,17 @@ async function testServerRoutes() {
   const editNothing = await authed('/api/edit', { id: 'x' })
   assert.strictEqual(editNothing.status, 400, 'нечего менять — отказ')
 
+  // Город: пустая строка обязана сохраняться как NULL, иначе фильтр «Все
+  // города» показывал бы отдельный пустой город.
+  {
+    const real = global.fetch
+    let body = null
+    global.fetch = async (u, init) => { body = JSON.parse(init.body); return new Response('[]', { status: 200 }) }
+    await authed('/api/edit', { id: 'x', city: '  ' })
+    global.fetch = real
+    assert.strictEqual(body.city, null, 'пустой город — NULL, а не пустая строка')
+  }
+
   const editBadTerm = await authed('/api/edit', { id: 'x', terminals: 0 })
   assert.strictEqual(editBadTerm.status, 400, 'ноль терминалов — отказ')
 
@@ -215,6 +226,34 @@ async function testServerRoutes() {
     assert.strictEqual(r.status, 200)
     assert.strictEqual(prefer, 'count=estimated', 'каталог считается оценкой, а не полным проходом')
   }
+
+  // Страницы очереди: без offset хвост очереди был недостижим — видны только
+  // 200 самых свежих карточек, а разобрать их можно было только сверху.
+  {
+    const real = global.fetch
+    let url = ''
+    global.fetch = async (u) => { url = String(u); return new Response('[]', { status: 200, headers: { 'content-range': '0-0/500' } }) }
+    await authed('/api/catalog/pending', { page: 2 })
+    global.fetch = real
+    assert.ok(url.includes('offset=400'), 'вторая страница очереди берётся со смещением')
+  }
+
+  // Фильтр внутренних кодов «2…» — ровно EAN-13, а не «всё, что начинается с 2»:
+  // иначе под нож попадали бы восьмизначные заводские коды.
+  {
+    const real = global.fetch
+    let url = ''
+    global.fetch = async (u) => { url = String(u); return new Response('[]', { status: 200, headers: { 'content-range': '0-0/1' } }) }
+    await authed('/api/catalog/pending', { internalOnly: true })
+    global.fetch = real
+    assert.ok(decodeURIComponent(url).includes('barcode=match.^2[0-9]{12}$'), 'фильтр внутренних кодов')
+  }
+
+  const bulkDelEmpty = await authed('/api/catalog/bulkDelete', { barcodes: [] })
+  assert.strictEqual(bulkDelEmpty.status, 400, 'массовое удаление без выбора — отказ')
+
+  const bulkDelMany = await authed('/api/catalog/bulkDelete', { barcodes: Array.from({ length: 501 }, (_, i) => String(i)) })
+  assert.strictEqual(bulkDelMany.status, 400, 'больше 500 штрихкодов за раз — отказ')
 
   // Подсказка категорий: дубли и регистр схлопываются на сервере, иначе в
   // выпадающем списке было бы по три «Напитки» подряд.

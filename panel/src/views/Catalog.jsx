@@ -5,13 +5,20 @@ import { api } from '../api'
 import { Modal, toast, confirmDialog, Suggest } from '../ui'
 
 const PER_PAGE = 200
+const PEND_PER = 200   // размер страницы очереди — тот же, что limit на сервере
 const key = (r) => r.venue_id + '::' + r.barcode
 
 export default function Catalog({ onCounts, onReload }) {
   const [pending, setPending] = useState(null)   // null — ещё не грузили
   const [pendTotal, setPendTotal] = useState(null)
+  const [pendPage, setPendPage] = useState(0)
   const [sel, setSel] = useState(() => new Set())
   const [similar, setSimilar] = useState({})
+  // Курсор очереди: строка, на которой стоит клавиатура. Разбор сотни карточек
+  // мышью — сотня прицельных попаданий по мелкой кнопке; с клавишами это
+  // «стрелка вниз — A» не глядя.
+  const [cur, setCur] = useState(0)
+  const curRef = useRef(null)
 
   const [rows, setRows] = useState(null)
   const [total, setTotal] = useState(null)
@@ -40,11 +47,11 @@ export default function Catalog({ onCounts, onReload }) {
   counts.current = onCounts
   const loadPending = useCallback(async () => {
     try {
-      const d = await api('catalog/pending', { internalOnly, since })
-      setPending(d.rows || []); setPendTotal(d.total ?? null); setSimilar({}); setSel(new Set())
+      const d = await api('catalog/pending', { internalOnly, since, page: pendPage })
+      setPending(d.rows || []); setPendTotal(d.total ?? null); setSimilar({}); setSel(new Set()); setCur(0)
       counts.current?.(d.total ?? (d.rows || []).length)
     } catch (e) { toast.err(e.message) }
-  }, [internalOnly, since])
+  }, [internalOnly, since, pendPage])
 
   // Запрос на каждую букву возвращался вразнобой: в таблице оказывались
   // результаты позапрошлого запроса. Задержка + счётчик отсекают устаревшие.
@@ -64,15 +71,32 @@ export default function Catalog({ onCounts, onReload }) {
   // Кнопка «Обновить» в шапке должна перечитывать ИМЕННО эту вкладку.
   useEffect(() => { onReload?.(() => () => { loadPending(); loadList() }) }, [loadPending, loadList, onReload])
 
-  const showSimilar = async (r) => {
+  const loadSimilar = useCallback(async (r) => {
     const k = key(r)
-    if (similar[k]) { setSimilar(s => { const n = { ...s }; delete n[k]; return n }) ; return }
-    setSimilar(s => ({ ...s, [k]: { loading: true } }))
+    setSimilar(s => (s[k] ? s : { ...s, [k]: { loading: true } }))
     try {
       const d = await api('catalog/similar', { q: r.name })
       setSimilar(s => ({ ...s, [k]: { rows: d.rows || [] } }))
     } catch (e) { setSimilar(s => ({ ...s, [k]: { rows: [], error: e.message } })) }
+  }, [])
+
+  const showSimilar = (r) => {
+    const k = key(r)
+    if (similar[k]) { setSimilar(s => { const n = { ...s }; delete n[k]; return n }); return }
+    loadSimilar(r)
   }
+
+  // «Похожие» для строки под курсором — сами. Раньше на каждой карточке надо
+  // было нажать «≈ похожие», чтобы понять, не заведено ли это вчера под другим
+  // именем; при разборе очереди это нажатие на каждую строку. Грузим только
+  // одну — ту, на которую смотрят, а не двести сразу.
+  const focused = pending?.[cur]
+  useEffect(() => {
+    if (!focused) return
+    if (similar[key(focused)]) return
+    const t = setTimeout(() => loadSimilar(focused), 250)
+    return () => clearTimeout(t)
+  }, [focused, similar, loadSimilar])
 
   const decide = async (r, action) => {
     // «Отклонить» — это DELETE на сервере. Массовое отклонение спрашивало,
@@ -85,7 +109,16 @@ export default function Catalog({ onCounts, onReload }) {
     try {
       await api('catalog/' + action, { venue_id: r.venue_id, barcode: r.barcode })
       toast.ok(action === 'approve' ? 'Одобрено' : 'Отклонено')
-      loadPending(); if (action === 'approve') loadList()
+      // Строку убираем на месте, а не перечитываем очередь. При разборе с
+      // клавиатуры перезагрузка после каждой карточки сбрасывала бы курсор в
+      // начало и заново гоняла двести строк — работать стало бы медленнее, чем
+      // мышью. Курсор остаётся на том же месте: под ним оказывается следующая.
+      const k = key(r)
+      setPending(p => (p || []).filter(x => key(x) !== k))
+      setPendTotal(t => (typeof t === 'number' ? Math.max(0, t - 1) : t))
+      setSel(s => { const n = new Set(s); n.delete(k); return n })
+      counts.current?.((pendTotal ?? 1) - 1)
+      if (action === 'approve') loadList()
     } catch (e) { toast.err(e.message) }
   }
 
@@ -105,8 +138,53 @@ export default function Catalog({ onCounts, onReload }) {
     // ошибок — худший исход массовой операции.
     if (ok === items.length) toast.ok(`${word}: ${ok}`)
     else toast.err(`${word}: ${ok}, ошибок: ${items.length - ok}`)
-    loadPending(); if (action === 'approve') loadList()
+    // Частичный успех: что не прошло — осталось в очереди, поэтому при ошибках
+    // перечитываем список честно, а на полном успехе убираем строки на месте.
+    if (ok === items.length) {
+      const gone = new Set(items.map(key))
+      setPending(p => (p || []).filter(x => !gone.has(key(x))))
+      setPendTotal(t => (typeof t === 'number' ? Math.max(0, t - ok) : t))
+      setSel(new Set())
+      counts.current?.(Math.max(0, (pendTotal ?? ok) - ok))
+    } else loadPending()
+    if (action === 'approve') loadList()
   }
+
+  // Клавиши разбора очереди: ↑↓ — по строкам, A — одобрить, D — пометить на
+  // отклонение, пробел — отметить. Отклонение НЕ мгновенное намеренно: одобрить
+  // можно передумать (карточка потом видна в каталоге и удаляется оттуда), а
+  // «отклонить» — это DELETE навсегда. Поэтому D копит выбор, а спрашиваем один
+  // раз на всю пачку кнопкой «Отклонить выбранные».
+  useEffect(() => {
+    if (!pending?.length || edit || bulkCat) return
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const t = e.target
+      if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return
+      const last = pending.length - 1
+      const k = e.key.toLowerCase()
+      if (e.key === 'ArrowDown') { e.preventDefault(); setCur(c => Math.min(c + 1, last)) }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setCur(c => Math.max(c - 1, 0)) }
+      else if (k === 'a' || k === 'ф') {
+        e.preventDefault()
+        const r = pending[Math.min(cur, last)]
+        if (r) decide(r, 'approve')
+      } else if (k === 'd' || k === 'в' || e.key === ' ') {
+        e.preventDefault()
+        const r = pending[Math.min(cur, last)]
+        if (!r) return
+        const kk = key(r)
+        setSel(s => { const n = new Set(s); n.has(kk) ? n.delete(kk) : n.add(kk); return n })
+        if (e.key !== ' ') setCur(c => Math.min(c + 1, last))
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  // Строка под курсором должна быть на экране — иначе «стрелка вниз» уводит
+  // разбор за нижний край и приходится доскроливать мышью.
+  useEffect(() => { curRef.current?.scrollIntoView({ block: 'nearest' }) }, [cur, pending])
 
   const bulkDelete = async () => {
     const list = [...listSel]
@@ -131,18 +209,18 @@ export default function Catalog({ onCounts, onReload }) {
         <div className="row">
           <label className="row" style={{ gap: 6, margin: 0 }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={internalOnly}
-              onChange={e => { setInternalOnly(e.target.checked); setPage(0) }} />
+              onChange={e => { setInternalOnly(e.target.checked); setPage(0); setPendPage(0) }} />
             Только внутренние коды (2…)
           </label>
           <span className="muted2">изменено с</span>
           <input type="date" value={since} style={{ maxWidth: 160 }}
-            onChange={e => { setSince(e.target.value); setPage(0) }} />
+            onChange={e => { setSince(e.target.value); setPage(0); setPendPage(0) }} />
           <select value={sort} onChange={e => { setSort(e.target.value); setPage(0) }} style={{ maxWidth: 200 }}>
             <option value="barcode">каталог: по штрихкоду</option>
             <option value="updated">каталог: сначала свежие</option>
           </select>
           {(internalOnly || since || sort !== 'barcode') && (
-            <button className="btn ghost sm" onClick={() => { setInternalOnly(false); setSince(''); setSort('barcode'); setPage(0) }}>
+            <button className="btn ghost sm" onClick={() => { setInternalOnly(false); setSince(''); setSort('barcode'); setPage(0); setPendPage(0) }}>
               Сбросить фильтр
             </button>
           )}
@@ -158,7 +236,10 @@ export default function Catalog({ onCounts, onReload }) {
       <section style={{ marginBottom: 24 }}>
         <div className="row" style={{ marginBottom: 10 }}>
           <h2 style={{ fontSize: 16, margin: 0 }}>На модерации</h2>
-          <span className="muted2">{pendTotal !== null ? `${pending.length} из ${pendTotal}` : ''}</span>
+          <span className="muted2">{pendTotal !== null ? `${pending?.length ?? 0} из ${pendTotal}` : ''}</span>
+          <span className="muted2" style={{ marginLeft: 'auto' }}>
+            ↑↓ — по строкам · A — одобрить · D — пометить на отклонение
+          </span>
         </div>
         {pending === null ? <div className="empty">Загрузка…</div>
           : !pending.length ? <div className="empty">Очередь пуста</div> : (
@@ -185,10 +266,11 @@ export default function Catalog({ onCounts, onReload }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {pending.map(r => {
+                  {pending.map((r, i) => {
                     const k = key(r), sim = similar[k]
                     return [
-                      <tr key={k}>
+                      <tr key={k} ref={i === cur ? curRef : null} onClick={() => setCur(i)}
+                        style={i === cur ? { background: 'var(--sel, rgba(125,125,255,.12))' } : undefined}>
                         <td><input type="checkbox" style={{ width: 'auto' }} checked={sel.has(k)}
                           onChange={e => setSel(s => {
                             const n = new Set(s); e.target.checked ? n.add(k) : n.delete(k); return n
@@ -221,6 +303,19 @@ export default function Catalog({ onCounts, onReload }) {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* Страницы очереди. Без них были видны только 200 самых свежих
+            карточек, а всё, что глубже, недостижимо, пока не разберёшь верх. */}
+        {pendTotal > PEND_PER && (
+          <div className="row" style={{ marginTop: 12, justifyContent: 'center' }}>
+            <button className="btn sm" disabled={pendPage <= 0} onClick={() => setPendPage(p => p - 1)}>← Назад</button>
+            <span className="muted2">
+              стр {pendPage + 1} / {Math.max(1, Math.ceil(pendTotal / PEND_PER))}
+            </span>
+            <button className="btn sm" disabled={(pendPage + 1) * PEND_PER >= pendTotal}
+              onClick={() => setPendPage(p => p + 1)}>Вперёд →</button>
           </div>
         )}
       </section>

@@ -207,7 +207,7 @@ export default {
         const LIC_BASE = 'id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at'
         // Колонки, добавленные ALTER-ами позже базовой схемы: на проекте, где
         // SQL ещё не выполнили, запрос с ними падает целиком.
-        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until']
+        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
@@ -258,6 +258,9 @@ export default {
             registers: st?.registers ?? null,
             locations: st?.locations ?? null,
             last_sale_at: st?.last_sale_at ?? null,
+            // Когда касса последний раз ПРИСЛАЛА итоги. Без этого «продаж нет»
+            // не отличить от «касса молчит»: обе выглядят пустой датой продажи.
+            usage_at: st?.updated_at ?? null,
             ...window_(days),
           }
         }
@@ -402,6 +405,11 @@ export default {
           patch.customer = v
         }
         if ('contact' in body) patch.contact = String(body.contact ?? '').trim() || null
+        // Город ставит вендор при одобрении, а не касса в заявке: в свободное
+        // поле на кассе впишут что угодно, и «Шиели»/«шиели»/«Шиели р-н»
+        // разъедутся в три разных города. Здесь список сам собой сходится к
+        // тем названиям, что уже есть.
+        if ('city' in body) patch.city = String(body.city ?? '').trim() || null
         if ('notes' in body) patch.notes = String(body.notes ?? '').trim() || null
         if ('hidden' in body) {
           if (typeof body.hidden !== 'boolean') return json({ error: 'hidden — true или false' }, 400)
@@ -579,11 +587,23 @@ export default {
             if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
             return json({ rows: [], total: new Set((await r.json()).map(x => x.raw_name_norm)).size })
           }
-          const r = await sbFetch(
-            `${db2.url}/rest/v1/mon_invoice_aliases?status=eq.${st}&order=hits.desc,updated_at.desc&limit=1000`,
-            { headers: db2.headers })
-          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-          const rows = groupAliases(await r.json())
+          // Забираем ВСЕ строки статуса, а не первую тысячу. Группировка идёт по
+          // написанию и складывает строки разных заведений — оборви выборку на
+          // середине, и «прислали три точки» превратится в «одна», то есть
+          // бесспорное перестанет быть бесспорным. Плюс хвост очереди раньше
+          // был недостижим. Групп после схлопывания в разы меньше строк, поэтому
+          // отдаём их целиком, а листает уже панель.
+          const raw = []
+          for (let from = 0; from < 20000; from += 1000) {
+            const r = await sbFetch(
+              `${db2.url}/rest/v1/mon_invoice_aliases?status=eq.${st}&order=hits.desc,updated_at.desc&limit=1000&offset=${from}`,
+              { headers: db2.headers })
+            if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+            const part = await r.json()
+            raw.push(...part)
+            if (part.length < 1000) break
+          }
+          const rows = groupAliases(raw)
           return json({ rows, total: rows.length })
         }
 
@@ -697,10 +717,14 @@ export default {
         if (pathname === '/api/catalog/pending') {
           // Та же экономия, что у накладных: бейджу нужно число, а не двести
           // карточек товаров на каждое открытие панели.
-          const { countOnly, internalOnly, since } = await request.json().catch(() => ({}))
+          const { countOnly, internalOnly, since, page } = await request.json().catch(() => ({}))
+          // Страницы. Без них очередь показывала 200 самых свежих карточек, а
+          // всё, что глубже, было недостижимо в принципе: разобрать хвост можно
+          // было только разобрав сперва весь верх.
+          const off = Math.max(0, Number(page) || 0) * 200
           const qs = countOnly
             ? 'select=barcode&status=eq.pending&limit=1'
-            : `status=eq.pending&order=updated_at.desc&limit=200${internalOnly ? INTERNAL_FILTER : ''}${sinceFilter(since)}`
+            : `status=eq.pending&order=updated_at.desc&limit=200&offset=${off}${internalOnly ? INTERNAL_FILTER : ''}${sinceFilter(since)}`
           const r = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })

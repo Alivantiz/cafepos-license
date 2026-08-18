@@ -10,12 +10,21 @@ import { toast, confirmDialog } from '../ui'
 
 export const aliasPendingCount = (rows) => (rows || []).length
 
+const PER_PAGE = 100
+
 export default function Aliases({ onCounts, onReload }) {
   const [tab, setTab] = useState('pending')
+  const [page, setPage] = useState(0)
   const { data, error, loading, reload } = useApi('aliases/list', { status: tab })
   useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const rows = data?.rows || []
   useEffect(() => { if (tab === 'pending') onCounts?.(data?.total ?? rows.length) }, [data, tab])
+  useEffect(() => { setPage(0) }, [tab])
+  // Сервер отдаёт ВСЕ написания (после схлопывания их в разы меньше строк),
+  // а карточки рисуем страницами: тысяча карточек в DOM тормозит прокрутку,
+  // и разбирать такое полотно всё равно невозможно.
+  const pages = Math.max(1, Math.ceil(rows.length / PER_PAGE))
+  const shown = rows.slice(page * PER_PAGE, (page + 1) * PER_PAGE)
 
   // Бесспорные — те, где сами магазины с трёх независимых точек привязали один
   // и тот же код. Искать в них нечего, а разбирать по одной — терять вечер.
@@ -60,8 +69,18 @@ export default function Aliases({ onCounts, onReload }) {
       )}
 
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
-        {rows.map(r => <AliasCard key={r.id} r={r} onDone={reload} tab={tab} />)}
+        {shown.map(r => <AliasCard key={r.id} r={r} onDone={reload} tab={tab} />)}
       </div>
+
+      {rows.length > PER_PAGE && (
+        <div className="row" style={{ marginTop: 14, justifyContent: 'center' }}>
+          <button className="btn sm" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>← Назад</button>
+          <span className="muted2">
+            {page * PER_PAGE + 1}–{Math.min((page + 1) * PER_PAGE, rows.length)} из {rows.length} · стр {page + 1} / {pages}
+          </span>
+          <button className="btn sm" disabled={page >= pages - 1} onClick={() => setPage(p => p + 1)}>Вперёд →</button>
+        </div>
+      )}
     </>
   )
 }

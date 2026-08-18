@@ -171,6 +171,15 @@ function Panel() {
   const cleanData = useMemo(
     () => data ? { ...data, trials } : null, [data, trials])
 
+  // Города берём из самих клиентов, отдельного справочника нет: новый город
+  // появляется в списке, как только его поставили первому клиенту. Так список
+  // не расходится с тем, что есть на самом деле, и заводить его нечем не надо.
+  const cities = useMemo(() => {
+    const seen = new Set()
+    for (const c of data?.licenses || []) if (c.city) seen.add(String(c.city).trim())
+    return [...seen].sort((a, b) => a.localeCompare(b, 'ru'))
+  }, [data])
+
   const trialsBadge = actionableTrials(trials)
 
   // «Обновить» и время в шапке относились ТОЛЬКО к клиентам: остальные вкладки
@@ -251,7 +260,7 @@ function Panel() {
         {!data && loading && <div className="empty">Загрузка…</div>}
 
         {data && current && (
-          <ClientCard c={current} kaspiPhone={data.kaspiPhone} onBack={() => setOpenClient(null)}
+          <ClientCard c={current} kaspiPhone={data.kaspiPhone} cities={cities} onBack={() => setOpenClient(null)}
             onChanged={reload}
             onIssueFor={(t) => setIssue({ machine_id: t.machine_id, customer: t.shop || '' })} />
         )}
@@ -260,7 +269,7 @@ function Panel() {
             onFilter={(f) => { setClientsFilter(f); goto('clients') }} />
         )}
         {data && !current && view === 'clients' && (
-          <Clients key={clientsFilter} data={cleanData} onOpen={open}
+          <Clients key={clientsFilter} data={cleanData} onOpen={open} cities={cities}
             onIssue={() => setIssue({})} initialFilter={clientsFilter} />
         )}
         {data && !current && view === 'trials' && <Trials data={cleanData} onOpen={open} />}
