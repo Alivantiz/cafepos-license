@@ -18,6 +18,12 @@ export default function Catalog({ onCounts, onReload }) {
   const [q, setQ] = useState('')
   const [page, setPage] = useState(0)
   const [listSel, setListSel] = useState(() => new Set())
+  // Разбор мусора: очередь и каталог смотрят по одним и тем же двум признакам —
+  // «только внутренние коды» и «изменено с такого-то дня». Отсюда общий фильтр
+  // на обе таблицы: разбирать удобнее порциями, а не всё сразу сверху вниз.
+  const [internalOnly, setInternalOnly] = useState(false)
+  const [since, setSince] = useState('')
+  const [sort, setSort] = useState('barcode')
 
   const [edit, setEdit] = useState(null)   // {row, pending}
   const [bulkCat, setBulkCat] = useState(false)
@@ -34,11 +40,11 @@ export default function Catalog({ onCounts, onReload }) {
   counts.current = onCounts
   const loadPending = useCallback(async () => {
     try {
-      const d = await api('catalog/pending')
+      const d = await api('catalog/pending', { internalOnly, since })
       setPending(d.rows || []); setPendTotal(d.total ?? null); setSimilar({}); setSel(new Set())
       counts.current?.(d.total ?? (d.rows || []).length)
     } catch (e) { toast.err(e.message) }
-  }, [])
+  }, [internalOnly, since])
 
   // Запрос на каждую букву возвращался вразнобой: в таблице оказывались
   // результаты позапрошлого запроса. Задержка + счётчик отсекают устаревшие.
@@ -46,11 +52,11 @@ export default function Catalog({ onCounts, onReload }) {
   const loadList = useCallback(async () => {
     const my = ++seq.current
     try {
-      const d = await api('catalog/list', { q, page })
+      const d = await api('catalog/list', { q, page, internalOnly, since, sort })
       if (my !== seq.current) return
       setRows(d.rows || []); setTotal(d.total ?? null)
     } catch (e) { if (my === seq.current) toast.err(e.message) }
-  }, [q, page])
+  }, [q, page, internalOnly, since, sort])
 
   useEffect(() => { loadPending() }, [loadPending])
   useEffect(() => { api('catalog/categories').then(d => setCats(d.rows || [])).catch(() => {}) }, [])
@@ -102,10 +108,53 @@ export default function Catalog({ onCounts, onReload }) {
     loadPending(); if (action === 'approve') loadList()
   }
 
+  const bulkDelete = async () => {
+    const list = [...listSel]
+    if (!list.length) return
+    if (!await confirmDialog({
+      title: 'Удалить из общего справочника',
+      message: `Карточек будет удалено: ${list.length}. Удаление идёт по штрихкоду — во всех заведениях сразу, как и смена категории.`,
+      confirmText: 'Удалить',
+    })) return
+    try {
+      const d = await api('catalog/bulkDelete', { barcodes: list })
+      toast.ok(`Удалено: ${d.count}`)
+      setListSel(new Set()); loadList()
+    } catch (e) { toast.err(e.message) }
+  }
+
   const pages = Math.max(1, Math.ceil((total || 0) / PER_PAGE))
 
   return (
     <>
+      <div className="card" style={{ marginBottom: 16, padding: '10px 12px' }}>
+        <div className="row">
+          <label className="row" style={{ gap: 6, margin: 0 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={internalOnly}
+              onChange={e => { setInternalOnly(e.target.checked); setPage(0) }} />
+            Только внутренние коды (2…)
+          </label>
+          <span className="muted2">изменено с</span>
+          <input type="date" value={since} style={{ maxWidth: 160 }}
+            onChange={e => { setSince(e.target.value); setPage(0) }} />
+          <select value={sort} onChange={e => { setSort(e.target.value); setPage(0) }} style={{ maxWidth: 200 }}>
+            <option value="barcode">каталог: по штрихкоду</option>
+            <option value="updated">каталог: сначала свежие</option>
+          </select>
+          {(internalOnly || since || sort !== 'barcode') && (
+            <button className="btn ghost sm" onClick={() => { setInternalOnly(false); setSince(''); setSort('barcode'); setPage(0) }}>
+              Сбросить фильтр
+            </button>
+          )}
+        </div>
+        {internalOnly && (
+          <div className="muted2" style={{ marginTop: 8 }}>
+            Префикс «2» отдан магазинам под свои коды, но не все такие коды — свои:
+            2900094315692 в НКТ значится альбомом. Смотрите на название, а не на цифры.
+          </div>
+        )}
+      </div>
+
       <section style={{ marginBottom: 24 }}>
         <div className="row" style={{ marginBottom: 10 }}>
           <h2 style={{ fontSize: 16, margin: 0 }}>На модерации</h2>
@@ -194,6 +243,7 @@ export default function Catalog({ onCounts, onReload }) {
           <div className="row" style={{ marginBottom: 10 }}>
             <span className="muted2">Выбрано: {listSel.size}</span>
             <button className="btn pri sm" onClick={() => setBulkCat(true)}>Сменить категорию</button>
+            <button className="btn sm" onClick={bulkDelete}>Удалить выбранные</button>
             <button className="btn ghost sm" onClick={() => setListSel(new Set())}>Снять</button>
           </div>
         )}
@@ -215,7 +265,7 @@ export default function Catalog({ onCounts, onReload }) {
                         })} />
                     </th>
                     <th>Штрихкод</th><th>Название</th><th>Категория</th>
-                    <th className="num">Цена</th><th>Ед.</th><th />
+                    <th className="num">Цена</th><th>Ед.</th><th>Изменено</th><th />
                   </tr>
                 </thead>
                 <tbody>
@@ -230,6 +280,7 @@ export default function Catalog({ onCounts, onReload }) {
                       <td className="muted">{r.category || '—'}</td>
                       <td className="num">{r.price ?? '—'}</td>
                       <td className="muted">{r.unit || '—'}</td>
+                      <td className="muted">{r.updated_at ? String(r.updated_at).slice(0, 10) : '—'}</td>
                       <td style={{ textAlign: 'right' }}>
                         <button className="btn ghost sm" onClick={() => setEdit({ row: r })}>✎ править</button>
                       </td>

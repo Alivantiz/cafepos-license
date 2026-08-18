@@ -678,6 +678,18 @@ export default {
 
       if (pathname.startsWith('/api/catalog/')) {
         const db2 = sb2(env)
+        // Внутримагазинный код: EAN-13 с префиксом «2». Отдаём его отдельным
+        // фильтром, а не чистим скопом: в KZ этот диапазон встречается и на
+        // настоящих товарах (2900094315692 — альбом, есть в НКТ), так что
+        // отличить «своё, напечатанное кассой» от заводского может только
+        // человек, глядя на название.
+        const INTERNAL_FILTER = `&barcode=match.${encodeURIComponent('^2[0-9]{12}$')}`
+        // «Изменено с» — чтобы разбирать очередь порциями по дню, а не
+        // проматывать одно и то же сверху вниз.
+        const sinceFilter = (v) => {
+          const d = String(v || '').trim()
+          return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `&updated_at=gte.${d}` : ''
+        }
         if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
           return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
         }
@@ -685,10 +697,10 @@ export default {
         if (pathname === '/api/catalog/pending') {
           // Та же экономия, что у накладных: бейджу нужно число, а не двести
           // карточек товаров на каждое открытие панели.
-          const { countOnly } = await request.json().catch(() => ({}))
+          const { countOnly, internalOnly, since } = await request.json().catch(() => ({}))
           const qs = countOnly
             ? 'select=barcode&status=eq.pending&limit=1'
-            : 'status=eq.pending&order=updated_at.desc&limit=200'
+            : `status=eq.pending&order=updated_at.desc&limit=200${internalOnly ? INTERNAL_FILTER : ''}${sinceFilter(since)}`
           const r = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })
@@ -714,14 +726,21 @@ export default {
         }
 
         if (pathname === '/api/catalog/list') {
-          const { q, page } = await request.json()
+          const { q, page, internalOnly, since, sort } = await request.json()
           const term = String(q || '').trim()
           const per = 200
           const off = Math.max(0, Number(page) || 0) * per
           // order=barcode.asc — стабильная пагинация (updated_at «плавает»),
           // и одинаковые штрихкоды идут подряд, значит дубли схлопываются в пределах страницы.
-          let qs = `status=eq.approved&order=barcode.asc&limit=${per}&offset=${off}`
+          // По умолчанию порядок по штрихкоду: пагинация стабильна, а одинаковые
+          // коды идут подряд и дубли схлопываются в пределах страницы. Сортировка
+          // по дате нужна для разбора «что приехало недавно» — там дубли уже
+          // могут разъехаться по страницам, это плата за свежесть сверху.
+          const order = sort === 'updated' ? 'updated_at.desc' : 'barcode.asc'
+          let qs = `status=eq.approved&order=${order}&limit=${per}&offset=${off}`
+          qs += sinceFilter(since)
           if (term) qs += `&or=(barcode.ilike.*${encodeURIComponent(term)}*,name.ilike.*${encodeURIComponent(term)}*)`
+          if (internalOnly) qs += INTERNAL_FILTER
           // count=estimated, а не exact: точный подсчёт по справочнику из сотен
           // тысяч строк — полный проход по таблице на КАЖДЫЙ ввод буквы в
           // поиске. Именно так запрос и повисал в «Pending». Оценки хватает:
@@ -777,6 +796,24 @@ export default {
             body: JSON.stringify({ category: cat })
           })
           if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          return json({ ok: true, count: list.length })
+        }
+
+        if (pathname === '/api/catalog/bulkDelete') {
+          // Удаление выбранных карточек по штрихкоду — во всех заведениях сразу
+          // (как и массовая смена категории). Нужно для разбора внутренних
+          // кодов «2…»: их присылали импортом каталога десятками, а удалять по
+          // одной кнопкой «отклонить» — работа на вечер.
+          const { barcodes } = await request.json()
+          const list = Array.isArray(barcodes) ? [...new Set(barcodes.map(b => String(b).trim()).filter(Boolean))] : []
+          if (!list.length) return json({ error: 'Не выбраны штрихкоды' }, 400)
+          if (list.length > 500) return json({ error: 'За раз не больше 500 штрихкодов' }, 400)
+          const inList = list.map(b => encodeURIComponent('"' + b.replace(/"/g, '') + '"')).join(',')
+          const del = await sbFetch(`${db2.url}/rest/v1/mon_barcodes?barcode=in.(${inList})`, {
+            method: 'DELETE',
+            headers: { ...db2.headers, Prefer: 'return=minimal' }
+          })
+          if (!del.ok) return json({ error: `Supabase: ${del.status} ${await del.text()}` }, 502)
           return json({ ok: true, count: list.length })
         }
 
