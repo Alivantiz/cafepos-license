@@ -62,8 +62,8 @@ export default function Catalog({ onCounts, onReload }) {
   const narrow = useNarrow()
   const [seen, setSeen] = useState(seenLoad)
   const markSeen = (r) => setSeen(s => { const n = new Set(s); n.add(key(r)); seenSave(n); return n })
-  // Открыл «править» — значит, посмотрел. «Похожие» не в счёт: их жмут, не
-  // читая карточку, и плёнка сходила бы с того, что ты не разбирал.
+  // Открыл «править» — значит, разобрал. «Похожие» не в счёт: их жмут, не
+  // читая карточку, и плёнка ложилась бы на то, что ты не разбирал.
   const openEdit = (r, pending) => { if (pending) markSeen(r); setEdit({ row: r, pending }) }
   const [internalOnly, setInternalOnly] = useState(false)
   const [since, setSince] = useState('')
@@ -316,7 +316,7 @@ export default function Catalog({ onCounts, onReload }) {
                 {pending.map(r => {
                   const k = key(r), sim = similar[k]
                   return (
-                    <div key={k} className={'rowcard' + (sel.has(k) ? ' sel' : '') + (seen.has(k) ? '' : ' unseen')}>
+                    <div key={k} className={'rowcard' + (sel.has(k) ? ' sel' : '') + (seen.has(k) ? ' seen' : '')}>
                       <div className="nm">{r.name || 'без названия'}</div>
                       <div className="code">{r.barcode}</div>
                       <div className="meta">
@@ -363,7 +363,7 @@ export default function Catalog({ onCounts, onReload }) {
                     const k = key(r), sim = similar[k]
                     return [
                       <tr key={k} ref={i === cur ? curRef : null} onClick={() => setCur(i)}
-                        className={seen.has(k) ? undefined : 'unseen'}
+                        className={seen.has(k) ? 'seen' : undefined}
                         style={i === cur ? { background: 'var(--sel, rgba(125,125,255,.12))' } : undefined}>
                         <td><input type="checkbox" style={{ width: 'auto' }} checked={sel.has(k)}
                           onChange={e => setSel(s => {

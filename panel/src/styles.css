@@ -271,10 +271,11 @@ tbody tr:hover td { background: var(--panel2); }
 .rowcard .acts .btn { flex: 1 1 auto; justify-content: center; min-height: 40px; }
 .rowcard .pick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); }
 
-/* Непросмотренное — под плёнкой. Так видно, что ты уже открывал и отложил,
-   а что не трогал вовсе. */
-tr.unseen td { opacity: .5; }
-.rowcard.unseen { opacity: .55; }
+/* Под плёнкой то, что ты УЖЕ открывал: разобранное гаснет, нетронутое
+   остаётся в полную силу. Внимание должно доставаться новому, а не тому,
+   с чем ты уже поработал. */
+tr.seen td { opacity: .45; }
+.rowcard.seen { opacity: .5; }
 
 .toast .undo {
   margin-left: 12px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
