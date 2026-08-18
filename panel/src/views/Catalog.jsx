@@ -733,7 +733,9 @@ function CategoriesModal({ onClose, onDone }) {
           ) : (
             <div className="row" style={{ gap: 8 }}>
               <b style={{ fontWeight: 600 }}>{r.category}</b>
-              <span className="muted2">{r.cnt}</span>
+              {/* Старая версия функции счётчик не отдаёт — ноль тут значит
+                  «неизвестно», и врать числом хуже, чем промолчать. */}
+              {r.cnt > 0 && <span className="muted2">{r.cnt}</span>}
               <button className="btn ghost sm spacer" disabled={busy}
                 onClick={() => setEditing({ from: r.category, to: r.category })}>Переименовать</button>
               <button className="btn ghost sm" disabled={busy}
