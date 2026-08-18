@@ -752,11 +752,28 @@ export default {
         // категория заводилась то «Напитки», то «напитки», то «Вода/напитки»:
         // руками попасть в уже заведённое название нечем.
         if (pathname === '/api/catalog/categories') {
+          const seen = new Set()
+          // Сперва функция: она делает настоящий distinct по всему справочнику.
+          // Выборка строк ниже — запасной путь, пока mon_categories не выложена;
+          // она берёт ПЕРВЫЕ 5000 строк, а не все категории, поэтому заведённая
+          // на дальней карточке категория в подсказку не попадала.
+          const rpc = await sbFetch(`${db2.url}/rest/v1/rpc/mon_categories`, {
+            method: 'POST', headers: db2.headers, body: '{}'
+          })
+          if (rpc.ok) {
+            for (const row of await rpc.json()) {
+              // Функция отдаёт объекты {category}, но пустая категория внутри
+              // объекта — это null, а не сам объект: без явной проверки строка
+              // превращалась в «[object Object]» и попадала в подсказку.
+              const c = String(typeof row === 'string' ? row : (row?.category ?? '')).trim()
+              if (c) seen.add(c)
+            }
+            return json({ rows: [...seen].sort((a, b) => a.localeCompare(b, 'ru')) })
+          }
           const r = await sbFetch(
             `${db2.url}/rest/v1/mon_barcodes?select=category&category=not.is.null&limit=5000`,
             { headers: db2.headers })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
-          const seen = new Set()
           for (const row of await r.json()) {
             const c = String(row.category || '').trim()
             if (c) seen.add(c)

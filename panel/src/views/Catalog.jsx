@@ -130,7 +130,13 @@ export default function Catalog({ onCounts, onReload }) {
   }, [q, page, internalOnly, since, sort])
 
   useEffect(() => { loadPending() }, [loadPending])
-  useEffect(() => { api('catalog/categories').then(d => setCats(d.rows || [])).catch(() => {}) }, [])
+  // Список категорий перечитываем и после сохранения карточки: заведённая
+  // только что категория иначе не появлялась в подсказке до перезагрузки
+  // вкладки — и её заводили второй раз в другом написании.
+  const loadCats = useCallback(() => {
+    api('catalog/categories').then(d => setCats(d.rows || [])).catch(() => {})
+  }, [])
+  useEffect(() => { loadCats() }, [loadCats])
   useEffect(() => { const t = setTimeout(loadList, 300); return () => clearTimeout(t) }, [loadList])
   // Кнопка «Обновить» в шапке должна перечитывать ИМЕННО эту вкладку.
   useEffect(() => { onReload?.(() => () => { loadPending(); loadList() }) }, [loadPending, loadList, onReload])
@@ -551,7 +557,7 @@ export default function Catalog({ onCounts, onReload }) {
       </section>
 
       {edit && <EditModal {...edit} cats={cats} onClose={() => setEdit(null)}
-        onSaved={() => { setEdit(null); loadList(); loadPending() }} />}
+        onSaved={() => { setEdit(null); loadList(); loadPending(); loadCats() }} />}
       {bulkCat && <BulkCategory count={listSel.size} barcodes={[...listSel]} cats={cats}
         onClose={() => setBulkCat(false)}
         onDone={() => { setBulkCat(false); setListSel(new Set()); loadList() }} />}
