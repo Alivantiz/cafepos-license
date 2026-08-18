@@ -95,6 +95,7 @@ export default function Catalog({ onCounts, onReload }) {
 
   const [edit, setEdit] = useState(null)   // {row, pending}
   const [bulkCat, setBulkCat] = useState(false)
+  const [catsMgr, setCatsMgr] = useState(false)
   // Существующие категории — один запрос на открытие вкладки. Без подсказки
   // одна и та же категория заводилась то «Напитки», то «напитки»: попасть в
   // уже заведённое название было нечем, а список их не показывал нигде.
@@ -464,6 +465,7 @@ export default function Catalog({ onCounts, onReload }) {
           <input placeholder="Поиск по названию или штрихкоду" value={q}
             onChange={e => { setQ(e.target.value); setPage(0) }} style={{ maxWidth: 280, marginLeft: 12 }} />
           <button className="btn spacer" onClick={() => setEdit({ row: null })}>Добавить штрихкод</button>
+          <button className="btn" onClick={() => setCatsMgr(true)}>Категории</button>
         </div>
 
         {listSel.size > 0 && (
@@ -558,6 +560,8 @@ export default function Catalog({ onCounts, onReload }) {
 
       {edit && <EditModal {...edit} cats={cats} onClose={() => setEdit(null)}
         onSaved={() => { setEdit(null); loadList(); loadPending(); loadCats() }} />}
+      {catsMgr && <CategoriesModal onClose={() => setCatsMgr(false)}
+        onDone={() => { loadCats(); loadList(); loadPending() }} />}
       {bulkCat && <BulkCategory count={listSel.size} barcodes={[...listSel]} cats={cats}
         onClose={() => setBulkCat(false)}
         onDone={() => { setBulkCat(false); setListSel(new Set()); loadList() }} />}
@@ -663,6 +667,88 @@ function BulkCategory({ count, barcodes, cats, onClose, onDone }) {
         <button className="btn ghost spacer" onClick={onClose}>Отмена</button>
         {/* Пустое поле стирало категорию у всех выбранных одним нажатием */}
         <button className="btn pri" disabled={busy || !category.trim()} onClick={go}>Применить</button>
+      </div>
+    </Modal>
+  )
+}
+
+// Разбор категорий: переименовать, слить дубли, очистить ненужную. Отдельного
+// списка категорий нет — категория это текст в карточке, поэтому «удалить»
+// означает очистить поле у всех карточек, а «слить» — переименовать одну в
+// имя другой. Карточки при этом не трогаются: пропадает только отнесение.
+function CategoriesModal({ onClose, onDone }) {
+  const [rows, setRows] = useState(null)
+  const [err, setErr] = useState(null)
+  const [editing, setEditing] = useState(null)   // { from, to }
+  const [busy, setBusy] = useState(false)
+
+  const load = () => {
+    setRows(null); setErr(null)
+    api('catalog/categoryStats').then(d => setRows(d.rows || [])).catch(e => setErr(e.message))
+  }
+  useEffect(load, [])
+
+  const apply = async (from, to) => {
+    setBusy(true)
+    try {
+      const d = await api('catalog/renameCategory', { from, to })
+      toast.ok(to ? 'Категория переименована' : 'Категория очищена')
+      setEditing(null); load(); onDone?.()
+      return d
+    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  const clear = async (name, cnt) => {
+    if (!await confirmDialog({
+      title: 'Очистить категорию',
+      message: `«${name}» пропадёт у ${cnt} карточек. Сами карточки останутся — у них просто не будет категории.`,
+      confirmText: 'Очистить',
+    })) return
+    apply(name, '')
+  }
+
+  const known = new Set((rows || []).map(r => r.category))
+
+  return (
+    <Modal title="Категории справочника" onClose={onClose} keepOpen>
+      {err && <div className="muted" style={{ color: 'var(--bad)' }}>{err}</div>}
+      {rows === null && !err && <div className="empty">Загрузка…</div>}
+      {rows && !rows.length && <div className="empty">Категорий пока нет</div>}
+
+      {rows && rows.map(r => (
+        <div key={r.category} style={{ borderTop: '1px solid var(--line)', padding: '10px 0' }}>
+          {editing?.from === r.category ? (
+            <div className="row" style={{ gap: 8 }}>
+              <input autoFocus value={editing.to} onChange={e => setEditing({ ...editing, to: e.target.value })}
+                onKeyDown={e => { if (e.key === 'Enter' && editing.to.trim()) apply(editing.from, editing.to) }} />
+              <button className="btn pri sm" disabled={busy || !editing.to.trim()}
+                onClick={() => apply(editing.from, editing.to)}>Сохранить</button>
+              <button className="btn ghost sm" onClick={() => setEditing(null)}>Отмена</button>
+              {known.has(editing.to.trim()) && editing.to.trim() !== r.category && (
+                <span className="muted2" style={{ flexBasis: '100%' }}>
+                  Такая категория уже есть — карточки сольются в одну
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="row" style={{ gap: 8 }}>
+              <b style={{ fontWeight: 600 }}>{r.category}</b>
+              <span className="muted2">{r.cnt}</span>
+              <button className="btn ghost sm spacer" disabled={busy}
+                onClick={() => setEditing({ from: r.category, to: r.category })}>Переименовать</button>
+              <button className="btn ghost sm" disabled={busy}
+                onClick={() => clear(r.category, r.cnt)}>Очистить</button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div className="row">
+        <span className="muted2 spacer">
+          Переименование в существующее имя сливает категории. Очистка убирает
+          категорию у карточек, сами карточки остаются.
+        </span>
+        <button className="btn" onClick={onClose}>Закрыть</button>
       </div>
     </Modal>
   )

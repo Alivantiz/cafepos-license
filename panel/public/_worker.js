@@ -781,6 +781,38 @@ export default {
           return json({ rows: [...seen].sort((a, b) => a.localeCompare(b, 'ru')) })
         }
 
+        // Разбор самих категорий: сколько карточек в каждой, чтобы видеть дубли
+        // («Напитки» и «напитки») и понимать, что во что сливаешь.
+        if (pathname === '/api/catalog/categoryStats') {
+          const r = await sbFetch(`${db2.url}/rest/v1/rpc/mon_categories`, {
+            method: 'POST', headers: db2.headers, body: '{}'
+          })
+          if (!r.ok) {
+            return json({ error: 'Нужна функция mon_categories — выполните SQL из supabase/monitor-schema.sql' }, 502)
+          }
+          const rows = (await r.json()).map(x => ({ category: String(x.category ?? '').trim(), cnt: Number(x.cnt) || 0 }))
+          return json({ rows: rows.filter(x => x.category) })
+        }
+
+        // Переименование категории = слияние: если такое имя уже есть, карточки
+        // просто сойдутся в одну. Пустое имя очищает поле — карточки остаются,
+        // пропадает только их отнесение к категории.
+        if (pathname === '/api/catalog/renameCategory') {
+          const { from, to } = await request.json()
+          const src = String(from || '').trim()
+          if (!src) return json({ error: 'Не указана категория' }, 400)
+          const dst = String(to || '').trim() || null
+          if (dst === src) return json({ error: 'Имя не изменилось' }, 400)
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_barcodes?category=eq.${encodeURIComponent(src)}`, {
+              method: 'PATCH',
+              headers: { ...db2.headers, Prefer: 'return=minimal' },
+              body: JSON.stringify({ category: dst })
+            })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          return json({ ok: true })
+        }
+
         if (pathname === '/api/catalog/list') {
           const { q, page, internalOnly, since, sort } = await request.json()
           const term = String(q || '').trim()

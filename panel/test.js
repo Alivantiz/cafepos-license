@@ -283,6 +283,26 @@ async function testServerRoutes() {
     assert.ok(url.includes('order=updated_at.asc'), 'нетронутые идут первыми')
   }
 
+  // Переименование категории — массовая правка справочника: пустое имя-источник
+  // задело бы всё подряд, а «переименовать в себя» просто гоняло бы базу впустую.
+  const renNoFrom = await authed('/api/catalog/renameCategory', { to: 'Напитки' })
+  assert.strictEqual(renNoFrom.status, 400, 'переименование без исходной категории — отказ')
+
+  const renSame = await authed('/api/catalog/renameCategory', { from: 'Напитки', to: ' Напитки ' })
+  assert.strictEqual(renSame.status, 400, 'имя не изменилось — отказ')
+
+  // Пустое «во что» = очистить категорию: в базу уходит null, а не пустая
+  // строка, иначе в списке появилась бы категория с именем «».
+  {
+    const real = global.fetch
+    let body = null, url = ''
+    global.fetch = async (u, init) => { url = String(u); body = JSON.parse(init.body); return new Response('', { status: 204 }) }
+    await authed('/api/catalog/renameCategory', { from: 'Напитки', to: '  ' })
+    global.fetch = real
+    assert.strictEqual(body.category, null, 'очистка пишет null')
+    assert.ok(decodeURIComponent(url).includes('category=eq.Напитки'), 'правим только эту категорию')
+  }
+
   const bulkDelEmpty = await authed('/api/catalog/bulkDelete', { barcodes: [] })
   assert.strictEqual(bulkDelEmpty.status, 400, 'массовое удаление без выбора — отказ')
 
