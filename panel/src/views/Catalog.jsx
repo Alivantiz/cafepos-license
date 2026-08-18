@@ -68,21 +68,27 @@ export default function Catalog({ onCounts, onReload }) {
 
   // Клик по штрихкоду копирует его и считается «разобрал»: код нужен, чтобы
   // проверить товар в НКТ или в поиске, и это ровно тот момент, когда карточку
-  // смотрят. Отмеченное уходит вниз списка и гаснет.
+  // смотрят. Карточка при этом гаснет, но с места не двигается — вниз она
+  // уедет при следующей загрузке списка.
   const copyCode = (r) => {
     try { navigator.clipboard?.writeText(r.barcode) } catch { /* нет доступа к буферу */ }
     markSeen(r)
     toast.ok(`Скопировано: ${r.barcode}`)
   }
 
-  // Разобранные — в хвост, порядок остальных не трогаем (сервер отдал их по
-  // свежести). Сортировка устойчивая: карточка не прыгает между соседями.
+  // Разобранные — в хвост, но НЕ на лету. Карточка, уезжающая вниз в момент
+  // клика по штрихкоду, выдёргивается из-под глаз: код ещё проверяют в НКТ, а
+  // строки уже нет на месте. Поэтому порядок считается по снимку отметок на
+  // момент загрузки списка: пока разбираешь — ничего не двигается, а при
+  // следующей загрузке разобранное собирается внизу.
+  const seenRef = useRef(seen); seenRef.current = seen
+  const [orderSeen, setOrderSeen] = useState(() => new Set())
   const view = useMemo(() => {
     const rows = pending || []
     return [...rows.map((r, i) => ({ r, i }))]
-      .sort((a, b) => (seen.has(key(a.r)) - seen.has(key(b.r))) || a.i - b.i)
+      .sort((a, b) => (orderSeen.has(key(a.r)) - orderSeen.has(key(b.r))) || a.i - b.i)
       .map(x => x.r)
-  }, [pending, seen])
+  }, [pending, orderSeen])
   const [internalOnly, setInternalOnly] = useState(false)
   const [since, setSince] = useState('')
   const [sort, setSort] = useState('barcode')
@@ -104,6 +110,9 @@ export default function Catalog({ onCounts, onReload }) {
     try {
       const d = await api('catalog/pending', { internalOnly, since, page: pendPage })
       setPending(d.rows || []); setPendTotal(d.total ?? null); setSimilar({}); setSel(new Set()); setCur(0)
+      // Снимок отметок берём здесь: дальше он не меняется, и список стоит на
+      // месте, пока с ним работают.
+      setOrderSeen(new Set(seenRef.current))
       counts.current?.(d.total ?? (d.rows || []).length)
     } catch (e) { toast.err(e.message) }
   }, [internalOnly, since, pendPage])
