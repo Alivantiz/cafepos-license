@@ -684,6 +684,29 @@ async function testInvoiceCodes() {
     assert.strictEqual(body.status, 'approved', 'код без статуса кассы не заберут')
   }
 
+  // Кнопка обязана обещать ровно то, что изменится: касса шлёт в очередь
+  // только несопоставленные строки, и код, которого там нет, не привяжется.
+  {
+    const real = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('mon_invoice_aliases')) {
+        // Ждёт кода только «Пепси»; сметана давно разобрана.
+        return new Response(JSON.stringify([{ raw_name_norm: invoiceNameKey('Пепси 0.5') }]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ id: 5, items: [
+        { name: 'Пепси 0.5', barcode: '4870204391237' },
+        { name: 'Сметана Нежный 1,2% / ШК: 4605627012366' },
+      ] }]), { status: 200, headers: { 'content-range': '0-0/1' } })
+    }
+    const r = await call('/api/invoices/pending', {})
+    global.fetch = real
+    const [row] = (await r.json()).rows
+    assert.strictEqual(row.code_count, 1, 'считаем только то, что реально ждёт кода')
+    assert.strictEqual(row.items[0].code_done, false, 'ждущая строка помечена как живая')
+    assert.strictEqual(row.items[1].code_done, true, 'разобранная — приглушена')
+  }
+
   console.log('коды из накладных: OK')
 }
 

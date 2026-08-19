@@ -91,7 +91,13 @@ export default function Invoices({ onReload }) {
                         меньше привязок, чем кодов видно на фотографии, и
                         непонятно, каких именно строк не хватило. */}
                     {it.code
-                      ? <b style={{ color: 'var(--ok)', fontVariantNumeric: 'tabular-nums' }}>{it.code} </b>
+                      ? <b style={{
+                          // Приглушённый — код есть, но привязывать нечего:
+                          // магазин этот товар уже знает.
+                          color: it.code_done ? 'var(--mut2)' : 'var(--ok)',
+                          fontWeight: it.code_done ? 400 : 700,
+                          fontVariantNumeric: 'tabular-nums',
+                        }} title={it.code_done ? 'Уже разобрано — в очереди этого написания нет' : 'Привяжется кнопкой'}>{it.code} </b>
                       : it.code_bad
                         ? <b style={{ color: 'var(--bad)' }} title="Контрольная цифра не сходится — распознавание ошиблось в цифре">
                             {it.code_bad} ?{' '}

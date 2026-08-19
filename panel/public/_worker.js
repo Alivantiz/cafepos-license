@@ -179,6 +179,25 @@ export function invoiceItemCode(it) {
   return { barcode: m[1], raw, clean: clean || raw, found }
 }
 
+// Какие из написаний ещё ЖДУТ кода. Без этой проверки кнопка обещала «14», а
+// привязывала 7: касса шлёт в очередь только те строки накладной, которые не
+// сопоставила со своим товаром (invoice-ai.service.ts), — остальные там просто
+// не лежат. Считать надо то, что реально изменится.
+//
+// Спрашиваем пачками по 120 ключей: список in.(…) уходит в адресную строку, а
+// она не резиновая. Не получилось — возвращаем null: пусть кнопка считает по
+// старому и обещает лишнего, это лучше, чем спрятать её совсем.
+async function pendingNorms(db2, keys) {
+  const out = new Set()
+  for (let i = 0; i < keys.length && i < 600; i += 120) {
+    const r = await sbFetch(aliasByNorms(db2, keys.slice(i, i + 120)) + '&select=raw_name_norm',
+      { headers: db2.headers })
+    if (!r.ok) return null
+    for (const row of await r.json().catch(() => [])) out.add(row.raw_name_norm)
+  }
+  return out
+}
+
 // Пары «написание → код» из одной накладной.
 export function invoiceCodePairs(items) {
   const by = new Map()
@@ -1083,17 +1102,25 @@ export default {
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           const total = Number((r.headers.get('content-range') || '').split('/')[1])
           const rows = await r.json()
-          // Сколько строк накладной несут читаемый штрихкод — от этого зависит,
-          // показывать ли кнопку «Привязать коды» и какое число на ней. Заодно
-          // помечаем КАЖДУЮ строку: без этого непонятно, почему кнопка обещает
-          // меньше кодов, чем видно на фотографии, и грешат на панель.
-          if (!countOnly) for (const row of rows) {
-            row.code_count = invoiceCodePairs(row.items).length
-            for (const it of row.items || []) {
-              const c = invoiceItemCode(it)
-              it.code = c.barcode
-              it.code_bad = c.barcode ? null : c.found
-            }
+          // Кнопка «Привязать коды» и пометки у строк. Помечаем КАЖДУЮ строку:
+          // без этого непонятно, почему кнопка обещает меньше кодов, чем видно
+          // на фотографии, и грешат на панель.
+          if (!countOnly) {
+            const pairs = rows.map(row => invoiceCodePairs(row.items))
+            const waiting = await pendingNorms(db2, [...new Set(pairs.flat().flatMap(p => p.keys))])
+            const isWaiting = (keys) => !waiting || keys.some(k => waiting.has(k))
+            rows.forEach((row, i) => {
+              row.code_count = pairs[i].filter(p => isWaiting(p.keys)).length
+              const live = new Set(pairs[i].filter(p => isWaiting(p.keys)).map(p => p.barcode))
+              for (const it of row.items || []) {
+                const c = invoiceItemCode(it)
+                it.code = c.barcode
+                // Код есть, но привязывать нечего: магазин этот товар уже знает
+                // либо написание разобрано раньше.
+                it.code_done = !!c.barcode && !live.has(c.barcode)
+                it.code_bad = c.barcode ? null : c.found
+              }
+            })
           }
           return json({ rows, total: Number.isFinite(total) ? total : null })
         }
