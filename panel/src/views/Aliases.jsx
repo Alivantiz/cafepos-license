@@ -37,7 +37,13 @@ export default function Aliases({ onCounts, onReload }) {
       confirmText: 'Одобрить',
     })) return
     setApproving(true)
-    try { const r = await api('aliases/approve-trusted', {}); toast.ok(`Одобрено: ${r.approved}`); reload() }
+    try {
+      const r = await api('aliases/approve-trusted', {})
+      // «Осталось» — не ошибка, а нормальный ход: за раз одобряется пачка,
+      // иначе воркер упирается в лимит подзапросов Cloudflare.
+      toast.ok(r.left ? `Одобрено: ${r.approved}, осталось ${r.left} — нажмите ещё раз` : `Одобрено: ${r.approved}`)
+      reload()
+    }
     catch (e) { toast.err(e.message) } finally { setApproving(false) }
   }
 

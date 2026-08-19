@@ -663,8 +663,14 @@ export default {
             { headers: db2.headers })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           const trusted = groupAliases(await r.json()).filter(g => g.trusted)
+          // Больше 40 за вызов не берём. У каждой строки свой код, одним PATCH
+          // их не одобрить, а на бесплатном тарифе Cloudflare воркеру положено
+          // не больше 50 ВНЕШНИХ подзапросов на вызов: полсотни бесспорных
+          // строк — и кнопка просто отваливалась бы с ошибкой посередине.
+          // Остаток возвращаем числом, чтобы панель сказала «нажмите ещё раз».
+          const batch = trusted.slice(0, 40)
           let approved = 0
-          for (const g of trusted) {
+          for (const g of batch) {
             const patch = await sbFetch(aliasByNorm(db2, g.raw_name_norm), {
               method: 'PATCH',
               headers: { ...db2.headers, Prefer: 'return=minimal' },
@@ -672,7 +678,7 @@ export default {
             })
             if (patch.ok) approved++
           }
-          return json({ ok: true, approved })
+          return json({ ok: true, approved, left: Math.max(0, trusted.length - batch.length) })
         }
 
         // Ошиблись кодом — строка возвращается в очередь без кода. Кассы
