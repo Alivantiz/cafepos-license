@@ -18,6 +18,20 @@ export default function Invoices({ onReload }) {
     try { await api('invoices/review', { id: Number(id) }); toast.ok('Разобрано — фото удалено'); reload() }
     catch (e) { toast.err(e.message) } finally { setBusy(null) }
   }
+  // Коды из накладной — сразу в словарь написаний. Иначе владелец переписывает
+  // те же цифры с фотографии руками, хотя распознавание их уже прочитало.
+  const bindCodes = async (id) => {
+    if (busy) return
+    setBusy(id)
+    try {
+      const r = await api('invoices/bindCodes', { id: Number(id) })
+      toast.ok(r.names
+        ? `Привязано написаний: ${r.names}` + (r.left ? ` — осталось ${r.left}, нажмите ещё раз` : '')
+        : 'Ничего не изменилось — эти названия уже разобраны или их нет в очереди')
+      reload()
+    } catch (e) { toast.err(e.message) } finally { setBusy(null) }
+  }
+
   const remove = async (id) => {
     if (busy) return
     if (!await confirmDialog({
@@ -84,6 +98,13 @@ export default function Invoices({ onReload }) {
             <button className="btn pri" disabled={busy === r.id} onClick={() => review(r.id)}>
               {busy === r.id ? 'Секунду…' : 'Разобрано'}
             </button>
+            {/* Показываем только когда есть что привязывать: кнопка, которая
+                всегда отвечает «ничего не найдено», хуже её отсутствия. */}
+            {r.code_count > 0 && (
+              <button className="btn" disabled={busy === r.id} onClick={() => bindCodes(r.id)}>
+                Привязать коды ({r.code_count})
+              </button>
+            )}
             <button className="btn ghost" disabled={busy === r.id} onClick={() => remove(r.id)}>Удалить</button>
           </div>
         </div>

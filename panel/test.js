@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -608,9 +608,82 @@ async function testAliasRoutes() {
   console.log('маршруты словаря написаний: OK')
 }
 
+// Коды из уже распознанных накладных. Тут две опасности: привязать код,
+// прочитанный с ошибкой (уедет чужой товар во все магазины), и разойтись с
+// кассой в подсчёте ключа (привязка молча не найдёт ни одной строки очереди).
+async function testInvoiceCodes() {
+  // Ключ считается как norm() кассы: регистр, пробелы и «/12 шт» не в счёт,
+  // казахские буквы сводятся к русским парам.
+  assert.strictEqual(invoiceNameKey('Сметана Нежный 1,2%'), 'сметананежный1,2%')
+  assert.strictEqual(invoiceNameKey('Пепси 0.5 / 12 шт.'), 'пепси05')
+  assert.strictEqual(invoiceNameKey('Жаннұр құрт'), invoiceNameKey('Жаннур курт'))
+
+  // Колонка со штрихкодом — самый простой случай.
+  assert.strictEqual(invoiceItemCode({ name: 'Пепси', barcode: '4870204391237' }).barcode, '4870204391237')
+  // Внутренний код поставщика (5–8 цифр без контрольной) кодом не считаем.
+  assert.strictEqual(invoiceItemCode({ name: 'Пепси', barcode: '12345' }).barcode, null)
+  // Ошибка распознавания в одной цифре не проходит контрольную сумму.
+  assert.strictEqual(invoiceItemCode({ name: 'Пепси', barcode: '4870204391234' }).barcode, null)
+
+  // Код, напечатанный ВНУТРИ наименования: вынимаем и вырезаем из имени.
+  const inName = invoiceItemCode({ name: 'Сметана Нежный 1,2% / ШК: 4870204391237' })
+  assert.strictEqual(inName.barcode, '4870204391237', 'код из наименования найден')
+  assert.strictEqual(inName.clean, 'Сметана Нежный 1,2%', 'имя очищено от кода')
+
+  // Пары: два ключа на строку (имя с кодом и без), дубли схлопнуты, мусор отсеян.
+  const pairs = invoiceCodePairs([
+    { name: 'Сметана Нежный 1,2% / ШК: 4870204391237' },
+    { name: 'Сметана Нежный 1,2% / ШК: 4870204391237' },
+    { name: 'Итого', barcode: '' },
+  ])
+  assert.strictEqual(pairs.length, 1, 'одно написание — одна привязка')
+  assert.strictEqual(pairs[0].keys.length, 2, 'ищем и по старому ключу (с кодом), и по новому')
+  assert.ok(pairs[0].keys.includes(invoiceNameKey('Сметана Нежный 1,2%')), 'очищенный ключ в списке')
+
+  const tmp = path.join(os.tmpdir(), 'imag_panel_inv_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const call = (p, body) => worker.fetch(new Request('https://x.test' + p, {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: JSON.stringify(body || {})
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k',
+       MONITOR_SUPABASE_URL: 'https://mon.test', MONITOR_SUPABASE_SERVICE_ROLE_KEY: 'mk' })
+
+  assert.strictEqual((await call('/api/invoices/bindCodes', {})).status, 400, 'привязка без id — 400')
+
+  {
+    const real = global.fetch
+    let patched = '', body = null
+    global.fetch = async (url, init) => {
+      if (init?.method === 'PATCH') {
+        patched = String(url); body = JSON.parse(init.body)
+        return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ items: [
+        { name: 'Сметана Нежный 1,2% / ШК: 4870204391237' },
+        { name: 'Пепси 0.5', barcode: '4870204391234' },   // битая контрольная — не берём
+      ] }]), { status: 200 })
+    }
+    const r = await call('/api/invoices/bindCodes', { id: 5 })
+    global.fetch = real
+    const d = await r.json()
+    assert.strictEqual(r.status, 200, 'привязка проходит')
+    assert.strictEqual(d.codes, 1, 'в накладной один пригодный код')
+    assert.strictEqual(d.names, 1, 'одно написание привязано')
+    assert.strictEqual(d.bound, 2, 'решение уехало на все точки с этим написанием')
+    assert.ok(patched.includes('raw_name_norm=in.'), 'ищем по обоим ключам одним запросом: ' + patched)
+    assert.ok(patched.includes('status=eq.pending'), 'уже разобранное чужим кодом не переписываем')
+    assert.strictEqual(body.barcode, '4870204391237')
+    assert.strictEqual(body.status, 'approved', 'код без статуса кассы не заберут')
+  }
+
+  console.log('коды из накладных: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
+  await testInvoiceCodes()
   await testTrialsMerge()
   testUsageWindows()
   await testViewsRender()

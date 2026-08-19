@@ -121,6 +121,79 @@ const aliasByNorm = (db2, norm, all = false) =>
   `${db2.url}/rest/v1/mon_invoice_aliases?raw_name_norm=eq.${encodeURIComponent(norm)}`
   + (all ? '' : '&status=eq.pending')
 
+// Несколько написаний разом — одним запросом. Нужно там, где у одной строки
+// накладной два возможных ключа (см. invoiceCodePairs): отдельными PATCH-ами
+// они удваивают число внешних подзапросов, а их у воркера считаное количество.
+const aliasByNorms = (db2, norms) =>
+  `${db2.url}/rest/v1/mon_invoice_aliases?raw_name_norm=in.(`
+  + norms.map(n => '"' + encodeURIComponent(n) + '"').join(',')
+  + ')&status=eq.pending'
+
+// ── Коды, уже приехавшие в распознанных накладных ──────────────────────────
+// В mon_ai_invoices разобранный JSON лежит вечно (при «Разобрано» стирается
+// только фото), и штрихкод в строке часто есть: колонкой либо напечатанный
+// внутри наименования («Сметана Нежный 1,2% / ШК: 4650827100561»). Касса
+// вынимает такой код сама, но лишь из НОВЫХ накладных — а в очереди написаний
+// уже лежат названия, разобранные до этого. Переписывать их с фото руками —
+// часы работы там, где ответ лежит в соседней таблице.
+//
+// Ключ обязан считаться ровно как на кассе (shared/product-name.ts `norm` плюс
+// barcode-catalog.service.ts `invoiceNameKey`): по нему привязка ищет строки
+// очереди, и разойдись формулы — она молча не найдёт ничего.
+const KZ_FOLD = { 'ә': 'а', 'ғ': 'г', 'қ': 'к', 'ң': 'н', 'ө': 'о', 'ұ': 'у', 'ү': 'у', 'һ': 'х', 'і': 'и' }
+export const invoiceNameKey = (raw) =>
+  String(raw ?? '').replace(/\/\s*\d+\s*шт\.?/gi, ' ').trim().toLowerCase()
+    .replace(/[әғқңөұүһі]/g, c => KZ_FOLD[c] ?? c)
+    .replace(/[\s._\-]/g, '')
+
+// Контрольная цифра — против ошибки распознавания в ОДНОЙ цифре: такой код
+// почти всегда оказывается кодом чужого реального товара, и привязка развезёт
+// ошибку по всем магазинам сразу.
+export function validBarcode(code) {
+  const s = String(code ?? '').trim()
+  if (!/^\d+$/.test(s) || ![8, 12, 13, 14].includes(s.length)) return false
+  const d = s.split('').map(Number)
+  const check = d.pop()
+  let sum = 0
+  for (let i = d.length - 1, w = 3; i >= 0; i--, w = w === 3 ? 1 : 3) sum += d[i] * w
+  return (10 - (sum % 10)) % 10 === check
+}
+
+// Код строки накладной и имя без него. Повторяет barcodeFromName кассы
+// (invoice-ai.service.ts): сперва отдельная колонка, потом код внутри имени.
+export function invoiceItemCode(it) {
+  const raw = String(it?.name ?? '')
+  const own = String(it?.barcode ?? '').trim()
+  if (validBarcode(own)) return { barcode: own, raw, clean: raw }
+  const m = raw.match(/(?:шк|штрих-?код|ean)\s*[:№#]?\s*(\d{8,14})/i)
+    || raw.match(/(?:^|[\s(/|,;])(\d{12,14})(?=$|[\s)/|,;])/)
+  if (!m || !validBarcode(m[1])) return { barcode: null, raw, clean: raw }
+  const clean = raw.replace(m[0], ' ').replace(/\s{2,}/g, ' ')
+    .replace(/^[\s/|,;()\[\]-]+|[\s/|,;()\[\]-]+$/g, '').trim()
+  return { barcode: m[1], raw, clean: clean || raw }
+}
+
+// Пары «написание → код» из одной накладной.
+export function invoiceCodePairs(items) {
+  const by = new Map()
+  for (const it of items || []) {
+    const { barcode, raw, clean } = invoiceItemCode(it)
+    if (!barcode) continue
+    // Ключа два: старые строки очереди приехали с кодом ВНУТРИ имени, новые
+    // (после релиза кассы, которая его вырезает) — уже без него. Какой из них
+    // лежит в базе, отсюда не видно, поэтому ищем по обоим.
+    const keys = [...new Set([invoiceNameKey(raw), invoiceNameKey(clean)])]
+      // Кавычка порвала бы список in.(…), а короткий огрызок — это не название.
+      .filter(k => k.length >= 4 && !k.includes('"'))
+    if (!keys.length) continue
+    const id = keys.join('|')
+    // Одно написание в накладной может идти несколькими строками (фасовки) —
+    // привязываем один раз.
+    if (!by.has(id)) by.set(id, { name: raw, barcode, keys })
+  }
+  return [...by.values()]
+}
+
 // YYYY-MM-DD со сдвигом в днях. Панель и касса считают дни по-разному (у кассы
 // местное время заведения), поэтому окна тут — грубые, «за последние N дней»,
 // а не бухгалтерские периоды.
@@ -1003,7 +1076,44 @@ export default {
           })
           if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
           const total = Number((r.headers.get('content-range') || '').split('/')[1])
-          return json({ rows: await r.json(), total: Number.isFinite(total) ? total : null })
+          const rows = await r.json()
+          // Сколько строк накладной несут читаемый штрихкод — от этого зависит,
+          // показывать ли кнопку «Привязать коды» и какое число на ней.
+          if (!countOnly) for (const row of rows) row.code_count = invoiceCodePairs(row.items).length
+          return json({ rows, total: Number.isFinite(total) ? total : null })
+        }
+
+        // Привязать коды прямо из накладной. Результат тот же, что от ручного
+        // ввода в «Названиях», только без переписывания цифр с фотографии:
+        // распознавание их уже прочитало, а очередь написаний ждёт именно их.
+        if (pathname === '/api/invoices/bindCodes') {
+          const { id } = await request.json()
+          if (!id) return json({ error: 'Нужен id' }, 400)
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}&select=items`,
+            { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const [row] = await r.json()
+          if (!row) return json({ error: 'Накладная не найдена' }, 404)
+          const pairs = invoiceCodePairs(row.items)
+          // Не больше 40 за вызов: у каждого написания свой код, одним PATCH их
+          // не привязать, а воркеру на бесплатном тарифе положено 50 внешних
+          // подзапросов — остаток возвращаем числом, панель попросит нажать ещё.
+          const batch = pairs.slice(0, 40)
+          let bound = 0, names = 0
+          for (const p of batch) {
+            const patch = await sbFetch(aliasByNorms(db2, p.keys) + '&select=id', {
+              method: 'PATCH',
+              headers: { ...db2.headers, Prefer: 'return=representation' },
+              body: JSON.stringify({
+                barcode: p.barcode, status: 'approved', updated_at: new Date().toISOString(),
+              }),
+            })
+            if (!patch.ok) continue
+            const hit = await patch.json().catch(() => [])
+            if (hit.length) { names++; bound += hit.length }
+          }
+          return json({ ok: true, codes: pairs.length, names, bound, left: Math.max(0, pairs.length - batch.length) })
         }
 
         if (pathname === '/api/invoices/review') {
