@@ -601,6 +601,15 @@ async function testAliasRoutes() {
   assert.strictEqual(conflict.disputed, true, 'точки прислали разные коды — это спор');
   assert.strictEqual(conflict.trusted, false, 'спорное не одобряем автоматом даже при трёх точках')
 
+  // Время группы — самое свежее из всех точек. По нему «Привязанные» кладут
+  // сверху то, что вендор разобрал только что: по частоте оно улетает в хвост,
+  // где его не найти вовсе.
+  const fresh = groupAliases([
+    { id: 1, raw_name_norm: 'а', raw_name: 'А', hits: 9, updated_at: '2026-01-01T00:00:00Z' },
+    { id: 2, raw_name_norm: 'а', raw_name: 'А', hits: 1, updated_at: '2026-08-19T10:00:00Z' },
+  ])[0]
+  assert.strictEqual(fresh.updated_at, '2026-08-19T10:00:00Z', 'берём самое свежее время, а не первое по частоте')
+
   const noCodes = groupAliases([{ id: 1, raw_name_norm: 'п', raw_name: 'П', hits: 3 }])[0]
   assert.strictEqual(noCodes.proposed, null, 'никто кода не прислал — предлагать нечего')
   assert.strictEqual(noCodes.trusted, false, 'без кода одобрять нечего')

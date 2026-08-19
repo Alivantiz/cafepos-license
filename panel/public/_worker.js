@@ -76,6 +76,10 @@ export function groupAliases(rows) {
     // товар, который возят все понемногу, всегда уступает одному активному.
     cur.hits += Number(r.hits) || 1
     cur.venues += 1
+    // Самое свежее время из всех точек: по нему «Привязанные» показывают то,
+    // что вендор разобрал только что. Первая строка группы приходит по
+    // частоте, а не по времени, и её updated_at может быть годовалым.
+    if (r.updated_at && (!cur.updated_at || r.updated_at > cur.updated_at)) cur.updated_at = r.updated_at
     if (!cur.supplier && r.supplier) cur.supplier = r.supplier
     if (!cur.supplier_code && r.supplier_code) cur.supplier_code = r.supplier_code
     if (r.barcode) cur.codes.set(String(r.barcode), (cur.codes.get(String(r.barcode)) || 0) + 1)

@@ -4,7 +4,7 @@
 // артикул — ни цен, ни остатков. Вендор привязывает штрихкод один раз, и все
 // магазины начинают распознавать эту строку сами, включая те, где этого товара
 // ещё не видели. Очередь идёт по частоте: сперва то, что реально возят.
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, useApi, fmtDate } from '../api'
 import { toast, confirmDialog } from '../ui'
 
@@ -17,9 +17,25 @@ export default function Aliases({ onCounts, onReload }) {
   const [page, setPage] = useState(0)
   const { data, error, loading, reload } = useApi('aliases/list', { status: tab })
   useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
-  const rows = data?.rows || []
+  const [q, setQ] = useState('')
+  // «Ждут кода» — очередь работы, там порядок по частоте: сперва то, что реально
+  // возят. «Привязанные» и «Отклонённые» — журнал сделанного, и там нужен
+  // обратный порядок: только что разобранное написание имеет частоту 1–2 и по
+  // частоте улетало в конец списка, где владелец его не находил вовсе.
+  const rows = useMemo(() => {
+    let list = data?.rows || []
+    const needle = q.trim().toLowerCase()
+    if (needle) {
+      list = list.filter(r => String(r.raw_name || '').toLowerCase().includes(needle)
+        || String(r.barcode || '').includes(needle))
+    }
+    if (tab !== 'pending') {
+      list = [...list].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
+    }
+    return list
+  }, [data, q, tab])
   useEffect(() => { if (tab === 'pending') onCounts?.(data?.total ?? rows.length) }, [data, tab])
-  useEffect(() => { setPage(0) }, [tab])
+  useEffect(() => { setPage(0) }, [tab, q])
   // Сервер отдаёт ВСЕ написания (после схлопывания их в разы меньше строк),
   // а карточки рисуем страницами: тысяча карточек в DOM тормозит прокрутку,
   // и разбирать такое полотно всё равно невозможно.
@@ -61,16 +77,19 @@ export default function Aliases({ onCounts, onReload }) {
             {approving ? 'Одобряю…' : `Одобрить бесспорные · ${trustedCount}`}
           </button>
         )}
-        <span className="muted" style={{ marginLeft: 'auto', fontSize: 13 }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Поиск по названию или коду"
+          style={{ marginLeft: 'auto', maxWidth: 260 }} />
+        <span className="muted" style={{ fontSize: 13 }}>
           {data?.total != null ? `${data.total} всего` : ''}
         </span>
       </div>
 
       {!rows.length && (
         <div className="empty">
-          {tab === 'pending'
-            ? 'Пусто — всё, что кассы не смогли сопоставить, уже разобрано'
-            : 'Здесь пока пусто'}
+          {q ? 'Ничего не найдено — попробуйте часть названия или код'
+            : tab === 'pending'
+              ? 'Пусто — всё, что кассы не смогли сопоставить, уже разобрано'
+              : 'Здесь пока пусто'}
         </div>
       )}
 
