@@ -1111,6 +1111,10 @@ export default {
             const isWaiting = (keys) => !waiting || keys.some(k => waiting.has(k))
             rows.forEach((row, i) => {
               row.code_count = pairs[i].filter(p => isWaiting(p.keys)).length
+              // Сколько кодов в накладной вообще. Нужно, чтобы отличить
+              // «работа сделана» от «читаемых кодов тут нет»: без этого
+              // карточка молча остаётся без кнопки, и непонятно, что произошло.
+              row.code_total = pairs[i].length
               const live = new Set(pairs[i].filter(p => isWaiting(p.keys)).map(p => p.barcode))
               for (const it of row.items || []) {
                 const c = invoiceItemCode(it)

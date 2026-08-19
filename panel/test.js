@@ -705,6 +705,7 @@ async function testInvoiceCodes() {
     assert.strictEqual(row.code_count, 1, 'считаем только то, что реально ждёт кода')
     assert.strictEqual(row.items[0].code_done, false, 'ждущая строка помечена как живая')
     assert.strictEqual(row.items[1].code_done, true, 'разобранная — приглушена')
+    assert.strictEqual(row.code_total, 2, 'всего кодов в накладной — чтобы отличить «сделано» от «читать нечего»')
   }
 
   console.log('коды из накладных: OK')

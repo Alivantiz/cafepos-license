@@ -114,13 +114,18 @@ export default function Invoices({ onReload }) {
             <button className="btn pri" disabled={busy === r.id} onClick={() => review(r.id)}>
               {busy === r.id ? 'Секунду…' : 'Разобрано'}
             </button>
-            {/* Показываем только когда есть что привязывать: кнопка, которая
-                всегда отвечает «ничего не найдено», хуже её отсутствия. */}
-            {r.code_count > 0 && (
-              <button className="btn" disabled={busy === r.id} onClick={() => bindCodes(r.id)}>
-                Привязать коды ({r.code_count})
-              </button>
-            )}
+            {/* Кнопка — только когда есть что привязывать. Но исчезнувшая
+                кнопка молчит о том, почему её нет: сделано или читать нечего.
+                Поэтому вместо неё пишем состояние словами. */}
+            {r.code_count > 0
+              ? <button className="btn" disabled={busy === r.id} onClick={() => bindCodes(r.id)}>
+                  Привязать коды ({r.code_count})
+                </button>
+              : r.code_total > 0
+                ? <span className="muted2" style={{ alignSelf: 'center' }}>
+                    Коды привязаны — в очереди по этой накладной ничего не ждёт
+                  </span>
+                : null}
             <button className="btn ghost" disabled={busy === r.id} onClick={() => remove(r.id)}>Удалить</button>
           </div>
         </div>
