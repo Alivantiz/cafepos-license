@@ -161,16 +161,22 @@ export function validBarcode(code) {
 
 // Код строки накладной и имя без него. Повторяет barcodeFromName кассы
 // (invoice-ai.service.ts): сперва отдельная колонка, потом код внутри имени.
+// found — цифры, которые в строке ВООБЩЕ нашлись, годные или нет. Без этого
+// пропущенная строка выглядит одинаково в двух совершенно разных случаях:
+// «распознавание не прочитало код» и «прочитало с ошибкой в одной цифре».
+// Владельцу это разные новости: в первом случае смотреть на фото, во втором —
+// поправить одну цифру руками.
 export function invoiceItemCode(it) {
   const raw = String(it?.name ?? '')
   const own = String(it?.barcode ?? '').trim()
-  if (validBarcode(own)) return { barcode: own, raw, clean: raw }
+  if (validBarcode(own)) return { barcode: own, raw, clean: raw, found: own }
   const m = raw.match(/(?:шк|штрих-?код|ean)\s*[:№#]?\s*(\d{8,14})/i)
     || raw.match(/(?:^|[\s(/|,;])(\d{12,14})(?=$|[\s)/|,;])/)
-  if (!m || !validBarcode(m[1])) return { barcode: null, raw, clean: raw }
+  const found = /^\d{8,14}$/.test(own) ? own : (m?.[1] ?? null)
+  if (!m || !validBarcode(m[1])) return { barcode: null, raw, clean: raw, found }
   const clean = raw.replace(m[0], ' ').replace(/\s{2,}/g, ' ')
     .replace(/^[\s/|,;()\[\]-]+|[\s/|,;()\[\]-]+$/g, '').trim()
-  return { barcode: m[1], raw, clean: clean || raw }
+  return { barcode: m[1], raw, clean: clean || raw, found }
 }
 
 // Пары «написание → код» из одной накладной.
@@ -1078,8 +1084,17 @@ export default {
           const total = Number((r.headers.get('content-range') || '').split('/')[1])
           const rows = await r.json()
           // Сколько строк накладной несут читаемый штрихкод — от этого зависит,
-          // показывать ли кнопку «Привязать коды» и какое число на ней.
-          if (!countOnly) for (const row of rows) row.code_count = invoiceCodePairs(row.items).length
+          // показывать ли кнопку «Привязать коды» и какое число на ней. Заодно
+          // помечаем КАЖДУЮ строку: без этого непонятно, почему кнопка обещает
+          // меньше кодов, чем видно на фотографии, и грешат на панель.
+          if (!countOnly) for (const row of rows) {
+            row.code_count = invoiceCodePairs(row.items).length
+            for (const it of row.items || []) {
+              const c = invoiceItemCode(it)
+              it.code = c.barcode
+              it.code_bad = c.barcode ? null : c.found
+            }
+          }
           return json({ rows, total: Number.isFinite(total) ? total : null })
         }
 

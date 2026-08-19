@@ -640,6 +640,13 @@ async function testInvoiceCodes() {
   assert.strictEqual(pairs[0].keys.length, 2, 'ищем и по старому ключу (с кодом), и по новому')
   assert.ok(pairs[0].keys.includes(invoiceNameKey('Сметана Нежный 1,2%')), 'очищенный ключ в списке')
 
+  // Битый код надо ОТЛИЧАТЬ от отсутствующего: в первом случае владелец
+  // поправит одну цифру руками, во втором смотреть нечего.
+  const bad = invoiceItemCode({ name: 'Пепси', barcode: '4870204391234' })
+  assert.strictEqual(bad.barcode, null, 'код с неверной контрольной не привязываем')
+  assert.strictEqual(bad.found, '4870204391234', 'но показываем: распознавание ошиблось в цифре')
+  assert.strictEqual(invoiceItemCode({ name: 'Пепси' }).found, null, 'кода в строке нет вовсе')
+
   const tmp = path.join(os.tmpdir(), 'imag_panel_inv_test_' + Date.now() + '.mjs')
   fs.copyFileSync(WORKER_PATH, tmp)
   let worker

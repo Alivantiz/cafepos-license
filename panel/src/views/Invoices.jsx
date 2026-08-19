@@ -87,6 +87,16 @@ export default function Invoices({ onReload }) {
                     {it.pack_size > 1 && <b style={{ color: 'var(--accent)' }}> ×{it.pack_size}</b>}
                   </span>
                   <span className="muted2" style={{ whiteSpace: 'nowrap' }}>
+                    {/* Состояние кода у КАЖДОЙ строки: иначе кнопка обещает
+                        меньше привязок, чем кодов видно на фотографии, и
+                        непонятно, каких именно строк не хватило. */}
+                    {it.code
+                      ? <b style={{ color: 'var(--ok)', fontVariantNumeric: 'tabular-nums' }}>{it.code} </b>
+                      : it.code_bad
+                        ? <b style={{ color: 'var(--bad)' }} title="Контрольная цифра не сходится — распознавание ошиблось в цифре">
+                            {it.code_bad} ?{' '}
+                          </b>
+                        : <span title="Штрихкода в этой строке распознавание не вернуло">без кода </span>}
                     {it.quantity ?? it.qty ?? ''}{it.unit ? ' ' + it.unit : ''}
                     {it.price != null ? ' · ' + it.price : ''}
                   </span>
