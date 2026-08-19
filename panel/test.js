@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -740,6 +740,46 @@ async function testInvoiceCodes() {
     assert.strictEqual(row.items[0].code_done, false, 'ждущая строка помечена как живая')
     assert.strictEqual(row.items[1].code_done, true, 'разобранная — приглушена')
     assert.strictEqual(row.code_total, 2, 'всего кодов в накладной — чтобы отличить «сделано» от «читать нечего»')
+  }
+
+  // Подсказка вместо красного кода: замена одной цифры, прошедшая контрольную
+  // сумму. Из 117 замен их около десятка, а настоящий товар отсеет справочник.
+  const fixes = oneDigitFixes('4605627012365')
+  assert.ok(fixes.includes('4605627012366'), 'верный код среди кандидатов')
+  assert.ok(fixes.length < 20, 'кандидатов десяток, а не сотня: ' + fixes.length)
+  assert.ok(fixes.every(c => c.length === 13), 'длина не меняется')
+  assert.deepStrictEqual(oneDigitFixes('12345'), [], 'на мусор кандидатов не строим')
+
+  {
+    const real = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('mon_barcodes')) {
+        return new Response(JSON.stringify([{ barcode: '4605627012366', name: 'Сметановка 20% 185г' }]), { status: 200 })
+      }
+      if (u.includes('mon_invoice_aliases')) return new Response('[]', { status: 200 })
+      return new Response(JSON.stringify([{ id: 5, items: [
+        { name: 'Сметановка 20% 185г / ШК: 4605627012365' },   // распознано с ошибкой в цифре
+      ] }]), { status: 200, headers: { 'content-range': '0-0/1' } })
+    }
+    const [row] = (await (await call('/api/invoices/pending', {})).json()).rows
+    global.fetch = real
+    assert.deepStrictEqual(row.items[0].code_fix,
+      [{ barcode: '4605627012366', name: 'Сметановка 20% 185г' }],
+      'подсказываем только те замены, что нашлись в справочнике')
+  }
+
+  // «Разобранные» — отдельный список: фото у них стёрто, а текст цел.
+  {
+    const real = global.fetch
+    const asked = []
+    global.fetch = async (url) => {
+      asked.push(String(url))
+      return new Response('[]', { status: 200, headers: { 'content-range': '0-0/3' } })
+    }
+    await call('/api/invoices/pending', { reviewed: true })
+    global.fetch = real
+    assert.ok(asked[0].includes('reviewed_at=not.is.null'), 'просим именно разобранные: ' + asked[0])
   }
 
   // Ручная привязка одной строки. Контрольной суммы не требуем — владелец

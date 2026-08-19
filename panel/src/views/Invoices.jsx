@@ -5,7 +5,10 @@ import { api, useApi } from '../api'
 import { toast, confirmDialog } from '../ui'
 
 export default function Invoices({ onReload }) {
-  const { data, error, loading, reload } = useApi('invoices/pending')
+  // «Разобранные» — журнал: фото у них уже стёрто, но распознанный текст цел,
+  // и по нему можно привязать коды, если выяснилось, что привязано не то.
+  const [reviewed, setReviewed] = useState(false)
+  const { data, error, loading, reload } = useApi('invoices/pending', { reviewed })
   useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const rows = data?.rows || []
 
@@ -61,13 +64,33 @@ export default function Invoices({ onReload }) {
 
   if (error) return <div className="card" style={{ borderColor: 'var(--bad)' }}>{error}</div>
   if (loading && !data) return <div className="empty">Загрузка…</div>
-  if (!rows.length) return <div className="empty">Неразобранных накладных нет</div>
+
+  const mb = (b) => b >= 1048576 ? Math.round(b / 1048576) + ' МБ' : Math.round(b / 1024) + ' КБ'
 
   return (
     <>
+      <div className="row stickybar" style={{ marginBottom: 12 }}>
+        {[[false, 'Неразобранные'], [true, 'Разобранные']].map(([id, label]) => (
+          <button key={String(id)} className={'btn sm' + (reviewed === id ? ' pri' : '')}
+            onClick={() => setReviewed(id)}>{label}</button>
+        ))}
+        {/* Место кончается молча: база бесплатного тарифа не бесконечная, а
+            весит в ней именно base64 фотографий. */}
+        {data?.photos?.count > 0 && (
+          <span className="muted2" style={{ marginLeft: 'auto' }}>
+            фото хранится у {data.photos.count} накладных
+            {data.photos.approx_bytes ? ` · ≈${mb(data.photos.approx_bytes)}` : ''}
+          </span>
+        )}
+      </div>
+
+      {!rows.length && (
+        <div className="empty">{reviewed ? 'Разобранных накладных пока нет' : 'Неразобранных накладных нет'}</div>
+      )}
+
       {/* Раньше писали «показано 40 из 137», а посмотреть остальное было
           нечем. Объясняем, что список сам сократится по мере разбора. */}
-      {data?.total != null && (
+      {!reviewed && rows.length > 0 && data?.total != null && (
         <div className="muted2" style={{ marginBottom: 10 }}>
           показано {rows.length} из {data.total} — остальные появятся здесь по мере разбора
         </div>
@@ -126,6 +149,21 @@ export default function Invoices({ onReload }) {
                     {it.quantity ?? it.qty ?? ''}{it.unit ? ' ' + it.unit : ''}
                     {it.price != null ? ' · ' + it.price : ''}
                   </span>
+                  {/* Чем красный код МОГ быть: замена одной цифры, прошедшая
+                      контрольную сумму и нашедшаяся в справочнике. Название
+                      рядом — чтобы согласиться глазами, а не вслепую. */}
+                  {it.code_fix?.length > 0 && edit !== `${r.id}:${i}` && (
+                    <div className="muted2" style={{ width: '100%', paddingBottom: 4 }}>
+                      {it.code_fix.map(f => (
+                        <div key={f.barcode} style={{ padding: '2px 0' }}>
+                          похоже, <b style={{ fontVariantNumeric: 'tabular-nums' }}>{f.barcode}</b> — {f.name}
+                          <button className="btn sm" style={{ marginLeft: 8 }}
+                            onClick={() => { open(r.id, i, f.barcode) }}>подставить</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Правка кода на месте. Контрольную сумму тут не требуем:
                       владелец держит накладную в руках, а панель — нет. Но если
                       код не сходится, скажем об этом после привязки. */}
@@ -144,9 +182,11 @@ export default function Invoices({ onReload }) {
             </div>
           </div>
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="btn pri" disabled={busy === r.id} onClick={() => review(r.id)}>
-              {busy === r.id ? 'Секунду…' : 'Разобрано'}
-            </button>
+            {!reviewed && (
+              <button className="btn pri" disabled={busy === r.id} onClick={() => review(r.id)}>
+                {busy === r.id ? 'Секунду…' : 'Разобрано'}
+              </button>
+            )}
             {/* Кнопка — только когда есть что привязывать. Но исчезнувшая
                 кнопка молчит о том, почему её нет: сделано или читать нечего.
                 Поэтому вместо неё пишем состояние словами. */}

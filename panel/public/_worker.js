@@ -239,6 +239,24 @@ export function itemKeys(it) {
     .filter(k => k.length >= 4 && !k.includes('"'))
 }
 
+// Коды, отличающиеся от прочитанного ОДНОЙ цифрой и проходящие контрольную
+// сумму. Ошибка распознавания почти всегда такая: «6» вместо «0», «9» вместо
+// «7». Из 117 замен контрольную проходит десяток, а дальше отсеет справочник —
+// настоящий товар останется один. Это подсказка, а не привязка: решает человек.
+export function oneDigitFixes(code) {
+  const s = String(code ?? '').trim()
+  if (!/^\d{8,14}$/.test(s)) return []
+  const out = []
+  for (let i = 0; i < s.length; i++) {
+    for (let d = 0; d < 10; d++) {
+      if (Number(s[i]) === d) continue
+      const cand = s.slice(0, i) + d + s.slice(i + 1)
+      if (validBarcode(cand)) out.push(cand)
+    }
+  }
+  return out
+}
+
 // Пары «написание → код» из одной накладной.
 export function invoiceCodePairs(items) {
   const by = new Map()
@@ -1130,16 +1148,22 @@ export default {
           // открытии панели тянул до сотни распознаваний целиком, вместе с
           // фотографиями накладных в base64: мегабайты трафика ради одной
           // цифры. Сами фото нужны только на открытой вкладке.
-          const { countOnly } = await request.json().catch(() => ({}))
+          const { countOnly, reviewed } = await request.json().catch(() => ({}))
           // Двенадцать, а не сто. Каждая строка тащит ФОТО накладной в base64 —
           // сотня таких строк это десятки мегабайт, которые воркер ещё и
           // разбирает и собирает заново. На лимите памяти изолят просто
           // убивают, и браузер показывает «Failed to fetch» — причём не
           // обязательно на «Накладных»: вместе с изолятом умирают и запросы
           // соседних вкладок, отправленные в тот же момент.
+          // «Разобранные» — те же накладные, но уже без фотографий (их стирает
+          // кнопка «Разобрано»). Нужны, когда выяснилось, что код привязан не
+          // тот: распознанный текст остаётся навсегда, а вернуться к нему было
+          // нечем — карточка исчезала из списка насовсем.
           const qs = countOnly
             ? 'select=id&reviewed_at=is.null&limit=1'
-            : 'reviewed_at=is.null&order=created_at.desc&limit=12'
+            : reviewed
+              ? 'reviewed_at=not.is.null&order=reviewed_at.desc&limit=12'
+              : 'reviewed_at=is.null&order=created_at.desc&limit=12'
           const r = await sbFetch(`${db2.url}/rest/v1/mon_ai_invoices?${qs}`, {
             headers: { ...db2.headers, Prefer: 'count=exact' }
           })
@@ -1169,8 +1193,44 @@ export default {
                 it.code_bad = c.barcode ? null : c.found
               }
             })
+
+            // Подсказка вместо красного кода: чем он МОГ быть. Перебираем
+            // замены одной цифры и оставляем те, что нашлись в справочнике, —
+            // случайное совпадение там почти невозможно, а сверять тринадцать
+            // цифр с бумагой глазами приходилось на каждой строке.
+            const bad = [...new Set(rows.flatMap(row =>
+              (row.items || []).map(it => it.code_bad).filter(Boolean)))]
+            if (bad.length) {
+              const fixes = new Map(bad.map(b => [b, oneDigitFixes(b)]))
+              const known = await catalogNames(db2, [...new Set([...fixes.values()].flat())])
+              if (known) for (const row of rows) for (const it of row.items || []) {
+                if (!it.code_bad) continue
+                it.code_fix = (fixes.get(it.code_bad) || [])
+                  .filter(c => (known.get(c) || []).length)
+                  .slice(0, 3)
+                  .map(c => ({ barcode: c, name: known.get(c)[0] }))
+              }
+            }
           }
-          return json({ rows, total: Number.isFinite(total) ? total : null })
+
+          // Сколько места занято фотографиями. Считаем по средней из тех, что
+          // уже приехали: точную сумму дал бы только SQL, а место кончается
+          // молча — база бесплатного тарифа не бесконечная, и узнать об этом
+          // хочется раньше, чем перестанут приходить накладные.
+          let photos = null
+          if (!countOnly) {
+            const pr = await sbFetch(
+              `${db2.url}/rest/v1/mon_ai_invoices?select=id&image_b64=not.is.null&limit=1`,
+              { headers: { ...db2.headers, Prefer: 'count=exact' } })
+            const cnt = pr.ok ? Number((pr.headers.get('content-range') || '').split('/')[1]) : NaN
+            const have = rows.filter(x => x.image_b64).map(x => x.image_b64.length * 0.75)
+            if (Number.isFinite(cnt) && have.length) {
+              photos = { count: cnt, approx_bytes: Math.round(cnt * have.reduce((a, b) => a + b, 0) / have.length) }
+            } else if (Number.isFinite(cnt)) {
+              photos = { count: cnt, approx_bytes: null }
+            }
+          }
+          return json({ rows, total: Number.isFinite(total) ? total : null, photos })
         }
 
         // Привязать коды прямо из накладной. Результат тот же, что от ручного
