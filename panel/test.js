@@ -708,6 +708,40 @@ async function testInvoiceCodes() {
     assert.strictEqual(row.code_total, 2, 'всего кодов в накладной — чтобы отличить «сделано» от «читать нечего»')
   }
 
+  // Ручная привязка одной строки. Контрольной суммы не требуем — владелец
+  // держит бумагу в руках, — но название берём из накладной, а не из запроса.
+  assert.strictEqual((await call('/api/invoices/bindOne', { id: 5, index: 0 })).status, 400,
+    'без штрихкода — 400')
+  assert.strictEqual((await call('/api/invoices/bindOne', { id: 5, barcode: '4605627006662' })).status, 400,
+    'без номера строки — 400')
+  {
+    const real = global.fetch
+    let body = null, patched = ''
+    global.fetch = async (url, init) => {
+      if (init?.method === 'PATCH') {
+        patched = String(url); body = JSON.parse(init.body)
+        return new Response(JSON.stringify([{ id: 3 }]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ items: [{ name: 'Сметановка 20% 185г / ШК: 4605627012365' }] }]), { status: 200 })
+    }
+    const r = await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4605627012365' })
+    global.fetch = real
+    const d = await r.json()
+    assert.strictEqual(r.status, 200, 'привязка не сошедшегося кода проходит — решает человек')
+    assert.strictEqual(d.checksum, false, 'но панель говорит, что контрольная не сошлась')
+    assert.strictEqual(body.barcode, '4605627012365', 'привязан именно введённый код')
+    assert.ok(patched.includes('raw_name_norm=in.'), 'ищем по написанию строки накладной: ' + patched)
+  }
+  {
+    const real = global.fetch
+    global.fetch = async (url, init) => init?.method === 'PATCH'
+      ? new Response('[]', { status: 200 })
+      : new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5' }] }]), { status: 200 })
+    const d = await (await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4870204391237' })).json()
+    global.fetch = real
+    assert.ok(d.note && d.note.includes('Названиях'), 'написания в очереди нет — объясняем, куда идти')
+  }
+
   console.log('коды из накладных: OK')
 }
 

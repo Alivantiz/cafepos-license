@@ -18,6 +18,21 @@ export default function Invoices({ onReload }) {
     try { await api('invoices/review', { id: Number(id) }); toast.ok('Разобрано — фото удалено'); reload() }
     catch (e) { toast.err(e.message) } finally { setBusy(null) }
   }
+  // Ручная привязка одной строки: «4605627000662 ?» → поправить цифру и
+  // привязать, не уходя во вкладку «Названия».
+  const [edit, setEdit] = useState(null)     // `${id}:${index}`
+  const [val, setVal] = useState('')
+  const open = (id, i, code) => { setEdit(`${id}:${i}`); setVal(code || '') }
+  const bindOne = async (id, index) => {
+    try {
+      const r = await api('invoices/bindOne', { id: Number(id), index, barcode: val })
+      toast.ok(r.note || (r.checksum
+        ? 'Привязано — уедет на кассы'
+        : 'Привязано как есть — контрольная цифра у этого кода не сходится'))
+      setEdit(null); reload()
+    } catch (e) { toast.err(e.message) }
+  }
+
   // Коды из накладной — сразу в словарь написаний. Иначе владелец переписывает
   // те же цифры с фотографии руками, хотя распознавание их уже прочитало.
   const bindCodes = async (id) => {
@@ -79,6 +94,7 @@ export default function Invoices({ onReload }) {
                 <div key={i} className="row" style={{
                   justifyContent: 'space-between', gap: 12, padding: '4px 0',
                   borderBottom: '1px solid var(--line)', fontSize: 13,
+                  flexWrap: 'wrap',
                 }}>
                   <span>
                     {it.name || ''}
@@ -99,13 +115,30 @@ export default function Invoices({ onReload }) {
                           fontVariantNumeric: 'tabular-nums',
                         }} title={it.code_done ? 'Уже разобрано — в очереди этого написания нет' : 'Привяжется кнопкой'}>{it.code} </b>
                       : it.code_bad
-                        ? <b style={{ color: 'var(--bad)' }} title="Контрольная цифра не сходится — распознавание ошиблось в цифре">
+                        ? <b onClick={() => open(r.id, i, it.code_bad)} style={{ color: 'var(--bad)', cursor: 'pointer' }}
+                            title="Контрольная цифра не сходится — распознавание ошиблось в цифре. Нажмите, чтобы поправить и привязать">
                             {it.code_bad} ?{' '}
                           </b>
-                        : <span title="Штрихкода в этой строке распознавание не вернуло">без кода </span>}
+                        : <span onClick={() => open(r.id, i, '')} style={{ cursor: 'pointer' }}
+                            title="Штрихкода в этой строке распознавание не вернуло. Нажмите, чтобы вбить его с бумаги">
+                            без кода{' '}
+                          </span>}
                     {it.quantity ?? it.qty ?? ''}{it.unit ? ' ' + it.unit : ''}
                     {it.price != null ? ' · ' + it.price : ''}
                   </span>
+                  {/* Правка кода на месте. Контрольную сумму тут не требуем:
+                      владелец держит накладную в руках, а панель — нет. Но если
+                      код не сходится, скажем об этом после привязки. */}
+                  {edit === `${r.id}:${i}` && (
+                    <div className="row" style={{ gap: 8, width: '100%', padding: '6px 0' }}>
+                      <input value={val} onChange={e => setVal(e.target.value.replace(/\D/g, ''))}
+                        inputMode="numeric" autoFocus placeholder="Штрихкод с бумаги"
+                        onKeyDown={e => { if (e.key === 'Enter') bindOne(r.id, i) }}
+                        style={{ flex: 1, minWidth: 140, fontVariantNumeric: 'tabular-nums' }} />
+                      <button className="btn sm pri" disabled={val.length < 8} onClick={() => bindOne(r.id, i)}>Привязать</button>
+                      <button className="btn sm ghost" onClick={() => setEdit(null)}>Отмена</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -198,18 +198,23 @@ async function pendingNorms(db2, keys) {
   return out
 }
 
+// Ключи одной строки накладной. Их два: старые строки очереди приехали с кодом
+// ВНУТРИ имени, новые (после релиза кассы, которая его вырезает) — уже без
+// него. Какой из них лежит в базе, отсюда не видно, поэтому ищем по обоим.
+export function itemKeys(it) {
+  const { raw, clean } = invoiceItemCode(it)
+  return [...new Set([invoiceNameKey(raw), invoiceNameKey(clean)])]
+    // Кавычка порвала бы список in.(…), а короткий огрызок — это не название.
+    .filter(k => k.length >= 4 && !k.includes('"'))
+}
+
 // Пары «написание → код» из одной накладной.
 export function invoiceCodePairs(items) {
   const by = new Map()
   for (const it of items || []) {
-    const { barcode, raw, clean } = invoiceItemCode(it)
+    const { barcode, raw } = invoiceItemCode(it)
     if (!barcode) continue
-    // Ключа два: старые строки очереди приехали с кодом ВНУТРИ имени, новые
-    // (после релиза кассы, которая его вырезает) — уже без него. Какой из них
-    // лежит в базе, отсюда не видно, поэтому ищем по обоим.
-    const keys = [...new Set([invoiceNameKey(raw), invoiceNameKey(clean)])]
-      // Кавычка порвала бы список in.(…), а короткий огрызок — это не название.
-      .filter(k => k.length >= 4 && !k.includes('"'))
+    const keys = itemKeys(it)
     if (!keys.length) continue
     const id = keys.join('|')
     // Одно написание в накладной может идти несколькими строками (фасовки) —
@@ -1160,6 +1165,47 @@ export default {
             if (hit.length) { names++; bound += hit.length }
           }
           return json({ ok: true, codes: pairs.length, names, bound, left: Math.max(0, pairs.length - batch.length) })
+        }
+
+        // Один код на одну строку накладной — руками. Нужен там, где
+        // распознавание ошиблось в цифре: владелец видит бумагу, панель нет.
+        // Контрольную сумму здесь НЕ требуем (человек уже сверился с бумагой),
+        // но говорим о ней в ответе: молча привязанный «не сходящийся» код —
+        // это чужой товар во всех магазинах, и знать об этом надо.
+        //
+        // Название берём из накладной по номеру строки, а не из запроса: по
+        // нему решение уедет на все точки с этим написанием.
+        if (pathname === '/api/invoices/bindOne') {
+          const { id, index, barcode } = await request.json()
+          const bc = String(barcode || '').trim()
+          if (!id || !Number.isInteger(index) || !/^\d{8,14}$/.test(bc)) {
+            return json({ error: 'Нужны накладная, номер строки и штрихкод из 8–14 цифр' }, 400)
+          }
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}&select=items`,
+            { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const [row] = await r.json()
+          const it = (row?.items || [])[index]
+          if (!it) return json({ error: 'Строка накладной не найдена' }, 404)
+          const keys = itemKeys(it)
+          if (!keys.length) return json({ error: 'У строки нет пригодного названия' }, 400)
+          const patch = await sbFetch(aliasByNorms(db2, keys) + '&select=id', {
+            method: 'PATCH',
+            headers: { ...db2.headers, Prefer: 'return=representation' },
+            body: JSON.stringify({
+              barcode: bc, status: 'approved', updated_at: new Date().toISOString(),
+            }),
+          })
+          if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+          const hit = await patch.json().catch(() => [])
+          return json({
+            ok: true, bound: hit.length,
+            checksum: validBarcode(bc),
+            // Пусто — значит написания в очереди нет: его уже разобрали, и
+            // менять код надо осознанно, во вкладке «Названия».
+            note: hit.length ? null : 'В очереди этого написания нет — код уже привязан. Поменять его можно в «Названиях» → «Привязанные».',
+          })
         }
 
         if (pathname === '/api/invoices/review') {
