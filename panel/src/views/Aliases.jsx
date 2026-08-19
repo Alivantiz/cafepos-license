@@ -110,6 +110,24 @@ export default function Aliases({ onCounts, onReload }) {
   )
 }
 
+// Что за товар прячется за кодом. Соглашаться с чужой привязкой вслепую
+// нельзя: код — это цифры, а ошибка тут разъезжается по всем магазинам.
+function CodeName({ r }) {
+  if (!r.code_names) return null            // спросить справочник не удалось
+  if (!r.code_names.length) {
+    return <div style={{ marginTop: 2 }}>в общем справочнике этого кода ещё нет</div>
+  }
+  return (
+    <div style={{ marginTop: 2 }}>
+      в справочнике: <b style={{ wordBreak: 'break-word' }}>{r.code_names[0]}</b>
+      {/* Разные названия под одним кодом — сам по себе повод не соглашаться. */}
+      {r.code_names.length > 1 && (
+        <span style={{ color: 'var(--bad)' }}> · и ещё {r.code_names.length - 1}: {r.code_names.slice(1, 3).join(', ')}</span>
+      )}
+    </div>
+  )
+}
+
 function AliasCard({ r, onDone, tab }) {
   // На «Привязанных» карточка тоже редактируемая: ошибиться кодом легко, а
   // исправить это раньше было нечем — только руками в базе.
@@ -185,6 +203,7 @@ function AliasCard({ r, onDone, tab }) {
       {bound && (
         <div className="muted" style={{ marginTop: 10, fontSize: 13 }}>
           штрихкод <b>{r.barcode}</b>
+          <CodeName r={r} />
         </div>
       )}
 
@@ -195,6 +214,7 @@ function AliasCard({ r, onDone, tab }) {
           {r.disputed
             ? <>точки прислали <b>разные</b> коды — нужен ваш выбор</>
             : <>магазины уже привязали <b>{r.proposed}</b> ({r.proposed_venues} {r.proposed_venues === 1 ? 'точка' : r.proposed_venues < 5 ? 'точки' : 'точек'})</>}
+          {!r.disputed && <CodeName r={r} />}
           {!r.disputed && (
             <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => setBc(r.proposed)}>
               подставить

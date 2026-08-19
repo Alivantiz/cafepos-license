@@ -502,6 +502,31 @@ async function testAliasRoutes() {
   assert.strictEqual((await call('/api/aliases/reject', {})).status, 400, 'отклонение без id — 400')
   assert.strictEqual((await call('/api/aliases/нет-такого', {})).status, 404, 'неизвестный маршрут словаря — 404')
 
+  // Предложенный магазинами код надо показывать вместе с ТОВАРОМ, за которым
+  // он стоит: иначе согласиться с чужой привязкой можно только вслепую.
+  {
+    const real = global.fetch
+    let askedCatalog = ''
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('mon_barcodes')) {
+        askedCatalog = u
+        return new Response(JSON.stringify([
+          { barcode: '4870204391237', name: 'Пепси 0.5' },
+          { barcode: '4870204391237', name: 'Pepsi 0,5 л' },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify([
+        { id: 1, raw_name_norm: 'пепси05', raw_name: 'Пепси 0.5', hits: 3, barcode: '4870204391237' },
+      ]), { status: 200 })
+    }
+    const d = await (await call('/api/aliases/list', { status: 'pending' })).json()
+    global.fetch = real
+    assert.ok(askedCatalog.includes('status=eq.approved'), 'название берём из одобренного справочника')
+    assert.deepStrictEqual(d.rows[0].code_names, ['Пепси 0.5', 'Pepsi 0,5 л'],
+      'показываем ВСЕ названия под этим кодом — разнобой и есть повод не соглашаться')
+  }
+
   const noSecrets = await worker.fetch(new Request('https://x.test/api/aliases/list', {
     method: 'POST', headers: { 'x-panel-key': 'secret' }, body: '{}'
   }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })

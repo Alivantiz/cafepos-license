@@ -104,6 +104,33 @@ export function groupAliases(rows) {
     .sort((a, b) => b.hits - a.hits)
 }
 
+// Под каким НАЗВАНИЕМ этот код лежит в общем справочнике. Без этого строка
+// «магазины уже привязали 4870…» — просто цифры: согласиться с ними можно,
+// только убедившись, что за кодом тот же товар, а не сосед по полке. Если
+// точки записали код под разными названиями, это тоже видно — и это первый
+// признак, что соглашаться не надо.
+//
+// Спрашиваем пачками по 150 кодов и не больше шести пачек: список уходит в
+// адресную строку, а подзапросов у воркера считаное число. Не вышло — вернём
+// null, карточка просто не покажет названия.
+async function catalogNames(db2, codes) {
+  const out = new Map()
+  for (let i = 0; i < codes.length && i < 900; i += 150) {
+    const r = await sbFetch(
+      `${db2.url}/rest/v1/mon_barcodes?select=barcode,name&status=eq.approved&barcode=in.(`
+      + codes.slice(i, i + 150).join(',') + ')&limit=1000',
+      { headers: db2.headers })
+    if (!r.ok) return null
+    for (const row of await r.json().catch(() => [])) {
+      const list = out.get(row.barcode) ?? []
+      const name = String(row.name ?? '').trim()
+      if (name && !list.includes(name)) list.push(name)
+      out.set(row.barcode, list)
+    }
+  }
+  return out
+}
+
 // Написание берём из базы по id, а НЕ из запроса: по нему решение уедет на все
 // строки с этим написанием, и подменённая норма увела бы чужой товар на этот
 // штрихкод — а это уже неверный остаток во всех магазинах.
@@ -726,6 +753,14 @@ export default {
             if (part.length < 1000) break
           }
           const rows = groupAliases(raw)
+          const names = await catalogNames(db2,
+            [...new Set(rows.map(g => g.barcode || g.proposed).filter(Boolean))])
+          if (names) for (const g of rows) {
+            const code = g.barcode || g.proposed
+            // Пустой массив и null — разные вещи: «кода в справочнике нет» и
+            // «спросить не удалось». Во втором случае карточка молчит.
+            if (code) g.code_names = names.get(code) ?? []
+          }
           return json({ rows, total: rows.length })
         }
 
