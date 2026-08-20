@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelCost, anthropicCost } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelCost, bareModel, anthropicCost } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -826,6 +826,20 @@ async function testInvoiceCodes() {
     assert.strictEqual(st.invoices, 2, 'обе накладные посчитаны')
     assert.strictEqual(st.paid, 1, 'но расход известен только по одной')
     assert.strictEqual(st.tokOut, 5000, 'исходящие сложены — в них и размышления')
+  }
+
+  // Старые распознавания записаны как «claude-sonnet-5», новые — как
+  // «anthropic:claude-sonnet-5». Сравнение как есть теряло всю прежнюю
+  // статистику: у модели, которой распознано сто накладных, стоял ноль.
+  assert.strictEqual(bareModel('anthropic:claude-sonnet-5'), 'claude-sonnet-5')
+  assert.strictEqual(bareModel('claude-sonnet-5'), 'claude-sonnet-5')
+  {
+    const st = modelStats([
+      { model: 'claude-sonnet-5', items: [] },
+      { model: 'anthropic:claude-sonnet-5', items: [] },
+    ])
+    assert.strictEqual(st.length, 1, 'обе формы записи — одна модель')
+    assert.strictEqual(st[0].invoices, 2)
   }
 
   // Качество модели считается по самой накладной: количество × цена = сумма

@@ -304,11 +304,20 @@ export async function anthropicCost(env, fromIso, toIso) {
 // проверяет себя трижды — количество × цена даёт сумму строки, сумма строк даёт
 // напечатанный итог, а у штрихкода есть контрольная цифра. Три доли и есть
 // ответ на вопрос «какую модель держать».
+// Имя модели без провайдера. В базе лежат обе формы: старые распознавания
+// записаны как «claude-sonnet-5», новые — как «anthropic:claude-sonnet-5».
+// Сравнивать их как есть значит потерять всю прежнюю статистику.
+export const bareModel = (v) => {
+  const s = String(v ?? '')
+  const i = s.indexOf(':')
+  return i < 0 ? s : s.slice(i + 1)
+}
+
 export function modelStats(rows) {
   const by = new Map()
   const num = (v) => Number(String(v ?? '').replace(',', '.')) || 0
   for (const r of rows || []) {
-    const id = String(r.model || '—')
+    const id = bareModel(r.model || '—')
     const st = by.get(id) ?? { model: id, invoices: 0, lines: 0, sumOk: 0, sumAll: 0, codeOk: 0, codeAll: 0, totalOk: 0, totalAll: 0, tokIn: 0, tokOut: 0, paid: 0 }
     st.invoices++
     // paid — на скольких накладных расход записан. Старые распознавания его не
@@ -1420,7 +1429,7 @@ export default {
               if (!r.ok) {
                 const text = await r.text()
                 notes.push(`${what}: ${/does not exist|PGRST205|PGRST204|42P01|42703/.test(text)
-                  ? 'в базе ещё нет — выполните SQL из supabase/monitor-schema.sql'
+                  ? 'нет в базе (SQL из monitor-schema.sql не выполнен)'
                   : r.status + ' ' + text.slice(0, 120)}`)
                 return null
               }
@@ -1455,15 +1464,19 @@ export default {
 
           // Список моделей — у функции: он собран из её ключей.
           const fn = await fnModels()
-          if (!fn) notes.push('модели: функция parse-invoice не ответила списком — нужна её версия не ниже 2026-08-20.3')
+          if (!fn) notes.push('модели: parse-invoice не отдала список (нужна версия ≥ 2026-08-20.3)')
           const models = fn?.models ?? []
 
           // Деньги — только настоящие. Считаются по записанным токенам и
           // опубликованному прайсу; накладные без записи в счёт не идут.
-          for (const st of stats) {
-            const m = models.find(x => x.id === st.model)
-            st.usd = m && st.paid ? modelCost(m, st.tokIn, st.tokOut) : null
+          // Статистику вешаем прямо на модель: сопоставление по имени —
+          // единственное место, где можно снова разъехаться с базой.
+          for (const m of models) {
+            const st = stats.find(x => x.model === bareModel(m.id))
+            if (!st) { m.stat = null; continue }
+            st.usd = st.paid ? modelCost(m, st.tokIn, st.tokOut) : null
             st.usdPer = st.usd != null ? st.usd / st.paid : null
+            m.stat = st
           }
           const measured = stats.reduce((a, s) => a + (s.usd || 0), 0)
           const paid = stats.reduce((a, s) => a + s.paid, 0)
@@ -1496,7 +1509,7 @@ export default {
             // Сверяем с тем, что функция реально умеет вызвать: модель не из
             // её списка означала бы отказ распознавания у всех клиентов сразу.
             const fn = await fnModels()
-            if (!fn) return json({ error: 'Функция parse-invoice не ответила — список моделей неизвестен' }, 502)
+            if (!fn) return json({ error: 'parse-invoice не отдала список моделей' }, 502)
             if (!fn.models.some(m => m.id === model)) return json({ error: 'Неизвестная модель' }, 400)
             patch.push({ key: 'invoice_model', value: model, updated_at: new Date().toISOString() })
           }
@@ -1513,7 +1526,7 @@ export default {
           if (!up.ok) {
             const text = await up.text()
             if (/does not exist|PGRST205|42P01/.test(text)) {
-              return json({ error: 'В базе нет таблицы mon_settings — выполните SQL из supabase/monitor-schema.sql' }, 502)
+              return json({ error: 'Нет таблицы mon_settings (SQL из monitor-schema.sql не выполнен)' }, 502)
             }
             return json({ error: `Supabase: ${up.status} ${text}` }, 502)
           }

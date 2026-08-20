@@ -89,22 +89,18 @@ function ModelPicker() {
               {data.billUsd == null && (
                 <div className="muted2" style={{ marginBottom: 10 }}>
                   {data.costError
-                    ? <>Счёт получить не удалось: {data.costError}</>
-                    : <>Точную сумму отдаёт Anthropic по админскому ключу организации —
-                       положите его в секрет ANTHROPIC_ADMIN_KEY. Остатка средств не отдаёт
-                       никто: такого эндпоинта у Anthropic нет.</>}
+                    ? <>Счёт не пришёл: {data.costError}</>
+                    : <>Счёт — только по админскому ключу (секрет ANTHROPIC_ADMIN_KEY).
+                       Остатка средств в API нет ни у кого.</>}
                 </div>
               )}
 
               {!data.models.length && (
-                <div className="empty">
-                  Функция parse-invoice не ответила списком моделей — нужна её версия не ниже
-                  2026-08-20.3 и хотя бы один ключ провайдера в секретах.
-                </div>
+                <div className="empty">parse-invoice не отдала список моделей</div>
               )}
 
               {data.models.map(m => {
-                const st = data.stats.find(x => x.model === m.id)
+                const st = m.stat
                 const isCur = m.id === data.current || (!data.current && m.id === data.fallback)
                 return (
                   <div key={m.id} className="card" style={{ marginBottom: 10, borderColor: isCur ? 'var(--ok)' : undefined }}>
@@ -150,10 +146,9 @@ function ModelPicker() {
               )}
 
               <div className="muted2" style={{ marginTop: 10 }}>
-                Доли считаются по самой накладной: количество × цена должно давать сумму строки,
-                сумма строк — напечатанный итог, у штрихкода сходится контрольная цифра.
-                Список моделей приходит от функции и собран из её ключей: добавишь ключ нового
-                провайдера — его модели появятся здесь сами.
+                Доли — проверки самой накладной: количество × цена = сумма строки,
+                сумма строк = напечатанный итог, контрольная цифра штрихкода.
+                Список моделей собран из ключей в секретах функции.
               </div>
             </>
           )}
