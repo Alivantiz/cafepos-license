@@ -13,7 +13,9 @@ import Cloud, { brokenCount } from './views/Cloud'
 
 // Срочное — то, где ждут ответа или что-то сломалось. Каталог и накладные
 // разбираются когда удобно, тревожить ими незачем.
-const URGENT = new Set(['requests', 'cloud', 'trials'])
+// «Клиенты» — тоже тревожная: там считаются кассы, сообщившие о поломке,
+// и неисправное облако лицензий. Это не работа в очереди, это авария.
+const URGENT = new Set(['requests', 'cloud', 'trials', 'clients'])
 
 // Обычная подписка. Меняется руками в карточке, если у клиента своя цена.
 const DEFAULT_PRICE = 8000
@@ -142,6 +144,11 @@ function Panel() {
       setBadges(b => ({ ...b, invoices: d.total ?? (d.rows || []).length }))).catch(() => {})
     api('aliases/list', { countOnly: true }).then(d =>
       setBadges(b => ({ ...b, aliases: d.total ?? (d.rows || []).length }))).catch(() => {})
+    // Кассы, сообщившие о беде, плюс само облако лицензий. Без этой точки
+    // владелец узнавал о поломке от клиента: данные в панели были, а звать
+    // они не звали — надо было догадаться открыть нужную вкладку.
+    api('health').then(d =>
+      setBadges(b => ({ ...b, clients: (d.sos || 0) + (d.ok ? 0 : 1) }))).catch(() => {})
   }, [])
 
   // ОБЯЗАТЕЛЬНО useCallback. Стрелка прямо в JSX — новая функция на каждую

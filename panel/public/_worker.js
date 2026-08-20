@@ -675,11 +675,26 @@ export default {
           const r = await sbFetch(LIC_FN_URL, { headers: { accept: 'application/json' } })
           if (!r.ok) return json({ ok: false, error: `функция лицензий: ${r.status}` })
           const d = await r.json()
+          // Заодно считаем кассы, которые сами сообщили о беде за последнюю
+          // неделю. Один дешёвый запрос на оба сигнала: бейдж в меню зовёт
+          // владельца, а не ждёт, пока он откроет нужную карточку.
+          let sos = 0
+          try {
+            const since = new Date(Date.now() - 7 * 86400000).toISOString()
+            const sr = await sbFetch(
+              `${db.url}/rest/v1/licenses?select=id&last_sos_at=gte.${since}&limit=1`,
+              { headers: { ...db.headers, Prefer: 'count=exact' } })
+            if (sr.ok) {
+              const n = Number((sr.headers.get('content-range') || '').split('/')[1])
+              if (Number.isFinite(n)) sos = n
+            }
+          } catch { /* колонок ещё нет — просто ноль */ }
           return json({
             ok: !!d?.ok,
             signing_key: d?.signing_key ?? null,
             table_licenses: d?.table_licenses ?? null,
             version: d?.version ?? null,
+            sos,
           })
         } catch (e) {
           return json({ ok: false, error: `функция лицензий не ответила: ${String(e).slice(0, 120)}` })

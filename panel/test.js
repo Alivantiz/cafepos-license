@@ -495,16 +495,23 @@ async function testHealthRoute() {
   }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
 
   const real = global.fetch
-  let asked = ''
+  const asked = []
   global.fetch = async (url) => {
-    asked = String(url)
-    return new Response(JSON.stringify({ ok: false, signing_key: 'missing', table_licenses: 'ok', version: '7' }), { status: 200 })
+    const u = String(url)
+    asked.push(u)
+    if (u.includes('/functions/v1/status')) {
+      return new Response(JSON.stringify({ ok: false, signing_key: 'missing', table_licenses: 'ok', version: '7' }), { status: 200 })
+    }
+    // Кассы, сообщившие о беде за неделю: бейджу нужно только число.
+    return new Response('[]', { status: 200, headers: { 'content-range': '0-0/2' } })
   }
   const d = await (await call()).json()
   global.fetch = real
-  assert.ok(asked.includes('/functions/v1/status'), 'спрашиваем функцию лицензий: ' + asked)
+  assert.ok(asked[0].includes('/functions/v1/status'), 'спрашиваем функцию лицензий: ' + asked[0])
   assert.strictEqual(d.signing_key, 'missing', 'состояние ключа подписи доезжает до панели')
   assert.strictEqual(d.ok, false)
+  assert.strictEqual(d.sos, 2, 'и число касс, сообщивших о поломке — для красной точки в меню')
+  assert.ok(asked.some(u => u.includes('last_sos_at=gte.')), 'считаем только свежие SOS')
 
   const real2 = global.fetch
   global.fetch = async () => { throw new Error('нет связи') }
