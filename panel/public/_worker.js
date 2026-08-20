@@ -1410,43 +1410,52 @@ export default {
         // Что за модель сейчас распознаёт, как она себя показала на живых
         // накладных и во сколько это обходится. Одно окно вместо догадок.
         if (pathname === '/api/invoices/models') {
-          // Настройки: модель и месячный бюджет. Нет таблицы — не ошибка, а
-          // «SQL ещё не выполнен»: показываем значения по умолчанию.
-          let current = null, budget = 0, missing = false
-          const sr = await sbFetch(`${db2.url}/rest/v1/mon_settings?select=key,value`, { headers: db2.headers })
-          if (sr.ok) {
-            for (const row of await sr.json().catch(() => [])) {
-              if (row.key === 'invoice_model') current = typeof row.value === 'string' ? row.value : row.value?.model
-              if (row.key === 'ai_budget') budget = Number(typeof row.value === 'object' ? row.value?.kzt : row.value) || 0
+          // Каждый кусок окна добывается отдельно и падает отдельно. Раньше
+          // любой сбойный запрос ронял весь ответ, и окно вечно показывало
+          // «Загрузка…» — ни данных, ни причины.
+          const notes = []
+          const grab = async (what, url, headers) => {
+            try {
+              const r = await sbFetch(url, { headers })
+              if (!r.ok) {
+                const text = await r.text()
+                notes.push(`${what}: ${/does not exist|PGRST205|PGRST204|42P01|42703/.test(text)
+                  ? 'в базе ещё нет — выполните SQL из supabase/monitor-schema.sql'
+                  : r.status + ' ' + text.slice(0, 120)}`)
+                return null
+              }
+              return { rows: await r.json().catch(() => []), headers: r.headers }
+            } catch (e) {
+              notes.push(`${what}: ${String(e).slice(0, 120)}`)
+              return null
             }
-          } else missing = true
+          }
+
+          let current = null, budget = 0
+          const set = await grab('настройки', `${db2.url}/rest/v1/mon_settings?select=key,value`, db2.headers)
+          for (const row of set?.rows ?? []) {
+            if (row.key === 'invoice_model') current = typeof row.value === 'string' ? row.value : row.value?.model
+            if (row.key === 'ai_budget') budget = Number(typeof row.value === 'object' ? row.value?.usd : row.value) || 0
+          }
 
           // Качество — по последним распознаваниям. Фото не тянем: они тяжёлые,
-          // а для счёта не нужны.
-          let ir = await sbFetch(
-            `${db2.url}/rest/v1/mon_ai_invoices?select=model,items,declared_total,in_tokens,out_tokens&order=created_at.desc&limit=300`,
-            { headers: db2.headers })
-          // Колонок расхода может ещё не быть (SQL из очереди не выполнен) —
-          // тогда просим без них: качество показать всё равно можно.
-          if (!ir.ok) {
-            ir = await sbFetch(
-              `${db2.url}/rest/v1/mon_ai_invoices?select=model,items,declared_total&order=created_at.desc&limit=300`,
-              { headers: db2.headers })
+          // а для счёта не нужны. Колонок расхода может ещё не быть — тогда
+          // просим без них: качество показать всё равно можно.
+          const cols = 'model,items,declared_total'
+          let inv = await grab('накладные', `${db2.url}/rest/v1/mon_ai_invoices?select=${cols},in_tokens,out_tokens&order=created_at.desc&limit=300`, db2.headers)
+          if (!inv) {
+            notes.length = 0   // первая попытка — разведка, её жалобу не показываем
+            inv = await grab('накладные', `${db2.url}/rest/v1/mon_ai_invoices?select=${cols}&order=created_at.desc&limit=300`, db2.headers)
           }
-          const stats = ir.ok ? modelStats(await ir.json().catch(() => [])) : []
+          const stats = modelStats(inv?.rows ?? [])
 
-          // Расход за месяц: считаем распознавания и умножаем на цену ВЫБРАННОЙ
-          // модели — в mon_ai_usage модель не записана, так что это оценка
-          // сверху для дешёвой модели и снизу для дорогой.
           const from = new Date().toISOString().slice(0, 8) + '01'
-          const ur = await sbFetch(
-            `${db2.url}/rest/v1/mon_ai_usage?select=count&day=gte.${from}&limit=5000`,
-            { headers: db2.headers })
-          const done = ur.ok ? (await ur.json().catch(() => [])).reduce((a, r) => a + (Number(r.count) || 0), 0) : 0
+          const use = await grab('расход', `${db2.url}/rest/v1/mon_ai_usage?select=count&day=gte.${from}&limit=5000`, db2.headers)
+          const done = (use?.rows ?? []).reduce((a, r) => a + (Number(r.count) || 0), 0)
 
-          // Список моделей — у функции: он собран из её ключей. Не ответила —
-          // окно всё равно откроется, просто выбирать будет не из чего.
+          // Список моделей — у функции: он собран из её ключей.
           const fn = await fnModels()
+          if (!fn) notes.push('модели: функция parse-invoice не ответила списком — нужна её версия не ниже 2026-08-20.3')
           const models = fn?.models ?? []
 
           // Деньги — только настоящие. Считаются по записанным токенам и
@@ -1464,16 +1473,16 @@ export default {
           const cost = await anthropicCost(env, from, new Date().toISOString().slice(0, 10))
 
           return json({
-            current, missing, budget, done,
+            current, budget, done, notes,
             // Модель по умолчанию — та, на которой функция работает, пока выбор
             // не сделан. Без неё панель показывала бы первую из списка, а это
             // другая модель и другая цена.
             fallback: fn?.model ?? null,
             models, providers: fn?.providers ?? [], fnVersion: fn?.version ?? null,
-            billUsd: cost?.usd ?? null,        // счёт Anthropic за месяц
+            billUsd: cost?.usd ?? null,
             costError: cost?.error ?? null,
-            measuredUsd: paid ? measured : null,   // посчитано по нашим токенам
-            measuredOn: paid,                      // на скольких накладных
+            measuredUsd: paid ? measured : null,
+            measuredOn: paid,
             stats,
           })
         }

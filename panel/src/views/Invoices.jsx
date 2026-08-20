@@ -14,14 +14,18 @@ import { toast, confirmDialog, Modal } from '../ui'
 function ModelPicker() {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState(null)
+  const [err, setErr] = useState(null)
   const [busy, setBusy] = useState(false)
   const [budget, setBudget] = useState('')
 
+  // Ошибку показываем В ОКНЕ. Раньше она уходила в тост, а окно оставалось в
+  // «Загрузка…» навсегда — и выглядело это как зависшая панель.
   const load = async () => {
+    setErr(null)
     try {
       const d = await api('invoices/models', {})
       setData(d); setBudget(String(d.budget || ''))
-    } catch (e) { toast.err(e.message) }
+    } catch (e) { setErr(e.message) }
   }
   useEffect(() => { load() }, [])
 
@@ -53,7 +57,14 @@ function ModelPicker() {
       </button>
       {open && (
         <Modal title="Модель распознавания" onClose={() => setOpen(false)}>
-          {!data ? <div className="empty">Загрузка…</div> : (
+          {err ? (
+            <>
+              <div className="card" style={{ borderColor: 'var(--bad)' }}>{err}</div>
+              <div className="row" style={{ marginTop: 10 }}>
+                <button className="btn sm" onClick={load}>Повторить</button>
+              </div>
+            </>
+          ) : !data ? <div className="empty">Загрузка…</div> : (
             <>
               {/* Деньги показываем только настоящие. Счёт организации знает всё,
                   включая накладные до появления записи токенов, — он главнее. */}
@@ -66,6 +77,14 @@ function ModelPicker() {
                         (на {data.measuredOn} накладных из {data.done})</>
                     : <b>Сколько потрачено — данных нет.</b>}
               </div>
+
+              {/* Чего именно не хватает — списком. Иначе окно выглядит пустым
+                  и непонятно, панель сломалась или SQL не выполнен. */}
+              {data.notes?.length > 0 && (
+                <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 10 }}>
+                  {data.notes.map((n, i) => <div key={i} className="muted2">{n}</div>)}
+                </div>
+              )}
 
               {data.billUsd == null && (
                 <div className="muted2" style={{ marginBottom: 10 }}>
