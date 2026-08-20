@@ -511,6 +511,7 @@ async function testHealthRoute() {
   assert.strictEqual(d.signing_key, 'missing', 'состояние ключа подписи доезжает до панели')
   assert.strictEqual(d.ok, false)
   assert.strictEqual(d.sos, 2, 'и число касс, сообщивших о поломке — для красной точки в меню')
+  assert.strictEqual(d.errors, 2, 'и число касс, которые ругаются ошибками')
   assert.ok(asked.some(u => u.includes('last_sos_at=gte.')), 'считаем только свежие SOS')
 
   const real2 = global.fetch

@@ -678,23 +678,27 @@ export default {
           // Заодно считаем кассы, которые сами сообщили о беде за последнюю
           // неделю. Один дешёвый запрос на оба сигнала: бейдж в меню зовёт
           // владельца, а не ждёт, пока он откроет нужную карточку.
-          let sos = 0
-          try {
-            const since = new Date(Date.now() - 7 * 86400000).toISOString()
-            const sr = await sbFetch(
-              `${db.url}/rest/v1/licenses?select=id&last_sos_at=gte.${since}&limit=1`,
-              { headers: { ...db.headers, Prefer: 'count=exact' } })
-            if (sr.ok) {
-              const n = Number((sr.headers.get('content-range') || '').split('/')[1])
-              if (Number.isFinite(n)) sos = n
-            }
-          } catch { /* колонок ещё нет — просто ноль */ }
+          const countSince = async (col, days) => {
+            try {
+              const since = new Date(Date.now() - days * 86400000).toISOString()
+              const r2 = await sbFetch(
+                `${db.url}/rest/v1/licenses?select=id&${col}=gte.${since}&limit=1`,
+                { headers: { ...db.headers, Prefer: 'count=exact' } })
+              if (!r2.ok) return 0
+              const n = Number((r2.headers.get('content-range') || '').split('/')[1])
+              return Number.isFinite(n) ? n : 0
+            } catch { return 0 }   // колонок ещё нет — просто ноль
+          }
+          // Заблокированные — за неделю, ругающиеся — за трое суток: поломка
+          // железа либо чинится за день, либо это уже не новость.
+          const sos = await countSince('last_sos_at', 7)
+          const errs = await countSince('last_errors_at', 3)
           return json({
             ok: !!d?.ok,
             signing_key: d?.signing_key ?? null,
             table_licenses: d?.table_licenses ?? null,
             version: d?.version ?? null,
-            sos,
+            sos, errors: errs,
           })
         } catch (e) {
           return json({ ok: false, error: `функция лицензий не ответила: ${String(e).slice(0, 120)}` })

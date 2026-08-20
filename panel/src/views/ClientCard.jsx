@@ -101,6 +101,21 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
         </div>
       )}
 
+      {/* Ошибки кассы: печать, ККТ, база. Не журнал — повод его запросить.
+          Свежее трёх дней: старое уже либо починили, либо не важно. */}
+      {c.last_errors?.count > 0 && daysAgo(c.last_errors_at) != null && daysAgo(c.last_errors_at) <= 3 && (
+        <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 16 }}>
+          <b style={{ color: 'var(--bad)' }}>Касса ругается: {c.last_errors.count} ошибок</b>{' '}
+          <span className="muted2">{agoText(c.last_errors_at)}</span>
+          <div className="muted2" style={{ marginTop: 4, wordBreak: 'break-word' }}>
+            последняя: {c.last_errors.last || '—'}
+          </div>
+          <div className="muted2" style={{ marginTop: 4 }}>
+            подробности — в журнале кассы, кнопка ниже
+          </div>
+        </div>
+      )}
+
       {/* SOS: касса сама сообщила, что заблокирована или на отсрочке. Свежее
           недели — тревога; старое не показываем: раз связь идёт и статуса
           нового нет, проблема решена. Журнал — не автоматом, а по кнопке:
