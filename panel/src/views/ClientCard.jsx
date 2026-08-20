@@ -265,7 +265,7 @@ function LogRequest({ c, onDone }) {
         <b>Журнал кассы</b>
         <span className="muted2">
           {fresh ? `получен ${agoText(c.last_log_at)}`
-            : pending ? `запрошен ${agoText(c.log_requested_at)} — ждём выхода кассы на связь; молчит дольше 20 минут — у неё нет интернета`
+            : pending ? `запрошен ${agoText(c.log_requested_at)} — придёт при выходе кассы на связь (до 15 мин). Молчит дольше — у кассы нет интернета, и дело не в лицензии`
               : 'запрашивается с кассы по кнопке, приходит при её выходе на связь'}
         </span>
         <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || !!pending} onClick={ask}>
