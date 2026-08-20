@@ -482,6 +482,40 @@ async function testTrialsMerge() {
   console.log('склейка пробных с лицензиями: OK')
 }
 
+// Здоровье облака лицензий. Пустой секрет подписи однажды остановил кассы у
+// клиентов, и заметили это они, а не вендор: снаружи это видно только через
+// служебный ответ функции.
+async function testHealthRoute() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_health_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const call = () => worker.fetch(new Request('https://x.test/api/health', {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: '{}'
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+
+  const real = global.fetch
+  let asked = ''
+  global.fetch = async (url) => {
+    asked = String(url)
+    return new Response(JSON.stringify({ ok: false, signing_key: 'missing', table_licenses: 'ok', version: '7' }), { status: 200 })
+  }
+  const d = await (await call()).json()
+  global.fetch = real
+  assert.ok(asked.includes('/functions/v1/status'), 'спрашиваем функцию лицензий: ' + asked)
+  assert.strictEqual(d.signing_key, 'missing', 'состояние ключа подписи доезжает до панели')
+  assert.strictEqual(d.ok, false)
+
+  const real2 = global.fetch
+  global.fetch = async () => { throw new Error('нет связи') }
+  const down = await (await call()).json()
+  global.fetch = real2
+  assert.strictEqual(down.ok, false, 'функция не ответила — это тоже «не в порядке»')
+  assert.ok(down.error, 'и причина названа')
+
+  console.log('здоровье облака лицензий: OK')
+}
+
 // Маршруты словаря написаний: их четыре, и половина принимает id/штрихкод —
 // молча проглоченный мусор здесь означает привязку не к тому товару во всех
 // магазинах сразу.
@@ -967,6 +1001,7 @@ async function testInvoiceCodes() {
 try {
   await testServerRoutes()
   await testAliasRoutes()
+  await testHealthRoute()
   await testInvoiceCodes()
   await testTrialsMerge()
   testUsageWindows()

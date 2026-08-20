@@ -2,7 +2,7 @@
 // торгует ли заведение и сколько, было негде. Теперь в строке — живое:
 // выручка за неделю, средний чек, когда последняя продажа.
 import { useMemo, useState } from 'react'
-import { daysLeft, daysAgo, fmtDate, money, agoText, isLive } from '../api'
+import { daysLeft, daysAgo, fmtDate, money, agoText, isLive, useApi } from '../api'
 import { Tag, Spark, calendar } from '../ui'
 
 const status = (c) => {
@@ -23,6 +23,32 @@ const FILTERS = [
   { id: 'expiring', label: 'Истекают' },
   { id: 'hidden', label: 'Скрытые' },
 ]
+
+// Подписывает ли облако лицензии. Молчаливая поломка этого секрета один раз
+// уже остановила кассы у клиентов: активация выдавала файл, который касса не
+// может проверить. Пока всё в порядке — строка не мозолит глаза.
+function CloudHealth() {
+  const { data } = useApi('health')
+  if (!data) return null
+  const bad = data.signing_key === 'missing' || data.table_licenses === 'no_table' || data.error
+  if (!bad) {
+    return (
+      <div className="muted2" style={{ marginBottom: 8 }}>
+        облако лицензий: подпись ок{data.version ? ` · ${data.version}` : ''}
+      </div>
+    )
+  }
+  return (
+    <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 10 }}>
+      <b style={{ color: 'var(--bad)' }}>Облако лицензий не в порядке.</b>{' '}
+      {data.error ? data.error : <>
+        {data.signing_key === 'missing' && <>нет ключа подписи (LICENSE_PRIVATE_KEY) — активация выдаст файл,
+          который касса не примет. </>}
+        {data.table_licenses === 'no_table' && <>функция не видит таблицу лицензий. </>}
+      </>}
+    </div>
+  )
+}
 
 export default function Clients({ data, onOpen, onIssue, cities, initialFilter }) {
   const [q, setQ] = useState('')
@@ -77,6 +103,7 @@ export default function Clients({ data, onOpen, onIssue, cities, initialFilter }
 
   return (
     <>
+      <CloudHealth />
       <div className="row" style={{ marginBottom: 14 }}>
         <input placeholder="Имя, код компьютера…" value={q} onChange={e => setQ(e.target.value)}
           style={{ maxWidth: 260 }} />

@@ -245,6 +245,11 @@ export function itemKeys(it) {
 // появились в панели сами. Хранить копию списка тут значило бы, что панель
 // предлагает то, чего функция вызвать не умеет.
 const FN_URL = 'https://stdlphhidxzgtrzbcwhx.supabase.co/functions/v1/parse-invoice'
+// Функция лицензий. Её служебный ответ на GET — единственный способ увидеть
+// СНАРУЖИ, есть ли в облаке ключ подписи. Однажды его там не оказалось, и
+// узналось это от клиентов: активация выдавала файл, который касса не может
+// проверить, и та писала «повреждён или подделан».
+const LIC_FN_URL = 'https://uvuzotcilselezjwrpmb.supabase.co/functions/v1/status'
 
 // Денег от себя не выдумываем. Цена за миллион токенов — опубликованный
 // прайс провайдера, он приходит вместе со списком моделей. А сколько стоила
@@ -662,6 +667,24 @@ export default {
       // машине и revoked меняются своими каналами со своей логикой (продление
       // считает от текущей даты, привязку ставит /activate). Попади они сюда —
       // и лицензию можно было бы «продлить» мимо всех проверок.
+      // Здоровье облака лицензий: подписывает ли оно вообще. Секретов ответ не
+      // содержит — только «ok/missing» и номер версии функции.
+      if (pathname === '/api/health') {
+        try {
+          const r = await sbFetch(LIC_FN_URL, { headers: { accept: 'application/json' } })
+          if (!r.ok) return json({ ok: false, error: `функция лицензий: ${r.status}` })
+          const d = await r.json()
+          return json({
+            ok: !!d?.ok,
+            signing_key: d?.signing_key ?? null,
+            table_licenses: d?.table_licenses ?? null,
+            version: d?.version ?? null,
+          })
+        } catch (e) {
+          return json({ ok: false, error: `функция лицензий не ответила: ${String(e).slice(0, 120)}` })
+        }
+      }
+
       if (pathname === '/api/edit') {
         const body = await request.json()
         const id = body?.id
