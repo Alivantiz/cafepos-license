@@ -2,7 +2,108 @@ import { useEffect, useState } from 'react'
 // Разбор ИИ-распознаваний накладных: фото, что распозналось, и решение —
 // «разобрано» (фото удаляется) или «удалить целиком».
 import { api, useApi } from '../api'
-import { toast, confirmDialog } from '../ui'
+import { toast, confirmDialog, Modal } from '../ui'
+
+// Выбор модели распознавания. Открывается кликом по нынешней модели: сперва
+// показываем, как модели показали себя на ЖИВЫХ накладных и сколько это стоит,
+// и только потом даём переключить.
+//
+// Качество считается по самой накладной, без ручной разметки: количество × цена
+// должно давать сумму строки, сумма строк — напечатанный итог, а у штрихкода
+// есть контрольная цифра.
+function ModelPicker() {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [budget, setBudget] = useState('')
+
+  const load = async () => {
+    try {
+      const d = await api('invoices/models', {})
+      setData(d); setBudget(String(d.budget || ''))
+    } catch (e) { toast.err(e.message) }
+  }
+  useEffect(() => { load() }, [])
+
+  const pick = async (m) => {
+    if (!await confirmDialog({
+      title: 'Сменить модель распознавания',
+      message: `Все накладные всех магазинов будут распознаваться моделью «${m.name}» — примерно ${m.kzt} тг за накладную. Действует сразу, выкладка не нужна.`,
+      confirmText: 'Сменить',
+    })) return
+    setBusy(true)
+    try { await api('invoices/setModel', { model: m.id }); toast.ok('Модель сменена'); await load() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  const saveBudget = async () => {
+    setBusy(true)
+    try { await api('invoices/setModel', { budget: Number(budget) || 0 }); toast.ok('Бюджет сохранён'); await load() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  const now = data?.models?.find(m => m.id === data.current)
+  const label = now?.name ?? (data?.current || 'модель по умолчанию')
+
+  return (
+    <>
+      <button className="btn sm" onClick={() => setOpen(true)} title="Какой моделью распознаются накладные">
+        Модель: {label}
+      </button>
+      {open && (
+        <Modal title="Модель распознавания" onClose={() => setOpen(false)}>
+          {!data ? <div className="empty">Загрузка…</div> : (
+            <>
+              <div className="muted2" style={{ marginBottom: 10 }}>
+                За месяц распознано {data.done}, это ≈{data.spent.toLocaleString('ru-RU')} тг
+                {data.budget > 0 && <> из {data.budget.toLocaleString('ru-RU')} — осталось{' '}
+                  <b style={{ color: data.spent > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
+                    {Math.max(0, data.budget - data.spent).toLocaleString('ru-RU')} тг
+                  </b></>}
+              </div>
+
+              {data.models.map(m => {
+                const st = data.stats.find(x => x.model === m.id)
+                const cur = m.id === data.current
+                return (
+                  <div key={m.id} className="card" style={{ marginBottom: 10, borderColor: cur ? 'var(--ok)' : undefined }}>
+                    <div className="row">
+                      <b>{m.name}</b>
+                      <span className="muted2">≈{m.kzt} тг за накладную · {m.note}</span>
+                      <span style={{ marginLeft: 'auto' }}>
+                        {cur ? <span className="tag ok">сейчас</span>
+                          : <button className="btn sm" disabled={busy} onClick={() => pick(m)}>Выбрать</button>}
+                      </span>
+                    </div>
+                    {/* Без накладных на этой модели сравнивать нечего — так и пишем,
+                        вместо прочерков, которые выглядят как ноль процентов. */}
+                    <div className="muted2" style={{ marginTop: 6 }}>
+                      {st
+                        ? <>на {st.invoices} накладных: суммы строк сходятся {st.sumPct ?? '—'}%,
+                            штрихкоды {st.codePct ?? '—'}%, итог документа {st.totalPct ?? '—'}%</>
+                        : 'на этой модели накладных ещё не было'}
+                    </div>
+                  </div>
+                )
+              })}
+
+              <div className="row" style={{ marginTop: 12, gap: 8 }}>
+                <input value={budget} onChange={e => setBudget(e.target.value.replace(/\D/g, ''))}
+                  inputMode="numeric" placeholder="Бюджет на месяц, тг" style={{ flex: 1, minWidth: 0 }} />
+                <button className="btn sm" disabled={busy} onClick={saveBudget}>Сохранить</button>
+              </div>
+              <div className="muted2" style={{ marginTop: 8 }}>
+                Доли считаются по самой накладной: количество × цена должно давать сумму строки,
+                сумма строк — напечатанный итог, а у штрихкода сходится контрольная цифра.
+                Расход — оценка по числу распознаваний и цене выбранной модели, а не счёт Anthropic.
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+    </>
+  )
+}
 
 // Количество, цена и сумма строки. Раньше писали «15 уп · 800», и это читалось
 // как «15 упаковок за 800» — хотя 800 это цена ОДНОЙ упаковки, а строка стоит
@@ -102,6 +203,7 @@ export default function Invoices({ onReload }) {
           <button key={String(id)} className={'btn sm' + (reviewed === id ? ' pri' : '')}
             onClick={() => setReviewed(id)}>{label}</button>
         ))}
+        <ModelPicker />
         {/* Место кончается молча: база бесплатного тарифа не бесконечная, а
             весит в ней именно base64 фотографий. */}
         {data?.photos?.count > 0 && (

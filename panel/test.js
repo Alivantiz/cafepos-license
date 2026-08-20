@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, MODELS, modelPriceKzt } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -815,6 +815,34 @@ async function testInvoiceCodes() {
     global.fetch = real
     assert.ok(d.note && d.note.includes('Названиях'), 'написания в очереди нет — объясняем, куда идти')
   }
+
+  // Качество модели считается по самой накладной: количество × цена = сумма
+  // строки, сумма строк = напечатанный итог, у штрихкода сходится контрольная.
+  {
+    const st = modelStats([
+      { model: 'A', declared_total: 1100, items: [
+        { name: 'Пепси', quantity: 2, price: 500, line_total: 900, barcode: '4870204391237' },  // 2×500 ≠ 900
+        { name: 'Кола', quantity: 1, price: 200, line_total: 200, barcode: '4870204391234' },   // код врёт
+      ] },
+    ])[0]
+    assert.strictEqual(st.invoices, 1)
+    assert.strictEqual(st.lines, 2)
+    assert.strictEqual(st.sumPct, 50, 'одна строка из двух сходится по сумме')
+    assert.strictEqual(st.codePct, 50, 'один код из двух проходит контрольную цифру')
+    assert.strictEqual(st.totalPct, 100, 'итог 1100 = 900 + 200 — напечатанные суммы строк')
+  }
+  {
+    const empty = modelStats([{ model: 'B', items: [{ name: 'Хлеб' }] }])[0]
+    assert.strictEqual(empty.sumPct, null, 'без напечатанных сумм долю не выдумываем')
+    assert.strictEqual(empty.codePct, null, 'без кодов — тоже')
+  }
+
+  // Смена модели: список белый, иначе опечатка кладёт распознавание у всех.
+  assert.strictEqual((await call('/api/invoices/setModel', { model: 'gpt-выдумка' })).status, 400,
+    'модель не из списка — отказ')
+  assert.ok(MODELS.some(m => m.id === 'claude-sonnet-5'), 'нынешняя модель в списке')
+  assert.ok(modelPriceKzt(MODELS.find(m => m.id === 'claude-haiku-4-5'))
+    < modelPriceKzt(MODELS.find(m => m.id === 'claude-opus-5')), 'Haiku дешевле Opus')
 
   console.log('коды из накладных: OK')
 }

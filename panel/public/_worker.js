@@ -239,6 +239,54 @@ export function itemKeys(it) {
     .filter(k => k.length >= 4 && !k.includes('"'))
 }
 
+// ── Модели распознавания ───────────────────────────────────────────────────
+// Список продублирован в edge-функции (parse-invoice/index.ts, ALLOWED_MODELS):
+// панель предлагает, функция проверяет. Менять их надо парой — модель, которой
+// нет в списке функции, будет молча проигнорирована.
+//
+// Цена — за одну накладную: фото плюс промпт это ≈4000 токенов входа и ≈1200
+// выхода. Прикидка, а не счёт от Anthropic: точная сумма зависит от размера
+// фотографии и длины накладной. Курс округлён.
+const KZT_PER_USD = 500
+export const MODELS = [
+  { id: 'claude-haiku-4-5', name: 'Haiku 4.5', in: 1, out: 5, note: 'дешевле всех, слабее на мятой бумаге' },
+  { id: 'claude-sonnet-5', name: 'Sonnet 5', in: 2, out: 10, note: 'нынешняя — цена вводная до 1 сентября' },
+  { id: 'claude-opus-5', name: 'Opus 5', in: 5, out: 25, note: 'самая точная и самая дорогая' },
+]
+export const modelPriceKzt = (m) =>
+  Math.round((3959 / 1e6 * m.in + 1200 / 1e6 * m.out) * KZT_PER_USD * 10) / 10
+
+// Качество модели считается по самой накладной, без ручной разметки: она
+// проверяет себя трижды — количество × цена даёт сумму строки, сумма строк даёт
+// напечатанный итог, а у штрихкода есть контрольная цифра. Три доли и есть
+// ответ на вопрос «какую модель держать».
+export function modelStats(rows) {
+  const by = new Map()
+  const num = (v) => Number(String(v ?? '').replace(',', '.')) || 0
+  for (const r of rows || []) {
+    const id = String(r.model || '—')
+    const st = by.get(id) ?? { model: id, invoices: 0, lines: 0, sumOk: 0, sumAll: 0, codeOk: 0, codeAll: 0, totalOk: 0, totalAll: 0 }
+    st.invoices++
+    let lineSum = 0
+    for (const it of r.items || []) {
+      st.lines++
+      const mult = num(it.quantity ?? it.qty) * num(it.price)
+      const printed = num(it.line_total)
+      lineSum += printed || mult
+      if (printed > 0) { st.sumAll++; if (Math.abs(printed - mult) <= 1) st.sumOk++ }
+      const c = invoiceItemCode(it)
+      if (c.found) { st.codeAll++; if (c.barcode) st.codeOk++ }
+    }
+    const declared = num(r.declared_total)
+    if (declared > 0 && lineSum > 0) { st.totalAll++; if (Math.abs(declared - lineSum) <= 1) st.totalOk++ }
+    by.set(id, st)
+  }
+  const pct = (ok, all) => (all ? Math.round(ok * 100 / all) : null)
+  return [...by.values()]
+    .map(s => ({ ...s, sumPct: pct(s.sumOk, s.sumAll), codePct: pct(s.codeOk, s.codeAll), totalPct: pct(s.totalOk, s.totalAll) }))
+    .sort((a, b) => b.invoices - a.invoices)
+}
+
 // Коды, отличающиеся от прочитанного ОДНОЙ цифрой и проходящие контрольную
 // сумму. Ошибка распознавания почти всегда такая: «6» вместо «0», «9» вместо
 // «7». Из 117 замен контрольную проходит десяток, а дальше отсеет справочник —
@@ -1305,6 +1353,74 @@ export default {
             // менять код надо осознанно, во вкладке «Названия».
             note: hit.length ? null : 'В очереди этого написания нет — код уже привязан. Поменять его можно в «Названиях» → «Привязанные».',
           })
+        }
+
+        // Что за модель сейчас распознаёт, как она себя показала на живых
+        // накладных и во сколько это обходится. Одно окно вместо догадок.
+        if (pathname === '/api/invoices/models') {
+          // Настройки: модель и месячный бюджет. Нет таблицы — не ошибка, а
+          // «SQL ещё не выполнен»: показываем значения по умолчанию.
+          let current = null, budget = 0, missing = false
+          const sr = await sbFetch(`${db2.url}/rest/v1/mon_settings?select=key,value`, { headers: db2.headers })
+          if (sr.ok) {
+            for (const row of await sr.json().catch(() => [])) {
+              if (row.key === 'invoice_model') current = typeof row.value === 'string' ? row.value : row.value?.model
+              if (row.key === 'ai_budget') budget = Number(typeof row.value === 'object' ? row.value?.kzt : row.value) || 0
+            }
+          } else missing = true
+
+          // Качество — по последним распознаваниям. Фото не тянем: они тяжёлые,
+          // а для счёта не нужны.
+          const ir = await sbFetch(
+            `${db2.url}/rest/v1/mon_ai_invoices?select=model,items,declared_total&order=created_at.desc&limit=300`,
+            { headers: db2.headers })
+          const stats = ir.ok ? modelStats(await ir.json().catch(() => [])) : []
+
+          // Расход за месяц: считаем распознавания и умножаем на цену ВЫБРАННОЙ
+          // модели — в mon_ai_usage модель не записана, так что это оценка
+          // сверху для дешёвой модели и снизу для дорогой.
+          const from = new Date().toISOString().slice(0, 8) + '01'
+          const ur = await sbFetch(
+            `${db2.url}/rest/v1/mon_ai_usage?select=count&day=gte.${from}&limit=5000`,
+            { headers: db2.headers })
+          const done = ur.ok ? (await ur.json().catch(() => [])).reduce((a, r) => a + (Number(r.count) || 0), 0) : 0
+          const model = MODELS.find(m => m.id === current) ?? MODELS.find(m => m.id === 'claude-sonnet-5')
+
+          return json({
+            current, missing, budget, done,
+            spent: Math.round(done * modelPriceKzt(model)),
+            models: MODELS.map(m => ({ ...m, kzt: modelPriceKzt(m) })),
+            stats,
+          })
+        }
+
+        // Смена модели. Белый список — и здесь, и в функции: модель, которой
+        // нет в списке, означала бы отказ распознавания у всех клиентов сразу.
+        if (pathname === '/api/invoices/setModel') {
+          const { model, budget } = await request.json()
+          const patch = []
+          if (model !== undefined) {
+            if (!MODELS.some(m => m.id === model)) return json({ error: 'Неизвестная модель' }, 400)
+            patch.push({ key: 'invoice_model', value: model, updated_at: new Date().toISOString() })
+          }
+          if (budget !== undefined) {
+            const kzt = Math.max(0, Math.round(Number(budget) || 0))
+            patch.push({ key: 'ai_budget', value: kzt, updated_at: new Date().toISOString() })
+          }
+          if (!patch.length) return json({ error: 'Нечего менять' }, 400)
+          const up = await sbFetch(`${db2.url}/rest/v1/mon_settings?on_conflict=key`, {
+            method: 'POST',
+            headers: { ...db2.headers, Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(patch),
+          })
+          if (!up.ok) {
+            const text = await up.text()
+            if (/does not exist|PGRST205|42P01/.test(text)) {
+              return json({ error: 'В базе нет таблицы mon_settings — выполните SQL из supabase/monitor-schema.sql' }, 502)
+            }
+            return json({ error: `Supabase: ${up.status} ${text}` }, 502)
+          }
+          return json({ ok: true })
         }
 
         if (pathname === '/api/invoices/review') {
