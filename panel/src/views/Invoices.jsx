@@ -28,7 +28,7 @@ function ModelPicker() {
   const pick = async (m) => {
     if (!await confirmDialog({
       title: 'Сменить модель распознавания',
-      message: `Все накладные всех магазинов будут распознаваться моделью «${m.name}» — примерно ${m.kzt} тг за накладную. Действует сразу, выкладка не нужна.`,
+      message: `Все накладные всех магазинов будут распознаваться моделью «${m.name}». Действует сразу, выкладка не нужна.`,
       confirmText: 'Сменить',
     })) return
     setBusy(true)
@@ -42,8 +42,9 @@ function ModelPicker() {
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
-  const now = data?.models?.find(m => m.id === data.current)
-  const label = now?.name ?? (data?.current || 'модель по умолчанию')
+  const usd = (n, digits = 2) => '$' + Number(n).toFixed(digits)
+  const cur = data?.models?.find(m => m.id === data.current)
+  const label = cur?.name ?? (data?.current || data?.fallback || 'по умолчанию')
 
   return (
     <>
@@ -54,69 +55,86 @@ function ModelPicker() {
         <Modal title="Модель распознавания" onClose={() => setOpen(false)}>
           {!data ? <div className="empty">Загрузка…</div> : (
             <>
+              {/* Деньги показываем только настоящие. Счёт организации знает всё,
+                  включая накладные до появления записи токенов, — он главнее. */}
               <div className="muted2" style={{ marginBottom: 10 }}>
-                За месяц распознано {data.done}, потрачено{' '}
-                {data.spentReal ? '' : '≈'}{data.spent.toLocaleString('ru-RU')} тг
-                {data.spentReal
-                  ? <span title="Счёт Anthropic по отчёту Usage & Cost"> (по счёту)</span>
-                  : <span title="Число распознаваний × цена выбранной модели. Точную сумму даст админский ключ Anthropic"> (оценка)</span>}
-                {data.budget > 0 && <> из {data.budget.toLocaleString('ru-RU')} — осталось{' '}
-                  <b style={{ color: data.spent > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
-                    {Math.max(0, data.budget - data.spent).toLocaleString('ru-RU')} тг
-                  </b></>}
+                За месяц распознано {data.done}.{' '}
+                {data.billUsd != null
+                  ? <>Счёт Anthropic: <b>{usd(data.billUsd)}</b></>
+                  : data.measuredUsd != null
+                    ? <>Потрачено по записанным токенам: <b>{usd(data.measuredUsd)}</b>{' '}
+                        (на {data.measuredOn} накладных из {data.done})</>
+                    : <b>Сколько потрачено — данных нет.</b>}
               </div>
 
-              {/* Ошибку отчёта прячем не молча: без неё непонятно, почему
-                  вместо счёта показана оценка. */}
-              {data.costError && (
-                <div className="muted2" style={{ color: 'var(--bad)', marginBottom: 10 }}>
-                  Счёт получить не удалось: {data.costError}
+              {data.billUsd == null && (
+                <div className="muted2" style={{ marginBottom: 10 }}>
+                  {data.costError
+                    ? <>Счёт получить не удалось: {data.costError}</>
+                    : <>Точную сумму отдаёт Anthropic по админскому ключу организации —
+                       положите его в секрет ANTHROPIC_ADMIN_KEY. Остатка средств не отдаёт
+                       никто: такого эндпоинта у Anthropic нет.</>}
                 </div>
               )}
 
               {!data.models.length && (
                 <div className="empty">
-                  Функция parse-invoice не ответила списком моделей — выберите её версию не ниже
-                  2026-08-20.3 и проверьте, что в секретах есть хотя бы один ключ провайдера.
+                  Функция parse-invoice не ответила списком моделей — нужна её версия не ниже
+                  2026-08-20.3 и хотя бы один ключ провайдера в секретах.
                 </div>
               )}
 
               {data.models.map(m => {
                 const st = data.stats.find(x => x.model === m.id)
-                const cur = m.id === data.current
+                const isCur = m.id === data.current || (!data.current && m.id === data.fallback)
                 return (
-                  <div key={m.id} className="card" style={{ marginBottom: 10, borderColor: cur ? 'var(--ok)' : undefined }}>
+                  <div key={m.id} className="card" style={{ marginBottom: 10, borderColor: isCur ? 'var(--ok)' : undefined }}>
                     <div className="row">
                       <b>{m.name}</b>
-                      <span className="muted2">≈{m.kzt} тг за накладную · {m.note}</span>
+                      <span className="muted2">{m.note}</span>
                       <span style={{ marginLeft: 'auto' }}>
-                        {cur ? <span className="tag ok">сейчас</span>
+                        {isCur ? <span className="tag ok">сейчас</span>
                           : <button className="btn sm" disabled={busy} onClick={() => pick(m)}>Выбрать</button>}
                       </span>
                     </div>
-                    {/* Без накладных на этой модели сравнивать нечего — так и пишем,
-                        вместо прочерков, которые выглядят как ноль процентов. */}
-                    <div className="muted2" style={{ marginTop: 6 }}>
-                      {st
-                        ? <>на {st.invoices} накладных: суммы строк сходятся {st.sumPct ?? '—'}%,
-                            штрихкоды {st.codePct ?? '—'}%, итог документа {st.totalPct ?? '—'}%</>
-                        : 'на этой модели накладных ещё не было'}
+                    <div className="muted2" style={{ marginTop: 4 }}>
+                      прайс: {usd(m.in, 2)} за млн входящих, {usd(m.out, 2)} за млн исходящих
+                    </div>
+                    {/* Цену накладной НЕ вычисляем заранее: у моделей с
+                        размышлениями выход в разы больше ожидаемого. Только по
+                        фактически записанным токенам, и только если они есть. */}
+                    <div className="muted2" style={{ marginTop: 4 }}>
+                      {!st ? 'накладных на этой модели ещё не было'
+                        : <>на {st.invoices} накладных: суммы строк {st.sumPct ?? '—'}%,
+                            штрихкоды {st.codePct ?? '—'}%, итог {st.totalPct ?? '—'}%
+                            {' · '}
+                            {st.usdPer != null
+                              ? <>факт: {usd(st.usdPer, 4)} за накладную ({st.paid} шт.)</>
+                              : 'расход не записан'}</>}
                     </div>
                   </div>
                 )
               })}
 
               <div className="row" style={{ marginTop: 12, gap: 8 }}>
-                <input value={budget} onChange={e => setBudget(e.target.value.replace(/\D/g, ''))}
-                  inputMode="numeric" placeholder="Бюджет на месяц, тг" style={{ flex: 1, minWidth: 0 }} />
+                <input value={budget} onChange={e => setBudget(e.target.value.replace(/[^\d.]/g, ''))}
+                  inputMode="decimal" placeholder="Бюджет на месяц, $" style={{ flex: 1, minWidth: 0 }} />
                 <button className="btn sm" disabled={busy} onClick={saveBudget}>Сохранить</button>
               </div>
-              <div className="muted2" style={{ marginTop: 8 }}>
+              {data.budget > 0 && (data.billUsd ?? data.measuredUsd) != null && (
+                <div className="muted2" style={{ marginTop: 6 }}>
+                  осталось от бюджета:{' '}
+                  <b style={{ color: (data.billUsd ?? data.measuredUsd) > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
+                    {usd(Math.max(0, data.budget - (data.billUsd ?? data.measuredUsd)))}
+                  </b>
+                </div>
+              )}
+
+              <div className="muted2" style={{ marginTop: 10 }}>
                 Доли считаются по самой накладной: количество × цена должно давать сумму строки,
-                сумма строк — напечатанный итог, а у штрихкода сходится контрольная цифра.
-                Список моделей приходит от самой функции и собран из её ключей: добавишь ключ
-                нового провайдера — его модели появятся здесь сами. Баланса счёта в API нет ни у
-                кого, поэтому «осталось» считается от бюджета, который ты задаёшь тут же.
+                сумма строк — напечатанный итог, у штрихкода сходится контрольная цифра.
+                Список моделей приходит от функции и собран из её ключей: добавишь ключ нового
+                провайдера — его модели появятся здесь сами.
               </div>
             </>
           )}

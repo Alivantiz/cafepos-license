@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelPriceKzt, anthropicCost } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelCost, anthropicCost } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -816,6 +816,18 @@ async function testInvoiceCodes() {
     assert.ok(d.note && d.note.includes('Названиях'), 'написания в очереди нет — объясняем, куда идти')
   }
 
+  // Расход берётся только из записанных токенов: накладные без записи в счёт
+  // не идут, иначе цена за накладную выйдет ниже настоящей.
+  {
+    const st = modelStats([
+      { model: 'A', items: [], in_tokens: 4000, out_tokens: 5000 },
+      { model: 'A', items: [] },                                    // старая, без записи
+    ])[0]
+    assert.strictEqual(st.invoices, 2, 'обе накладные посчитаны')
+    assert.strictEqual(st.paid, 1, 'но расход известен только по одной')
+    assert.strictEqual(st.tokOut, 5000, 'исходящие сложены — в них и размышления')
+  }
+
   // Качество модели считается по самой накладной: количество × цена = сумма
   // строки, сумма строк = напечатанный итог, у штрихкода сходится контрольная.
   {
@@ -858,7 +870,9 @@ async function testInvoiceCodes() {
     assert.strictEqual(bad.status, 400, 'модель не из списка функции — отказ')
     assert.strictEqual(ok.status, 200, 'модель из списка — принимается')
   }
-  assert.ok(modelPriceKzt({ in: 1, out: 5 }) < modelPriceKzt({ in: 5, out: 25 }), 'дешёвая модель дешевле дорогой')
+  // Деньги считаются ТОЛЬКО по фактическим токенам и опубликованному прайсу.
+  assert.strictEqual(modelCost({ in: 2, out: 10 }, 1e6, 1e6), 12, 'вход по своей цене, выход по своей')
+  assert.strictEqual(modelCost({ in: 2, out: 10 }, 0, 0), 0, 'нет токенов — нет суммы')
 
   // Фактический расход берём у Anthropic, но только если задан админский ключ:
   // без него панель обязана честно показывать оценку, а не ноль.
@@ -871,6 +885,7 @@ async function testInvoiceCodes() {
     const c = await anthropicCost({ ANTHROPIC_ADMIN_KEY: 'k' }, '2026-08-01', '2026-08-20')
     global.fetch = real
     assert.strictEqual(c.usd, 2, 'суммы из корзин складываются')
+    assert.strictEqual(c.kzt, undefined, 'в тенге ничего не пересчитываем — курс не наш')
   }
 
   console.log('коды из накладных: OK')

@@ -186,7 +186,14 @@ export function Modal({ title, onClose, children, keepOpen }) {
     // ещё и показанный код активации.
     <div className="backdrop" onClick={keepOpen ? undefined : onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>{title}</h3>
+        {/* Крестик обязателен: Escape на телефоне не нажать, а окно занимает
+            весь экран — промахнуться по фону некуда. Показываем и у keepOpen:
+            он защищает от СЛУЧАЙНОГО закрытия, а не от намеренного. */}
+        <div className="row" style={{ alignItems: 'flex-start' }}>
+          <h3 style={{ flex: 1, minWidth: 0 }}>{title}</h3>
+          <button className="btn sm ghost" onClick={onClose} aria-label="Закрыть" title="Закрыть"
+            style={{ marginLeft: 8, lineHeight: 1 }}>✕</button>
+        </div>
         {children}
       </div>
     </div>

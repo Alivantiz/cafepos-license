@@ -246,12 +246,12 @@ export function itemKeys(it) {
 // предлагает то, чего функция вызвать не умеет.
 const FN_URL = 'https://stdlphhidxzgtrzbcwhx.supabase.co/functions/v1/parse-invoice'
 
-// Цена накладной: фото плюс промпт это ≈4000 токенов входа и ≈1200 выхода.
-// Прикидка для сравнения моделей между собой; фактические деньги берём из
-// отчёта Anthropic, если задан админский ключ (см. ниже).
-const KZT_PER_USD = 500
-export const modelPriceKzt = (m) =>
-  Math.round((3959 / 1e6 * (m.in ?? 0) + 1200 / 1e6 * (m.out ?? 0)) * KZT_PER_USD * 10) / 10
+// Денег от себя не выдумываем. Цена за миллион токенов — опубликованный
+// прайс провайдера, он приходит вместе со списком моделей. А сколько стоила
+// накладная, считается ТОЛЬКО по фактически потраченным токенам, записанным
+// функцией. Нет записей — так и говорим: данных нет.
+export const modelCost = (m, inTok, outTok) =>
+  ((inTok || 0) / 1e6 * (m?.in ?? 0)) + ((outTok || 0) / 1e6 * (m?.out ?? 0))
 
 // Функция отвечает на GET версией и списком моделей. Секретов там нет —
 // только имена провайдеров, у которых нашёлся ключ.
@@ -282,7 +282,7 @@ export async function anthropicCost(env, fromIso, toIso) {
     const d = JSON.parse(text)
     // Форма ответа у отчётов «корзинами»: складываем всё, что похоже на суммы
     // в долларах, — так разбор переживёт переименование полей внутри корзины.
-    let usd = 0
+    let usd = 0  // eslint-disable-line
     const walk = (v) => {
       if (Array.isArray(v)) return v.forEach(walk)
       if (v && typeof v === 'object') {
@@ -294,7 +294,7 @@ export async function anthropicCost(env, fromIso, toIso) {
       }
     }
     walk(d?.data ?? d)
-    return { usd, kzt: Math.round(usd * KZT_PER_USD) }
+    return { usd }
   } catch (e) {
     return { error: String(e).slice(0, 200) }
   }
@@ -309,8 +309,16 @@ export function modelStats(rows) {
   const num = (v) => Number(String(v ?? '').replace(',', '.')) || 0
   for (const r of rows || []) {
     const id = String(r.model || '—')
-    const st = by.get(id) ?? { model: id, invoices: 0, lines: 0, sumOk: 0, sumAll: 0, codeOk: 0, codeAll: 0, totalOk: 0, totalAll: 0 }
+    const st = by.get(id) ?? { model: id, invoices: 0, lines: 0, sumOk: 0, sumAll: 0, codeOk: 0, codeAll: 0, totalOk: 0, totalAll: 0, tokIn: 0, tokOut: 0, paid: 0 }
     st.invoices++
+    // paid — на скольких накладных расход записан. Старые распознавания его не
+    // имеют, и делить на общее число накладных нельзя: получится цена ниже
+    // настоящей, а выдуманные цены хуже отсутствующих.
+    if (r.in_tokens != null || r.out_tokens != null) {
+      st.paid++
+      st.tokIn += Number(r.in_tokens) || 0
+      st.tokOut += Number(r.out_tokens) || 0
+    }
     let lineSum = 0
     for (const it of r.items || []) {
       st.lines++
@@ -1415,9 +1423,16 @@ export default {
 
           // Качество — по последним распознаваниям. Фото не тянем: они тяжёлые,
           // а для счёта не нужны.
-          const ir = await sbFetch(
-            `${db2.url}/rest/v1/mon_ai_invoices?select=model,items,declared_total&order=created_at.desc&limit=300`,
+          let ir = await sbFetch(
+            `${db2.url}/rest/v1/mon_ai_invoices?select=model,items,declared_total,in_tokens,out_tokens&order=created_at.desc&limit=300`,
             { headers: db2.headers })
+          // Колонок расхода может ещё не быть (SQL из очереди не выполнен) —
+          // тогда просим без них: качество показать всё равно можно.
+          if (!ir.ok) {
+            ir = await sbFetch(
+              `${db2.url}/rest/v1/mon_ai_invoices?select=model,items,declared_total&order=created_at.desc&limit=300`,
+              { headers: db2.headers })
+          }
           const stats = ir.ok ? modelStats(await ir.json().catch(() => [])) : []
 
           // Расход за месяц: считаем распознавания и умножаем на цену ВЫБРАННОЙ
@@ -1432,19 +1447,33 @@ export default {
           // Список моделей — у функции: он собран из её ключей. Не ответила —
           // окно всё равно откроется, просто выбирать будет не из чего.
           const fn = await fnModels()
-          const models = (fn?.models ?? []).map(m => ({ ...m, kzt: modelPriceKzt(m) }))
-          const model = models.find(m => m.id === current) ?? models[0]
+          const models = fn?.models ?? []
 
-          // Фактические деньги, если задан админский ключ. Иначе — оценка.
+          // Деньги — только настоящие. Считаются по записанным токенам и
+          // опубликованному прайсу; накладные без записи в счёт не идут.
+          for (const st of stats) {
+            const m = models.find(x => x.id === st.model)
+            st.usd = m && st.paid ? modelCost(m, st.tokIn, st.tokOut) : null
+            st.usdPer = st.usd != null ? st.usd / st.paid : null
+          }
+          const measured = stats.reduce((a, s) => a + (s.usd || 0), 0)
+          const paid = stats.reduce((a, s) => a + s.paid, 0)
+
+          // Счёт организации, если задан админский ключ: он один знает ВСЁ, что
+          // потрачено, включая накладные до появления записи токенов.
           const cost = await anthropicCost(env, from, new Date().toISOString().slice(0, 10))
 
           return json({
             current, missing, budget, done,
+            // Модель по умолчанию — та, на которой функция работает, пока выбор
+            // не сделан. Без неё панель показывала бы первую из списка, а это
+            // другая модель и другая цена.
+            fallback: fn?.model ?? null,
             models, providers: fn?.providers ?? [], fnVersion: fn?.version ?? null,
-            spent: cost?.kzt ?? (model ? Math.round(done * modelPriceKzt(model)) : 0),
-            // Панель должна говорить, ОТКУДА цифра: счёт это или прикидка.
-            spentReal: cost?.kzt != null,
+            billUsd: cost?.usd ?? null,        // счёт Anthropic за месяц
             costError: cost?.error ?? null,
+            measuredUsd: paid ? measured : null,   // посчитано по нашим токенам
+            measuredOn: paid,                      // на скольких накладных
             stats,
           })
         }
