@@ -101,6 +101,25 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
         </div>
       )}
 
+      {/* SOS: касса сама сообщила, что заблокирована или на отсрочке. Свежее
+          недели — тревога; старое не показываем: раз связь идёт и статуса
+          нового нет, проблема решена. */}
+      {c.last_sos && daysAgo(c.last_sos_at) != null && daysAgo(c.last_sos_at) <= 7 && (
+        <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 16 }}>
+          <b style={{ color: 'var(--bad)' }}>Касса сообщала о проблеме</b>{' '}
+          <span className="muted2">{agoText(c.last_sos_at)} · версия {c.last_sos.app || '—'}</span>
+          <div className="muted2" style={{ marginTop: 4 }}>
+            статус: <b>{c.last_sos.grace ? `${c.last_sos.grace} (дорабатывала смену по отсрочке)` : c.last_sos.status}</b>
+          </div>
+          {c.last_sos.log && (
+            <details style={{ marginTop: 6 }}>
+              <summary className="muted2" style={{ cursor: 'pointer' }}>хвост лога кассы</summary>
+              <pre style={{ margin: '6px 0 0', maxHeight: 240, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>{c.last_sos.log}</pre>
+            </details>
+          )}
+        </div>
+      )}
+
       <div className="grid tiles" style={{ marginBottom: 16 }}>
         <Tile label="Выручка за 7 дней" value={money(c.revenue7 || 0)}
           hint={grow !== null ? `${grow >= 0 ? '+' : ''}${grow}% к прошлой неделе` : 'сравнить не с чем'}

@@ -481,7 +481,7 @@ export default {
         const LIC_BASE = 'id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at'
         // Колонки, добавленные ALTER-ами позже базовой схемы: на проекте, где
         // SQL ещё не выполнили, запрос с ними падает целиком.
-        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city']
+        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city', 'last_sos', 'last_sos_at']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
