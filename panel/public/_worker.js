@@ -1452,6 +1452,9 @@ export default {
           const set = await grab('настройки', `${db2.url}/rest/v1/mon_settings?select=key,value`, db2.headers)
           for (const row of set?.rows ?? []) {
             if (row.key === 'invoice_model') current = typeof row.value === 'string' ? row.value : row.value?.model
+            // ai_budget — сколько ДЕНЕГ положено на счёт (в долларах). Названо
+            // бюджетом исторически; смысл — пополнение, от него считается
+            // «осталось», потому что остатка API не отдаёт.
             if (row.key === 'ai_budget') budget = Number(typeof row.value === 'object' ? row.value?.usd : row.value) || 0
           }
 

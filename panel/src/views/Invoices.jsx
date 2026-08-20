@@ -123,18 +123,21 @@ function ModelPicker() {
 
               <div className="row" style={{ marginTop: 12, gap: 8 }}>
                 <input value={budget} onChange={e => setBudget(e.target.value.replace(/[^\d.]/g, ''))}
-                  inputMode="decimal" placeholder="Бюджет на месяц, $" style={{ flex: 1, minWidth: 0 }} />
+                  inputMode="decimal" placeholder="Пополнено на счёт, $" style={{ flex: 1, minWidth: 0 }} />
                 <button className="btn sm" disabled={busy} onClick={saveBudget}>Сохранить</button>
               </div>
-              {data.budget > 0 && (data.billUsd ?? data.measuredUsd) != null && (
+              {/* Строка не исчезает, когда расход неизвестен: пропавшая строка
+                  выглядит как поломка, а «нет данных» — как ответ. */}
+              {data.budget > 0 && (
                 <div className="muted2" style={{ marginTop: 6 }}>
-                  осталось от бюджета:{' '}
-                  <b style={{ color: (data.billUsd ?? data.measuredUsd) > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
-                    {usd(Math.max(0, data.budget - (data.billUsd ?? data.measuredUsd)))}
-                  </b>
+                  осталось:{' '}
+                  {(data.billUsd ?? data.measuredUsd) == null
+                    ? <b>нет данных по расходу</b>
+                    : <b style={{ color: (data.billUsd ?? data.measuredUsd) > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
+                        {usd(Math.max(0, data.budget - (data.billUsd ?? data.measuredUsd)))}
+                      </b>}
                 </div>
               )}
-
 
             </>
           )}
