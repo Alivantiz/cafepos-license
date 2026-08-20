@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, MODELS, modelPriceKzt } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelPriceKzt, anthropicCost } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -837,12 +837,41 @@ async function testInvoiceCodes() {
     assert.strictEqual(empty.codePct, null, 'без кодов — тоже')
   }
 
-  // Смена модели: список белый, иначе опечатка кладёт распознавание у всех.
-  assert.strictEqual((await call('/api/invoices/setModel', { model: 'gpt-выдумка' })).status, 400,
-    'модель не из списка — отказ')
-  assert.ok(MODELS.some(m => m.id === 'claude-sonnet-5'), 'нынешняя модель в списке')
-  assert.ok(modelPriceKzt(MODELS.find(m => m.id === 'claude-haiku-4-5'))
-    < modelPriceKzt(MODELS.find(m => m.id === 'claude-opus-5')), 'Haiku дешевле Opus')
+  // Смена модели сверяется со списком САМОЙ функции: панель не хранит копию,
+  // иначе предлагала бы то, что функция вызвать не умеет.
+  {
+    const real = global.fetch
+    let asked = ''
+    global.fetch = async (url) => {
+      asked = String(url)
+      if (asked.includes('/functions/v1/parse-invoice')) {
+        return new Response(JSON.stringify({
+          version: 'x', providers: ['anthropic'],
+          models: [{ id: 'anthropic:claude-sonnet-5', name: 'Sonnet 5', in: 2, out: 10 }],
+        }), { status: 200 })
+      }
+      return new Response('[]', { status: 200 })
+    }
+    const bad = await call('/api/invoices/setModel', { model: 'anthropic:выдумка' })
+    const ok = await call('/api/invoices/setModel', { model: 'anthropic:claude-sonnet-5' })
+    global.fetch = real
+    assert.strictEqual(bad.status, 400, 'модель не из списка функции — отказ')
+    assert.strictEqual(ok.status, 200, 'модель из списка — принимается')
+  }
+  assert.ok(modelPriceKzt({ in: 1, out: 5 }) < modelPriceKzt({ in: 5, out: 25 }), 'дешёвая модель дешевле дорогой')
+
+  // Фактический расход берём у Anthropic, но только если задан админский ключ:
+  // без него панель обязана честно показывать оценку, а не ноль.
+  assert.strictEqual(await anthropicCost({}, '2026-08-01', '2026-08-20'), null, 'нет ключа — нет цифры')
+  {
+    const real = global.fetch
+    global.fetch = async () => new Response(JSON.stringify({
+      data: [{ amount: 1.5 }, { results: [{ cost: 0.5 }] }],
+    }), { status: 200 })
+    const c = await anthropicCost({ ANTHROPIC_ADMIN_KEY: 'k' }, '2026-08-01', '2026-08-20')
+    global.fetch = real
+    assert.strictEqual(c.usd, 2, 'суммы из корзин складываются')
+  }
 
   console.log('коды из накладных: OK')
 }

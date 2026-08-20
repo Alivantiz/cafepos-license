@@ -240,21 +240,65 @@ export function itemKeys(it) {
 }
 
 // ── Модели распознавания ───────────────────────────────────────────────────
-// Список продублирован в edge-функции (parse-invoice/index.ts, ALLOWED_MODELS):
-// панель предлагает, функция проверяет. Менять их надо парой — модель, которой
-// нет в списке функции, будет молча проигнорирована.
-//
-// Цена — за одну накладную: фото плюс промпт это ≈4000 токенов входа и ≈1200
-// выхода. Прикидка, а не счёт от Anthropic: точная сумма зависит от размера
-// фотографии и длины накладной. Курс округлён.
+// Список НЕ хранится здесь: его отдаёт сама edge-функция, собирая из ключей,
+// которые лежат у неё в секретах. Положил ключ нового провайдера — его модели
+// появились в панели сами. Хранить копию списка тут значило бы, что панель
+// предлагает то, чего функция вызвать не умеет.
+const FN_URL = 'https://stdlphhidxzgtrzbcwhx.supabase.co/functions/v1/parse-invoice'
+
+// Цена накладной: фото плюс промпт это ≈4000 токенов входа и ≈1200 выхода.
+// Прикидка для сравнения моделей между собой; фактические деньги берём из
+// отчёта Anthropic, если задан админский ключ (см. ниже).
 const KZT_PER_USD = 500
-export const MODELS = [
-  { id: 'claude-haiku-4-5', name: 'Haiku 4.5', in: 1, out: 5, note: 'дешевле всех, слабее на мятой бумаге' },
-  { id: 'claude-sonnet-5', name: 'Sonnet 5', in: 2, out: 10, note: 'нынешняя — цена вводная до 1 сентября' },
-  { id: 'claude-opus-5', name: 'Opus 5', in: 5, out: 25, note: 'самая точная и самая дорогая' },
-]
 export const modelPriceKzt = (m) =>
-  Math.round((3959 / 1e6 * m.in + 1200 / 1e6 * m.out) * KZT_PER_USD * 10) / 10
+  Math.round((3959 / 1e6 * (m.in ?? 0) + 1200 / 1e6 * (m.out ?? 0)) * KZT_PER_USD * 10) / 10
+
+// Функция отвечает на GET версией и списком моделей. Секретов там нет —
+// только имена провайдеров, у которых нашёлся ключ.
+async function fnModels() {
+  try {
+    const r = await sbFetch(FN_URL, { headers: { accept: 'application/json' } })
+    if (!r.ok) return null
+    const d = await r.json()
+    return Array.isArray(d?.models) && d.models.length ? d : null
+  } catch { return null }
+}
+
+// Фактический расход за период — Usage & Cost API Anthropic. Нужен АДМИНСКИЙ
+// ключ организации, это не тот ключ, что распознаёт накладные. Нет ключа —
+// функция вернёт null, и панель покажет оценку по числу распознаваний.
+//
+// Баланса в API нет вовсе (у Anthropic нет такого эндпоинта), поэтому
+// «осталось» считается от бюджета, который вендор задаёт сам.
+export async function anthropicCost(env, fromIso, toIso) {
+  const key = env.ANTHROPIC_ADMIN_KEY
+  if (!key) return null
+  try {
+    const r = await sbFetch(
+      `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${fromIso}&ending_at=${toIso}`,
+      { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } })
+    const text = await r.text()
+    if (!r.ok) return { error: `Anthropic: ${r.status} ${text.slice(0, 200)}` }
+    const d = JSON.parse(text)
+    // Форма ответа у отчётов «корзинами»: складываем всё, что похоже на суммы
+    // в долларах, — так разбор переживёт переименование полей внутри корзины.
+    let usd = 0
+    const walk = (v) => {
+      if (Array.isArray(v)) return v.forEach(walk)
+      if (v && typeof v === 'object') {
+        for (const [k, x] of Object.entries(v)) {
+          if (/amount|cost/i.test(k) && (typeof x === 'number' || typeof x === 'string')) {
+            const n = Number(x); if (Number.isFinite(n)) usd += n
+          } else walk(x)
+        }
+      }
+    }
+    walk(d?.data ?? d)
+    return { usd, kzt: Math.round(usd * KZT_PER_USD) }
+  } catch (e) {
+    return { error: String(e).slice(0, 200) }
+  }
+}
 
 // Качество модели считается по самой накладной, без ручной разметки: она
 // проверяет себя трижды — количество × цена даёт сумму строки, сумма строк даёт
@@ -1384,12 +1428,23 @@ export default {
             `${db2.url}/rest/v1/mon_ai_usage?select=count&day=gte.${from}&limit=5000`,
             { headers: db2.headers })
           const done = ur.ok ? (await ur.json().catch(() => [])).reduce((a, r) => a + (Number(r.count) || 0), 0) : 0
-          const model = MODELS.find(m => m.id === current) ?? MODELS.find(m => m.id === 'claude-sonnet-5')
+
+          // Список моделей — у функции: он собран из её ключей. Не ответила —
+          // окно всё равно откроется, просто выбирать будет не из чего.
+          const fn = await fnModels()
+          const models = (fn?.models ?? []).map(m => ({ ...m, kzt: modelPriceKzt(m) }))
+          const model = models.find(m => m.id === current) ?? models[0]
+
+          // Фактические деньги, если задан админский ключ. Иначе — оценка.
+          const cost = await anthropicCost(env, from, new Date().toISOString().slice(0, 10))
 
           return json({
             current, missing, budget, done,
-            spent: Math.round(done * modelPriceKzt(model)),
-            models: MODELS.map(m => ({ ...m, kzt: modelPriceKzt(m) })),
+            models, providers: fn?.providers ?? [], fnVersion: fn?.version ?? null,
+            spent: cost?.kzt ?? (model ? Math.round(done * modelPriceKzt(model)) : 0),
+            // Панель должна говорить, ОТКУДА цифра: счёт это или прикидка.
+            spentReal: cost?.kzt != null,
+            costError: cost?.error ?? null,
             stats,
           })
         }
@@ -1400,7 +1455,11 @@ export default {
           const { model, budget } = await request.json()
           const patch = []
           if (model !== undefined) {
-            if (!MODELS.some(m => m.id === model)) return json({ error: 'Неизвестная модель' }, 400)
+            // Сверяем с тем, что функция реально умеет вызвать: модель не из
+            // её списка означала бы отказ распознавания у всех клиентов сразу.
+            const fn = await fnModels()
+            if (!fn) return json({ error: 'Функция parse-invoice не ответила — список моделей неизвестен' }, 502)
+            if (!fn.models.some(m => m.id === model)) return json({ error: 'Неизвестная модель' }, 400)
             patch.push({ key: 'invoice_model', value: model, updated_at: new Date().toISOString() })
           }
           if (budget !== undefined) {

@@ -55,12 +55,31 @@ function ModelPicker() {
           {!data ? <div className="empty">Загрузка…</div> : (
             <>
               <div className="muted2" style={{ marginBottom: 10 }}>
-                За месяц распознано {data.done}, это ≈{data.spent.toLocaleString('ru-RU')} тг
+                За месяц распознано {data.done}, потрачено{' '}
+                {data.spentReal ? '' : '≈'}{data.spent.toLocaleString('ru-RU')} тг
+                {data.spentReal
+                  ? <span title="Счёт Anthropic по отчёту Usage & Cost"> (по счёту)</span>
+                  : <span title="Число распознаваний × цена выбранной модели. Точную сумму даст админский ключ Anthropic"> (оценка)</span>}
                 {data.budget > 0 && <> из {data.budget.toLocaleString('ru-RU')} — осталось{' '}
                   <b style={{ color: data.spent > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
                     {Math.max(0, data.budget - data.spent).toLocaleString('ru-RU')} тг
                   </b></>}
               </div>
+
+              {/* Ошибку отчёта прячем не молча: без неё непонятно, почему
+                  вместо счёта показана оценка. */}
+              {data.costError && (
+                <div className="muted2" style={{ color: 'var(--bad)', marginBottom: 10 }}>
+                  Счёт получить не удалось: {data.costError}
+                </div>
+              )}
+
+              {!data.models.length && (
+                <div className="empty">
+                  Функция parse-invoice не ответила списком моделей — выберите её версию не ниже
+                  2026-08-20.3 и проверьте, что в секретах есть хотя бы один ключ провайдера.
+                </div>
+              )}
 
               {data.models.map(m => {
                 const st = data.stats.find(x => x.model === m.id)
@@ -95,7 +114,9 @@ function ModelPicker() {
               <div className="muted2" style={{ marginTop: 8 }}>
                 Доли считаются по самой накладной: количество × цена должно давать сумму строки,
                 сумма строк — напечатанный итог, а у штрихкода сходится контрольная цифра.
-                Расход — оценка по числу распознаваний и цене выбранной модели, а не счёт Anthropic.
+                Список моделей приходит от самой функции и собран из её ключей: добавишь ключ
+                нового провайдера — его модели появятся здесь сами. Баланса счёта в API нет ни у
+                кого, поэтому «осталось» считается от бюджета, который ты задаёшь тут же.
               </div>
             </>
           )}
