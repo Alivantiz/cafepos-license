@@ -1448,15 +1448,19 @@ export default {
             }
           }
 
-          let current = null, budget = 0
+          let current = null, topups = []
           const set = await grab('настройки', `${db2.url}/rest/v1/mon_settings?select=key,value`, db2.headers)
           for (const row of set?.rows ?? []) {
             if (row.key === 'invoice_model') current = typeof row.value === 'string' ? row.value : row.value?.model
-            // ai_budget — сколько ДЕНЕГ положено на счёт (в долларах). Названо
-            // бюджетом исторически; смысл — пополнение, от него считается
-            // «осталось», потому что остатка API не отдаёт.
-            if (row.key === 'ai_budget') budget = Number(typeof row.value === 'object' ? row.value?.usd : row.value) || 0
+            // ai_topups — журнал пополнений счёта: [{at, usd}]. Именно журнал, а
+            // не одно число: остаток это ВСЕ пополнения минус ВЕСЬ расход с
+            // первого из них, и второе пополнение не должно затирать первое.
+            if (row.key === 'ai_topups' && Array.isArray(row.value)) topups = row.value
           }
+          const added = topups.reduce((a, t) => a + (Number(t?.usd) || 0), 0)
+          // Считать расход «с начала месяца» при накопительных пополнениях
+          // нельзя: деньги положены раньше, и остаток вышел бы завышенным.
+          const since = topups.map(t => String(t?.at || '')).filter(Boolean).sort()[0] || null
 
           // Качество — по последним распознаваниям. Фото не тянем: они тяжёлые,
           // а для счёта не нужны. Колонок расхода может ещё не быть — тогда
@@ -1494,10 +1498,11 @@ export default {
 
           // Счёт организации, если задан админский ключ: он один знает ВСЁ, что
           // потрачено, включая накладные до появления записи токенов.
-          const cost = await anthropicCost(env, from, new Date().toISOString().slice(0, 10))
+          const cost = await anthropicCost(env, since || from, new Date().toISOString().slice(0, 10))
 
           return json({
-            current, budget, done, notes,
+            current, done, notes,
+            topups, added, since,
             // Модель по умолчанию — та, на которой функция работает, пока выбор
             // не сделан. Без неё панель показывала бы первую из списка, а это
             // другая модель и другая цена.
@@ -1514,7 +1519,7 @@ export default {
         // Смена модели. Белый список — и здесь, и в функции: модель, которой
         // нет в списке, означала бы отказ распознавания у всех клиентов сразу.
         if (pathname === '/api/invoices/setModel') {
-          const { model, budget } = await request.json()
+          const { model, topups } = await request.json()
           const patch = []
           if (model !== undefined) {
             // Сверяем с тем, что функция реально умеет вызвать: модель не из
@@ -1524,9 +1529,12 @@ export default {
             if (!fn.models.some(m => m.id === model)) return json({ error: 'Неизвестная модель' }, 400)
             patch.push({ key: 'invoice_model', value: model, updated_at: new Date().toISOString() })
           }
-          if (budget !== undefined) {
-            const kzt = Math.max(0, Math.round(Number(budget) || 0))
-            patch.push({ key: 'ai_budget', value: kzt, updated_at: new Date().toISOString() })
+          if (topups !== undefined) {
+            if (!Array.isArray(topups) || topups.length > 200) return json({ error: 'Список пополнений не принят' }, 400)
+            const clean = topups
+              .map(t => ({ at: String(t?.at || '').slice(0, 10), usd: Number(t?.usd) || 0 }))
+              .filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t.at) && t.usd > 0)
+            patch.push({ key: 'ai_topups', value: clean, updated_at: new Date().toISOString() })
           }
           if (!patch.length) return json({ error: 'Нечего менять' }, 400)
           const up = await sbFetch(`${db2.url}/rest/v1/mon_settings?on_conflict=key`, {

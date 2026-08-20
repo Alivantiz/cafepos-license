@@ -16,7 +16,7 @@ function ModelPicker() {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [budget, setBudget] = useState('')
+  const [add, setAdd] = useState('')
 
   // Ошибку показываем В ОКНЕ. Раньше она уходила в тост, а окно оставалось в
   // «Загрузка…» навсегда — и выглядело это как зависшая панель.
@@ -24,7 +24,7 @@ function ModelPicker() {
     setErr(null)
     try {
       const d = await api('invoices/models', {})
-      setData(d); setBudget(String(d.budget || ''))
+      setData(d)
     } catch (e) { setErr(e.message) }
   }
   useEffect(() => { load() }, [])
@@ -40,10 +40,17 @@ function ModelPicker() {
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
-  const saveBudget = async () => {
+  // Пополнения копятся списком: остаток — это ВСЕ пополнения минус весь расход
+  // с первого из них. Одно перезаписываемое число тут врало бы.
+  const saveTopups = async (list) => {
     setBusy(true)
-    try { await api('invoices/setModel', { budget: Number(budget) || 0 }); toast.ok('Бюджет сохранён'); await load() }
+    try { await api('invoices/setModel', { topups: list }); await load(); setAdd('') }
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+  const addTopup = () => {
+    const v = Number(add)
+    if (!(v > 0)) { toast.err('Сумма пополнения — число больше нуля'); return }
+    saveTopups([...(data?.topups ?? []), { at: new Date().toISOString().slice(0, 10), usd: v }])
   }
 
   const usd = (n, digits = 2) => '$' + Number(n).toFixed(digits)
@@ -122,20 +129,31 @@ function ModelPicker() {
               })}
 
               <div className="row" style={{ marginTop: 12, gap: 8 }}>
-                <input value={budget} onChange={e => setBudget(e.target.value.replace(/[^\d.]/g, ''))}
-                  inputMode="decimal" placeholder="Пополнено на счёт, $" style={{ flex: 1, minWidth: 0 }} />
-                <button className="btn sm" disabled={busy} onClick={saveBudget}>Сохранить</button>
+                <input value={add} onChange={e => setAdd(e.target.value.replace(/[^\d.]/g, ''))}
+                  inputMode="decimal" placeholder="Пополнил на, $" style={{ flex: 1, minWidth: 0 }} />
+                <button className="btn sm pri" disabled={busy} onClick={addTopup}>Добавить</button>
               </div>
-              {/* Строка не исчезает, когда расход неизвестен: пропавшая строка
-                  выглядит как поломка, а «нет данных» — как ответ. */}
-              {data.budget > 0 && (
-                <div className="muted2" style={{ marginTop: 6 }}>
-                  осталось:{' '}
-                  {(data.billUsd ?? data.measuredUsd) == null
-                    ? <b>нет данных по расходу</b>
-                    : <b style={{ color: (data.billUsd ?? data.measuredUsd) > data.budget ? 'var(--bad)' : 'var(--ok)' }}>
-                        {usd(Math.max(0, data.budget - (data.billUsd ?? data.measuredUsd)))}
-                      </b>}
+
+              {data.topups?.length > 0 && (
+                <div className="muted2" style={{ marginTop: 8 }}>
+                  {data.topups.map((t, i) => (
+                    <div key={i} className="row" style={{ gap: 8 }}>
+                      <span>{t.at} · {usd(t.usd)}</span>
+                      <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={busy}
+                        title="Убрать это пополнение"
+                        onClick={() => saveTopups(data.topups.filter((_, j) => j !== i))}>✕</button>
+                    </div>
+                  ))}
+                  {/* Строка не исчезает без данных о расходе: пропавшая строка
+                      выглядит как поломка, а «нет данных» — как ответ. */}
+                  <div style={{ marginTop: 6 }}>
+                    пополнено <b>{usd(data.added)}</b>, остаток{' '}
+                    {(data.billUsd ?? data.measuredUsd) == null
+                      ? <b>— нет данных по расходу</b>
+                      : <b style={{ color: data.added - (data.billUsd ?? data.measuredUsd) <= 0 ? 'var(--bad)' : 'var(--ok)' }}>
+                          {usd(data.added - (data.billUsd ?? data.measuredUsd))}
+                        </b>}
+                  </div>
                 </div>
               )}
 

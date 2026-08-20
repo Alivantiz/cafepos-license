@@ -888,6 +888,29 @@ async function testInvoiceCodes() {
   assert.strictEqual(modelCost({ in: 2, out: 10 }, 1e6, 1e6), 12, 'вход по своей цене, выход по своей')
   assert.strictEqual(modelCost({ in: 2, out: 10 }, 0, 0), 0, 'нет токенов — нет суммы')
 
+  // Пополнения копятся списком, мусор в него не пускаем: остаток считается
+  // от них, и одна кривая строка исказит его молча.
+  {
+    const real = global.fetch
+    let body = null
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.includes('/functions/v1/parse-invoice')) {
+        return new Response(JSON.stringify({ models: [{ id: 'a:b', name: 'B', in: 1, out: 5 }] }), { status: 200 })
+      }
+      if (init?.method === 'POST') { body = JSON.parse(init.body); return new Response(null, { status: 204 }) }
+      return new Response('[]', { status: 200 })
+    }
+    const r = await call('/api/invoices/setModel', { topups: [
+      { at: '2026-08-01', usd: 5 },
+      { at: 'вчера', usd: 3 },      // без даты — не пополнение
+      { at: '2026-08-10', usd: 0 }, // ноль тоже
+    ] })
+    global.fetch = real
+    assert.strictEqual(r.status, 200)
+    assert.deepStrictEqual(body[0].value, [{ at: '2026-08-01', usd: 5 }], 'остались только настоящие пополнения')
+  }
+
   // Фактический расход берём у Anthropic, но только если задан админский ключ:
   // без него панель обязана честно показывать оценку, а не ноль.
   assert.strictEqual(await anthropicCost({}, '2026-08-01', '2026-08-20'), null, 'нет ключа — нет цифры')
