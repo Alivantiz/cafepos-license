@@ -274,29 +274,37 @@ export async function anthropicCost(env, fromIso, toIso) {
   const key = env.ANTHROPIC_ADMIN_KEY
   if (!key) return null
   try {
-    const r = await sbFetch(
-      `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${fromIso}&ending_at=${toIso}`,
-      { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } })
-    const text = await r.text()
-    if (!r.ok) return { error: `Anthropic: ${r.status} ${text.slice(0, 200)}` }
-    const d = JSON.parse(text)
-    // Форма ответа у отчётов «корзинами»: складываем всё, что похоже на суммы
-    // в долларах, — так разбор переживёт переименование полей внутри корзины.
-    let usd = 0  // eslint-disable-line
-    const walk = (v) => {
-      if (Array.isArray(v)) return v.forEach(walk)
-      if (v && typeof v === 'object') {
-        for (const [k, x] of Object.entries(v)) {
-          if (/amount|cost/i.test(k) && (typeof x === 'number' || typeof x === 'string')) {
-            const n = Number(x); if (Number.isFinite(n)) usd += n
-          } else walk(x)
+    let usd = 0, page = null, guard = 0
+    do {
+      // limit=31: по умолчанию отчёт отдаёт СЕМЬ суточных корзин, то есть за
+      // месяц вернулась бы первая неделя и счёт вышел бы втрое меньше.
+      const url = 'https://api.anthropic.com/v1/organizations/cost_report'
+        + `?starting_at=${fromIso}T00:00:00Z&ending_at=${toIso}T23:59:59Z&limit=31`
+        + (page ? `&page=${encodeURIComponent(page)}` : '')
+      const r = await sbFetch(url, { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } })
+      const text = await r.text()
+      if (!r.ok) {
+        // Отдельный случай: у ЛИЧНОГО аккаунта Admin API нет вовсе, ключ там не
+        // создать — нужна организация. Голый 401 этого не объясняет.
+        if (r.status === 401 || r.status === 403) {
+          return { error: 'ключ не принят. Admin API есть только у организации, у личного аккаунта его нет' }
+        }
+        return { error: `${r.status} ${text.slice(0, 160)}` }
+      }
+      const d = JSON.parse(text)
+      // Суммы приходят строками В ЦЕНТАХ («costs in USD, reported in lowest
+      // units»). Считать их долларами значило бы завысить счёт в сто раз.
+      for (const bucket of d?.data ?? []) {
+        for (const item of bucket?.results ?? []) {
+          const n = Number(item?.amount)
+          if (Number.isFinite(n)) usd += n / 100
         }
       }
-    }
-    walk(d?.data ?? d)
+      page = d?.has_more ? d?.next_page : null
+    } while (page && ++guard < 5)
     return { usd }
   } catch (e) {
-    return { error: String(e).slice(0, 200) }
+    return { error: String(e).slice(0, 160) }
   }
 }
 

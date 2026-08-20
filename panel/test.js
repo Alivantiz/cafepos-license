@@ -893,13 +893,26 @@ async function testInvoiceCodes() {
   assert.strictEqual(await anthropicCost({}, '2026-08-01', '2026-08-20'), null, 'нет ключа — нет цифры')
   {
     const real = global.fetch
-    global.fetch = async () => new Response(JSON.stringify({
-      data: [{ amount: 1.5 }, { results: [{ cost: 0.5 }] }],
-    }), { status: 200 })
+    let asked = ''
+    global.fetch = async (url) => {
+      asked = String(url)
+      // Отчёт отдаёт суммы СТРОКАМИ В ЦЕНТАХ — 250 центов это $2.50.
+      return new Response(JSON.stringify({
+        data: [{ results: [{ amount: '200' }, { amount: '50' }] }], has_more: false,
+      }), { status: 200 })
+    }
     const c = await anthropicCost({ ANTHROPIC_ADMIN_KEY: 'k' }, '2026-08-01', '2026-08-20')
     global.fetch = real
-    assert.strictEqual(c.usd, 2, 'суммы из корзин складываются')
+    assert.strictEqual(c.usd, 2.5, 'центы переводим в доллары, а не считаем долларами')
+    assert.ok(asked.includes('limit=31'), 'просим месяц целиком: по умолчанию отчёт даёт 7 суток')
     assert.strictEqual(c.kzt, undefined, 'в тенге ничего не пересчитываем — курс не наш')
+  }
+  {
+    const real = global.fetch
+    global.fetch = async () => new Response('no', { status: 401 })
+    const c = await anthropicCost({ ANTHROPIC_ADMIN_KEY: 'k' }, '2026-08-01', '2026-08-20')
+    global.fetch = real
+    assert.ok(c.error.includes('организации'), 'у личного аккаунта Admin API нет — говорим это прямо')
   }
 
   console.log('коды из накладных: OK')
