@@ -66,16 +66,15 @@ function ModelPicker() {
             </>
           ) : !data ? <div className="empty">Загрузка…</div> : (
             <>
-              {/* Деньги показываем только настоящие. Счёт организации знает всё,
-                  включая накладные до появления записи токенов, — он главнее. */}
+              {/* Деньги только настоящие: счёт организации, иначе расход по
+                  записанным токенам, иначе прямо «нет данных». */}
               <div className="muted2" style={{ marginBottom: 10 }}>
-                За месяц распознано {data.done}.{' '}
-                {data.billUsd != null
-                  ? <>Счёт Anthropic: <b>{usd(data.billUsd)}</b></>
+                За месяц: {data.done} распознаваний, потрачено{' '}
+                {data.billUsd != null ? <b>{usd(data.billUsd)}</b>
                   : data.measuredUsd != null
-                    ? <>Потрачено по записанным токенам: <b>{usd(data.measuredUsd)}</b>{' '}
-                        (на {data.measuredOn} накладных из {data.done})</>
-                    : <b>Сколько потрачено — данных нет.</b>}
+                    ? <><b>{usd(data.measuredUsd)}</b> (посчитано по {data.measuredOn})</>
+                    : <b>— нет данных</b>}
+                {data.costError && <div style={{ color: 'var(--bad)' }}>счёт: {data.costError}</div>}
               </div>
 
               {/* Чего именно не хватает — списком. Иначе окно выглядит пустым
@@ -83,15 +82,6 @@ function ModelPicker() {
               {data.notes?.length > 0 && (
                 <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 10 }}>
                   {data.notes.map((n, i) => <div key={i} className="muted2">{n}</div>)}
-                </div>
-              )}
-
-              {data.billUsd == null && (
-                <div className="muted2" style={{ marginBottom: 10 }}>
-                  {data.costError
-                    ? <>Счёт не пришёл: {data.costError}</>
-                    : <>Счёт — только по админскому ключу (секрет ANTHROPIC_ADMIN_KEY).
-                       Остатка средств в API нет ни у кого.</>}
                 </div>
               )}
 
@@ -145,11 +135,7 @@ function ModelPicker() {
                 </div>
               )}
 
-              <div className="muted2" style={{ marginTop: 10 }}>
-                Доли — проверки самой накладной: количество × цена = сумма строки,
-                сумма строк = напечатанный итог, контрольная цифра штрихкода.
-                Список моделей собран из ключей в секретах функции.
-              </div>
+
             </>
           )}
         </Modal>
