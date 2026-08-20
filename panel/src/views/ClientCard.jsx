@@ -103,7 +103,9 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
 
       {/* SOS: касса сама сообщила, что заблокирована или на отсрочке. Свежее
           недели — тревога; старое не показываем: раз связь идёт и статуса
-          нового нет, проблема решена. */}
+          нового нет, проблема решена. Журнал — не автоматом, а по кнопке:
+          если он не пришёл за 15–20 минут, у кассы нет интернета, и это само
+          по себе диагноз. */}
       {c.last_sos && daysAgo(c.last_sos_at) != null && daysAgo(c.last_sos_at) <= 7 && (
         <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 16 }}>
           <b style={{ color: 'var(--bad)' }}>Касса сообщала о проблеме</b>{' '}
@@ -111,14 +113,10 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
           <div className="muted2" style={{ marginTop: 4 }}>
             статус: <b>{c.last_sos.grace ? `${c.last_sos.grace} (дорабатывала смену по отсрочке)` : c.last_sos.status}</b>
           </div>
-          {c.last_sos.log && (
-            <details style={{ marginTop: 6 }}>
-              <summary className="muted2" style={{ cursor: 'pointer' }}>хвост лога кассы</summary>
-              <pre style={{ margin: '6px 0 0', maxHeight: 240, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>{c.last_sos.log}</pre>
-            </details>
-          )}
         </div>
       )}
+
+      {c.kind !== 'trial' && c.id && <LogRequest c={c} onDone={onChanged} />}
 
       <div className="grid tiles" style={{ marginBottom: 16 }}>
         <Tile label="Выручка за 7 дней" value={money(c.revenue7 || 0)}
@@ -249,6 +247,41 @@ function History({ rows }) {
 
 // «Отложить до даты»: клиент никуда не девается, но до этого дня не попадает
 // в блок «требует внимания сегодня».
+// Журнал кассы — по запросу. Кнопка ставит метку; касса при следующем выходе
+// на связь (до 15 минут) досылает хвост лога. Не пришёл — у кассы нет
+// интернета, и это тоже ответ.
+function LogRequest({ c, onDone }) {
+  const [busy, setBusy] = useState(false)
+  const ask = async () => {
+    setBusy(true)
+    try { await api('requestLog', { id: c.id }); toast.ok('Запрошено — касса дошлёт при выходе на связь'); onDone() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+  const pending = c.log_requested_at && (!c.last_log_at || new Date(c.last_log_at) < new Date(c.log_requested_at))
+  const fresh = c.last_log_at && c.log_requested_at && new Date(c.last_log_at) >= new Date(c.log_requested_at)
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="row">
+        <b>Журнал кассы</b>
+        <span className="muted2">
+          {fresh ? `получен ${agoText(c.last_log_at)}`
+            : pending ? `запрошен ${agoText(c.log_requested_at)} — ждём выхода кассы на связь; молчит дольше 20 минут — у неё нет интернета`
+              : 'запрашивается с кассы по кнопке, приходит при её выходе на связь'}
+        </span>
+        <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || !!pending} onClick={ask}>
+          {pending ? 'Запрошен…' : 'Запросить лог'}
+        </button>
+      </div>
+      {fresh && c.last_log && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="muted2" style={{ cursor: 'pointer' }}>показать журнал</summary>
+          <pre style={{ margin: '6px 0 0', maxHeight: 320, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>{c.last_log}</pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
 function SnoozeModal({ c, onClose, onDone }) {
   const plus = (d) => new Date(Date.now() + d * 86400000).toISOString().slice(0, 10)
   const [date, setDate] = useState(plus(7))

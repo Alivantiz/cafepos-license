@@ -481,7 +481,8 @@ export default {
         const LIC_BASE = 'id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at'
         // Колонки, добавленные ALTER-ами позже базовой схемы: на проекте, где
         // SQL ещё не выполнили, запрос с ними падает целиком.
-        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city', 'last_sos', 'last_sos_at']
+        const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city',
+          'last_sos', 'last_sos_at', 'log_requested_at', 'last_log', 'last_log_at']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
@@ -683,6 +684,22 @@ export default {
         } catch (e) {
           return json({ ok: false, error: `функция лицензий не ответила: ${String(e).slice(0, 120)}` })
         }
+      }
+
+      // «Запросить лог с кассы»: ставим метку, кассе её передаст функция
+      // status при следующем выходе на связь (want_log), и та дошлёт журнал.
+      // Молчание дольше 15–20 минут — тоже ответ: у кассы нет интернета,
+      // и проблема не в лицензии.
+      if (pathname === '/api/requestLog') {
+        const { id } = await request.json()
+        if (!id) return json({ error: 'Нужен id лицензии' }, 400)
+        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({ log_requested_at: new Date().toISOString() }),
+        })
+        if (!r.ok) return json({ error: await sqlHint(r, ['log_requested_at']) }, 502)
+        return json({ ok: true })
       }
 
       if (pathname === '/api/edit') {
