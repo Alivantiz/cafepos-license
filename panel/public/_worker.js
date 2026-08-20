@@ -689,16 +689,15 @@ export default {
               return Number.isFinite(n) ? n : 0
             } catch { return 0 }   // колонок ещё нет — просто ноль
           }
-          // Заблокированные — за неделю, ругающиеся — за трое суток: поломка
-          // железа либо чинится за день, либо это уже не новость.
+          // Заблокированные кассы за неделю: свежее — это авария, старее —
+          // либо починено, либо уже не новость.
           const sos = await countSince('last_sos_at', 7)
-          const errs = await countSince('last_errors_at', 3)
           return json({
             ok: !!d?.ok,
             signing_key: d?.signing_key ?? null,
             table_licenses: d?.table_licenses ?? null,
             version: d?.version ?? null,
-            sos, errors: errs,
+            sos,
           })
         } catch (e) {
           return json({ ok: false, error: `функция лицензий не ответила: ${String(e).slice(0, 120)}` })
