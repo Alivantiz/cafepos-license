@@ -888,6 +888,29 @@ async function testInvoiceCodes() {
   assert.strictEqual(modelCost({ in: 2, out: 10 }, 1e6, 1e6), 12, 'вход по своей цене, выход по своей')
   assert.strictEqual(modelCost({ in: 2, out: 10 }, 0, 0), 0, 'нет токенов — нет суммы')
 
+  // Модель по умолчанию приходит без префикса, список — с префиксом. Пока их
+  // сравнивали как есть, ни одна модель не была помечена «сейчас».
+  {
+    const real = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('/functions/v1/parse-invoice')) {
+        return new Response(JSON.stringify({
+          model: 'claude-sonnet-5',
+          models: [
+            { id: 'anthropic:claude-sonnet-5', name: 'Sonnet 5', in: 2, out: 10 },
+            { id: 'anthropic:claude-haiku-4-5', name: 'Haiku 4.5', in: 1, out: 5 },
+          ],
+        }), { status: 200 })
+      }
+      return new Response('[]', { status: 200 })
+    }
+    const d = await (await call('/api/invoices/models', {})).json()
+    global.fetch = real
+    assert.strictEqual(d.models.filter(m => m.isCurrent).length, 1, 'ровно одна модель помечена текущей')
+    assert.strictEqual(d.models.find(m => m.isCurrent).name, 'Sonnet 5', 'и это модель по умолчанию')
+  }
+
   // Пополнения копятся списком, мусор в него не пускаем: остаток считается
   // от них, и одна кривая строка исказит его молча.
   {

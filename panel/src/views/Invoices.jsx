@@ -54,7 +54,7 @@ function ModelPicker() {
   }
 
   const usd = (n, digits = 2) => '$' + Number(n).toFixed(digits)
-  const cur = data?.models?.find(m => m.id === data.current)
+  const cur = data?.models?.find(m => m.isCurrent)
   const label = cur?.name ?? (data?.current || data?.fallback || 'по умолчанию')
 
   return (
@@ -98,14 +98,14 @@ function ModelPicker() {
 
               {data.models.map(m => {
                 const st = m.stat
-                const isCur = m.id === data.current || (!data.current && m.id === data.fallback)
+                const isCur = m.isCurrent
                 return (
                   <div key={m.id} className="card" style={{ marginBottom: 10, borderColor: isCur ? 'var(--ok)' : undefined }}>
                     <div className="row">
                       <b>{m.name}</b>
                       <span className="muted2">{m.note}</span>
                       <span style={{ marginLeft: 'auto' }}>
-                        {isCur ? <span className="tag ok">сейчас</span>
+                        {isCur ? <span className="tag ok">{data.current ? 'сейчас' : 'сейчас (по умолчанию)'}</span>
                           : <button className="btn sm" disabled={busy} onClick={() => pick(m)}>Выбрать</button>}
                       </span>
                     </div>
