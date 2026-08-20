@@ -4,6 +4,34 @@ import { useEffect, useState } from 'react'
 import { api, useApi } from '../api'
 import { toast, confirmDialog } from '../ui'
 
+// Количество, цена и сумма строки. Раньше писали «15 уп · 800», и это читалось
+// как «15 упаковок за 800» — хотя 800 это цена ОДНОЙ упаковки, а строка стоит
+// 12 000. Показываем умножение целиком, чтобы читать было нечего.
+function Money({ it }) {
+  const num = (v) => Number(String(v ?? '').replace(',', '.')) || 0
+  const qty = it.quantity ?? it.qty
+  const price = it.price
+  const sum = num(qty) * num(price)
+  const printed = num(it.line_total)
+  // Напечатанная сумма расходится с умножением — распознавание ошиблось в
+  // цифре, и это надо видеть: на такой строке разъезжается вся приёмка.
+  const off = printed > 0 && Math.abs(printed - sum) > 1
+  const fmt = (n) => Math.round(n).toLocaleString('ru-RU')
+  if (qty == null && price == null) return null
+  return (
+    <>
+      {qty ?? ''}{it.unit ? ' ' + it.unit : ''}
+      {price != null && <> × {fmt(num(price))}</>}
+      {price != null && qty != null && <> = {fmt(sum)}</>}
+      {off && (
+        <b style={{ color: 'var(--bad)' }} title="В накладной напечатана другая сумма строки — проверьте цифры">
+          {' '}(в накладной {fmt(printed)})
+        </b>
+      )}
+    </>
+  )
+}
+
 export default function Invoices({ onReload }) {
   // «Разобранные» — журнал: фото у них уже стёрто, но распознанный текст цел,
   // и по нему можно привязать коды, если выяснилось, что привязано не то.
@@ -146,8 +174,7 @@ export default function Invoices({ onReload }) {
                             title="Штрихкода в этой строке распознавание не вернуло. Нажмите, чтобы вбить его с бумаги">
                             без кода{' '}
                           </span>}
-                    {it.quantity ?? it.qty ?? ''}{it.unit ? ' ' + it.unit : ''}
-                    {it.price != null ? ' · ' + it.price : ''}
+                    <Money it={it} />
                   </span>
                   {/* Чем красный код МОГ быть: замена одной цифры, прошедшая
                       контрольную сумму и нашедшаяся в справочнике. Название
