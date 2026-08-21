@@ -428,6 +428,10 @@ async function testViewsRender() {
     globalThis.location = { hash: '#/' + view, href: 'https://x.test/#/' + view }
     const html = renderToString(React.createElement(App))
     assert.ok(html.includes('iMag'), `вкладка «${view}» отрисовалась`)
+    // Нижняя панель разделов — единственная навигация на телефоне: бургера
+    // больше нет, и если она пропадёт, переключаться станет нечем.
+    assert.ok(html.includes('tabbar') && html.includes('Ещё'),
+      `на вкладке «${view}» есть нижняя панель разделов`)
   }
   console.log('отрисовка вкладок: OK')
 }

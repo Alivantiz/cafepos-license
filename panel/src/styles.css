@@ -36,6 +36,11 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
+  /* Двойное касание больше не приближает страницу: в приложении с домашнего
+     экрана это выглядело как сайт, а не как программа. Щипок отключён метой
+     viewport — одного touch-action мало. */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -225,9 +230,7 @@ tbody tr:hover td { background: var(--panel2); }
 .login .card { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 12px; }
 
 /* ── Телефон ──────────────────────────────────────────────────────── */
-.burger { display: none; }
 @media (max-width: 860px) {
-  .burger { display: inline-flex; }
   .side {
     position: fixed; inset: 0 auto 0 0; z-index: 40; transform: translateX(-100%);
     transition: transform .18s ease; box-shadow: var(--shadow);
@@ -235,7 +238,8 @@ tbody tr:hover td { background: var(--panel2); }
   }
   .side.open { transform: none; }
   .scrim { position: fixed; inset: 0; z-index: 35; background: rgba(0,0,0,.45); }
-  .main { padding: 16px 14px 40px; }
+  /* Место под нижнюю панель разделов и под системную полоску «домой». */
+  .main { padding: 16px 14px calc(76px + env(safe-area-inset-bottom)); }
   .topbar {
     margin-left: -14px; margin-right: -14px; padding: 8px 14px;
     padding-top: calc(8px + env(safe-area-inset-top));
@@ -313,3 +317,34 @@ tr.seen td { opacity: .45; }
 }
 
 @media (prefers-reduced-motion: reduce) { .side { transition: none; } }
+
+/* ── Нижняя панель разделов (только телефон) ───────────────────────────── */
+.tabbar { display: none; }
+@media (max-width: 860px) {
+  .tabbar {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+    background: var(--panel); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tab {
+    flex: 1; min-width: 0; border: 0; background: transparent; cursor: pointer;
+    color: var(--mut); padding: 7px 2px 6px;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+  }
+  .tab.active { color: var(--accent); }
+  .tab-ico { position: relative; display: flex; line-height: 0; }
+  /* Счётчик у правого верхнего угла иконки, а не поверх неё: подпись под
+     иконкой занята названием раздела, а на самой иконке цифра нечитаема. */
+  .tab-ico .dot {
+    position: absolute; top: -7px; left: 100%; margin-left: -9px;
+    font-size: 10px; font-weight: 700; font-style: normal; line-height: 1;
+    min-width: 16px; text-align: center;
+    padding: 3px 4px; border-radius: 999px; background: var(--panel2); color: var(--fg);
+    border: 2px solid var(--panel);
+  }
+  .tab-ico .dot.urgent { background: var(--bad); color: #fff; }
+  .tab-label {
+    font-size: 10px; letter-spacing: -.01em;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+}

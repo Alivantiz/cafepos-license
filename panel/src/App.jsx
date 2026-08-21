@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, useApi, pw, setPw, logout, fmtDate } from './api'
 import { Toasts, Confirms, Modal, toast } from './ui'
 import Summary from './views/Summary'
@@ -11,6 +11,7 @@ import Aliases from './views/Aliases'
 import Invoices from './views/Invoices'
 import Cloud, { brokenCount } from './views/Cloud'
 import { PushButton } from './push'
+import TabBar from './tabbar'
 
 // Срочное — то, где ждут ответа или что-то сломалось. Каталог и накладные
 // разбираются когда удобно, тревожить ими незачем.
@@ -102,10 +103,40 @@ function Panel() {
       ?.setAttribute('content', theme === 'dark' ? '#0e1013' : '#f5f6f8')
   }, [theme])
 
+  // Открытие карточки клиента — шаг ВГЛУБЬ: «назад» (и свайп от края) должны
+  // вернуть к списку. Смена вкладки шагом не считается, иначе назад пришлось бы
+  // жать столько раз, сколько вкладок пролистал.
+  const prevRoute = useRef(route)
   useEffect(() => {
     const want = '#/' + route.view + (route.subject ? '/' + encodeURIComponent(route.subject) : '')
-    if (location.hash !== want) history.replaceState(null, '', want)
+    if (location.hash !== want) {
+      const deeper = route.subject && !prevRoute.current.subject
+      history[deeper ? 'pushState' : 'replaceState'](null, '', want)
+    }
+    prevRoute.current = route
   }, [route])
+
+  // Свайп от левого края — «назад», как в любом приложении на телефоне. В
+  // приложении с домашнего экрана системного жеста нет: там нет и браузера,
+  // чей это жест. Только когда есть куда возвращаться — иначе свайп закрывал бы
+  // само приложение.
+  useEffect(() => {
+    if (!route.subject) return
+    let x0 = null, y0 = 0
+    const start = (e) => {
+      const t = e.touches[0]
+      x0 = t.clientX <= 28 ? t.clientX : null
+      y0 = t.clientY
+    }
+    const end = (e) => {
+      const t = e.changedTouches[0]
+      if (x0 !== null && t.clientX - x0 > 70 && Math.abs(t.clientY - y0) < 60) history.back()
+      x0 = null
+    }
+    addEventListener('touchstart', start, { passive: true })
+    addEventListener('touchend', end, { passive: true })
+    return () => { removeEventListener('touchstart', start); removeEventListener('touchend', end) }
+  }, [route.subject])
 
   // Кнопки «назад»/«вперёд» браузера меняют адрес мимо нас — слушаем.
   useEffect(() => {
@@ -193,6 +224,9 @@ function Panel() {
   }, [data])
 
   const trialsBadge = actionableTrials(trials)
+  // За «Ещё» прячутся четыре раздела — их счётчики надо показать на нём самом,
+  // иначе заявка в «Облаке» становится невидимой на телефоне.
+  const moreBadge = trialsBadge + (badges.cloud || 0) + (badges.catalog || 0) + (badges.aliases || 0)
 
   // «Обновить» и время в шапке относились ТОЛЬКО к клиентам: остальные вкладки
   // грузятся своими хуками, и на «Заявках» кнопка дёргала невидимый запрос —
@@ -239,7 +273,6 @@ function Panel() {
 
       <main className="main">
         <div className="topbar">
-          <button className="btn ghost burger" onClick={() => setMenu(true)} aria-label="Меню">☰</button>
           {!current && <h1>{VIEWS.find(v => v.id === view)?.label}</h1>}
           {/* Время последней загрузки: без него не понять, свежие цифры или
               вкладка провисела ночь. Кнопка осталась — обновление само по себе
@@ -298,6 +331,16 @@ function Panel() {
         {!current && view === 'invoices' && <Invoices onReload={setViewReload} />}
         {!current && view === 'cloud' && <Cloud onReload={setViewReload} />}
       </main>
+
+      {/* Разделы под большим пальцем. Пять — потолок; остальное за «Ещё»,
+          где живёт то же боковое меню, что и на большом экране. */}
+      <TabBar active={current ? null : view} tabs={[
+        { id: 'summary', label: 'Сводка' },
+        { id: 'clients', label: 'Клиенты', badge: badges.clients, urgent: true },
+        { id: 'requests', label: 'Заявки', badge: badges.requests, urgent: true },
+        { id: 'invoices', label: 'Накладные', badge: badges.invoices },
+        { id: 'more', label: 'Ещё', badge: moreBadge, urgent: trialsBadge > 0 || badges.cloud > 0 },
+      ]} onPick={(id) => id === 'more' ? setMenu(true) : goto(id)} />
 
       {issue && <IssueModal pre={issue} onClose={() => setIssue(null)} onDone={reload} />}
       <Toasts />
