@@ -11,7 +11,7 @@ import Aliases from './views/Aliases'
 import Invoices from './views/Invoices'
 import { brokenCount } from './views/Cloud'
 import { PushSettings } from './push'
-import TabBar from './tabbar'
+import TabBar, { SettingsIcon } from './tabbar'
 
 // Обычная подписка. Меняется руками в карточке, если у клиента своя цена.
 const DEFAULT_PRICE = 8000
@@ -305,7 +305,7 @@ function Panel() {
                 : ''}
           </span>
           <button className="btn ghost icon" onClick={() => setSettings(true)}
-            aria-label="Настройки" title="Настройки">⚙</button>
+            aria-label="Настройки" title="Настройки"><SettingsIcon /></button>
         </div>
 
         {/* Ошибку фонового обновления не показываем баннером: он внезапно

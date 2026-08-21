@@ -236,8 +236,15 @@ tbody tr:hover td { background: var(--panel2); }
   /* Навигация переехала вниз — выездного меню больше нет. */
   .side { display: none; }
   /* Место под нижнюю панель разделов и под системную полоску «домой». */
-  .main { padding: 16px 14px calc(76px + env(safe-area-inset-bottom)); }
+  .main { padding: 16px 14px calc(76px + env(safe-area-inset-bottom)); background: var(--bg); }
+  /* Шапка и нижняя панель — цвета панели, содержимое между ними — фона. Это
+     обычный вид приложения на телефоне, но дело не только в виде: полосы за
+     краями webview (системная строка сверху, «домой» снизу) красятся цветом
+     BODY. Пока он был цветом фона, под нижней панелью оставалась чужая
+     полоска — панель выглядела висящей, а не прилипшей к низу. */
+  body { background: var(--panel); }
   .topbar {
+    background: var(--panel); border-bottom: 1px solid var(--line);
     margin-left: -14px; margin-right: -14px; padding: 8px 14px;
     padding-top: calc(8px + env(safe-area-inset-top));
   }
