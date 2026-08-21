@@ -41,6 +41,10 @@ body {
      viewport — одного touch-action мало. */
   touch-action: manipulation;
   -webkit-text-size-adjust: 100%;
+  /* Прокручивается СОДЕРЖИМОЕ, а не документ. Иначе на iOS резиновый отскок
+     тянет всю страницу, и нижняя панель разделов вместе с ней: на короткой
+     вкладке она оставалась висеть посреди экрана. */
+  overflow: hidden;
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -49,17 +53,13 @@ button { font: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ── Каркас ───────────────────────────────────────────────────────── */
-.shell { display: flex; min-height: 100%; }
+.shell { display: flex; height: 100%; }
 .side {
   width: 208px; flex: 0 0 208px; border-right: 1px solid var(--line);
   background: var(--panel); padding: 16px 12px; display: flex; flex-direction: column; gap: 4px;
-  /* Меню стоит на месте, а прокручивается только содержимое. Раньше оно
-     уезжало вверх вместе со страницей: на длинном списке клиентов, чтобы
-     перейти на другую вкладку, приходилось сначала мотать наверх.
-     align-self: flex-start обязателен — иначе flex растягивает колонку на всю
-     высоту содержимого и липнуть становится нечему. */
-  position: sticky; top: 0; align-self: flex-start;
-  height: 100vh; overflow-y: auto;
+  /* Меню стоит на месте, а прокручивается только содержимое: на длинном списке
+     клиентов, чтобы перейти на другую вкладку, не надо мотать наверх. */
+  overflow-y: auto;
 }
 .brand { font-weight: 700; font-size: 16px; padding: 4px 8px 14px; letter-spacing: -.01em; }
 .nav {
@@ -77,9 +77,11 @@ button { font: inherit; }
 }
 .nav .count.urgent { background: var(--bad); color: #fff; }
 .nav.active .count { background: rgba(255,255,255,.25); }
-.main { flex: 1; min-width: 0; padding: 24px 28px 48px; }
-/* Шапка липнет к верху: на телефоне в ней живёт бургер, и без этого, чтобы
-   сменить раздел из середины длинного списка, приходилось мотать наверх.
+/* Единственный прокручиваемый блок приложения. overscroll-behavior — чтобы
+   отскок в конце списка не тянул за собой всё остальное. */
+.main { flex: 1; min-width: 0; padding: 24px 28px 48px; overflow-y: auto; overscroll-behavior: contain; }
+/* Шапка липнет к верху прокручиваемой области: иначе, уехав в середину
+   длинного списка, не видно, какой это раздел и насколько свежи данные.
    Фон обязателен — под ней проезжает содержимое. Отрицательные поля тянут
    фон на всю ширину .main, иначе строки видны в просветах по краям. */
 .topbar {
