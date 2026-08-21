@@ -9,10 +9,14 @@
          apple-touch-icon (SVG iOS тут не понимает) и service worker. -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icon-180.png" />
-    <!-- Цвет системной строки. Без status-bar-style=black-translucent: с ним
-         страница уезжает ПОД часы и значок связи, и шапка оказывалась под
-         ними. Цвет подменяется под тему в App.jsx. -->
+    <!-- Цвет системной строки; подменяется под тему в App.jsx. -->
     <meta name="theme-color" content="#0e1013" />
+    <!-- Полноэкранный режим. Без него iOS отрезает низ окна под полоску
+         «домой», и нижняя панель разделов не достаёт до края экрана — под ней
+         остаётся чужая полоса, которую страница закрасить не может.
+         Отступы под вырез и полоску берутся из env(safe-area-inset-*):
+         сверху у шапки, снизу у панели разделов. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="iMag" />
   </head>
