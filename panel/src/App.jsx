@@ -96,6 +96,10 @@ function Panel() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('panel_theme', theme)
+    // Системная строка в приложении с домашнего экрана красится в theme-color.
+    // Без подмены светлая тема оставалась с чёрной полосой сверху.
+    document.querySelector('meta[name=theme-color]')
+      ?.setAttribute('content', theme === 'dark' ? '#0e1013' : '#f5f6f8')
   }, [theme])
 
   useEffect(() => {

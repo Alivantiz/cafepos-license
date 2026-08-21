@@ -1126,6 +1126,38 @@ async function testPushCheckRoute() {
   console.log('маршрут проверки событий: OK')
 }
 
+
+// Сводка на телефоне владельца: причина в блоке «требует внимания» — это
+// текст, который он читает перед звонком клиенту. Касса, не пробившая ни
+// одного чека, писала «нет продаж null дн».
+async function testSummaryReasons() {
+  const esbuild = await import('esbuild')
+  const out = path.join(__dirname, '.summary-test.mjs')
+  await esbuild.build({
+    entryPoints: [path.join(__dirname, 'src', 'views', 'Summary.jsx')],
+    bundle: true, format: 'esm', jsx: 'automatic', outfile: out,
+    external: ['react', 'react/jsx-runtime', 'react-dom'], loader: { '.css': 'empty' },
+  })
+  const { renderToString } = await import('react-dom/server')
+  const React = await import('react')
+  const { default: Summary } = await import(pathToFileURL(out).href)
+  fs.unlinkSync(out)
+
+  const year = new Date(Date.now() + 300 * 86400000).toISOString()
+  const data = {
+    licenses: [
+      { subject: 'A', id: 'A', customer: 'Rich smart', expires_at: year, telemetry: true, last_sale_at: null },
+      { subject: 'B', id: 'B', customer: 'Марал', expires_at: year, telemetry: true, last_sale_at: new Date(Date.now() - 5 * 86400000).toISOString() },
+    ],
+    trials: [],
+  }
+  const html = renderToString(React.createElement(Summary, { data, onOpen() {}, onFilter() {} }))
+  assert.ok(!/null/.test(html), 'в причинах не должно быть «null»')
+  assert.ok(html.includes('ни одной продажи'), 'касса без единого чека — это «ни одной продажи»')
+  assert.ok(html.includes('нет продаж 5 дн'), 'а торговавшая пять дней назад — с числом дней')
+  console.log('причины в сводке: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
@@ -1137,6 +1169,7 @@ try {
   testPushEvents()
   testUsageWindows()
   await testViewsRender()
+  await testSummaryReasons()
   console.log('ВСЁ OK')
 } catch (e) {
   console.error('УПАЛО:', e.message)

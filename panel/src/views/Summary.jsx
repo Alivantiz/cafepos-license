@@ -91,7 +91,12 @@ export default function Summary({ data, onOpen, onFilter }) {
       <Attention title="Требует внимания сегодня" today={today} items={[
         ...expired.map(c => ({ c, why: 'лицензия истекла', tone: 'bad' })),
         ...expiring.map(c => ({ c, why: `истекает через ${daysLeft(c.expires_at)} дн`, tone: 'warn' })),
-        ...silent.map(c => ({ c, why: `нет продаж ${daysAgo(c.last_sale_at)} дн`, tone: 'bad' })),
+        // Пустая дата — не «нет продаж null дн», а «ни одной продажи»: касса
+        // стоит и молчит с самой установки. Это другой разговор с клиентом.
+        ...silent.map(c => ({
+          c, tone: 'bad',
+          why: c.last_sale_at ? `нет продаж ${daysAgo(c.last_sale_at)} дн` : 'ни одной продажи',
+        })),
         ...hotTrials.map(c => ({ c, why: `на пробе, ${c.receipts7} чеков за неделю`, tone: 'ok' })),
       ]} onOpen={onOpen} />
     </>
