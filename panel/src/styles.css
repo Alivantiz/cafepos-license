@@ -31,6 +31,11 @@
 }
 
 * { box-sizing: border-box; }
+/* Резерв под системную полоску «домой». iOS просит 34px — это высота ЖЕСТА,
+   а не самой полоски: сама она тонкая и спокойно лежит поверх нижней панели,
+   как в обычных приложениях. Полный резерв оставлял под иконками белое поле,
+   и панель выглядела висящей в воздухе. */
+:root { --safe-bottom: min(env(safe-area-inset-bottom), 14px); }
 html, body, #root { height: 100%; }
 body {
   margin: 0;
@@ -220,7 +225,7 @@ tbody tr:hover td { background: var(--panel2); }
   position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50;
   display: flex; align-items: center; justify-content: center;
   /* В полноэкранном режиме окно иначе залезает под вырез и полоску «домой». */
-  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + var(--safe-bottom));
 }
 .modal {
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
@@ -244,12 +249,11 @@ tbody tr:hover td { background: var(--panel2); }
   /* Навигация переехала вниз — выездного меню больше нет. */
   .side { display: none; }
   /* Место под нижнюю панель разделов и под системную полоску «домой». */
-  .main { padding: 16px 14px calc(76px + env(safe-area-inset-bottom)); background: var(--bg); }
-  /* Шапка и нижняя панель — цвета панели, содержимое между ними — фона. Это
-     обычный вид приложения на телефоне, но дело не только в виде: полосы за
-     краями webview (системная строка сверху, «домой» снизу) красятся цветом
-     BODY. Пока он был цветом фона, под нижней панелью оставалась чужая
-     полоска — панель выглядела висящей, а не прилипшей к низу. */
+  .main { padding: 16px 14px calc(72px + var(--safe-bottom)); background: var(--bg); }
+  /* Шапка и нижняя панель — цвета панели, содержимое между ними — фона:
+     обычный вид приложения на телефоне. Цвет body здесь ещё и страховка: если
+     системе понадобится закрасить что-то за краем страницы, это будет цвет
+     панели, а не чужая полоска под навбаром. */
   body { background: var(--panel); }
   .topbar {
     background: var(--panel); border-bottom: 1px solid var(--line);
@@ -354,7 +358,7 @@ tr.seen td { opacity: .45; }
   .tabbar {
     display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
     background: var(--panel); border-top: 1px solid var(--line);
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--safe-bottom);
   }
   .tab {
     flex: 1; min-width: 0; border: 0; background: transparent; cursor: pointer;
