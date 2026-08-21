@@ -9,29 +9,34 @@ import Requests, { pendingCount } from './views/Requests'
 import Catalog from './views/Catalog'
 import Aliases from './views/Aliases'
 import Invoices from './views/Invoices'
-import Cloud, { brokenCount } from './views/Cloud'
-import { PushButton } from './push'
+import { brokenCount } from './views/Cloud'
+import { PushSettings } from './push'
 import TabBar from './tabbar'
-
-// Срочное — то, где ждут ответа или что-то сломалось. Каталог и накладные
-// разбираются когда удобно, тревожить ими незачем.
-// «Клиенты» — тоже тревожная: там считаются кассы, сообщившие о поломке,
-// и неисправное облако лицензий. Это не работа в очереди, это авария.
-const URGENT = new Set(['requests', 'cloud', 'trials', 'clients'])
 
 // Обычная подписка. Меняется руками в карточке, если у клиента своя цена.
 const DEFAULT_PRICE = 8000
 
-const VIEWS = [
-  { id: 'summary', label: 'Сводка' },
-  { id: 'clients', label: 'Клиенты' },
-  { id: 'trials', label: 'Пробные' },
-  { id: 'requests', label: 'Заявки' },
-  { id: 'catalog', label: 'Каталог' },
-  { id: 'aliases', label: 'Названия' },
-  { id: 'invoices', label: 'Накладные' },
-  { id: 'cloud', label: 'Облако' },
+const LABELS = {
+  summary: 'Сводка', clients: 'Клиенты', trials: 'Пробные', requests: 'Заявки',
+  invoices: 'Накладные', catalog: 'Каталог', aliases: 'Названия',
+}
+
+// Разделов восемь, а МЕСТ — четыре. Восемь вкладок на телефоне не помещаются,
+// и пятая «Ещё» списком — плохой ответ: что за ней спрятано, перестают
+// открывать вовсе. Поэтому родственные экраны сложены в одно место с
+// переключателем внутри:
+//   «Пробные» — тот же список клиентов до оплаты, а не другой раздел;
+//   накладные, каталог и названия — одна работа: разобрать товар. Прыгать
+//   между тремя вкладками ради неё приходилось постоянно.
+// «Облако» вкладкой не стало: это не место, а индикатор — открывается со
+// строки состояния в «Клиентах», когда что-то сломалось.
+const GROUPS = [
+  { id: 'summary', label: 'Сводка', views: ['summary'] },
+  { id: 'clients', label: 'Клиенты', views: ['clients', 'trials'], urgent: true },
+  { id: 'requests', label: 'Заявки', views: ['requests'], urgent: true },
+  { id: 'goods', label: 'Товары', views: ['invoices', 'catalog', 'aliases'] },
 ]
+const groupOf = (view) => GROUPS.find(g => g.views.includes(view)) || GROUPS[0]
 
 export default function App() {
   const [authed, setAuthed] = useState(!!pw())
@@ -83,7 +88,7 @@ function Panel() {
   const openClient = route.subject
   const setView = (v) => setRoute({ view: v, subject: null })
   const setOpenClient = (subject) => setRoute(r => ({ ...r, subject }))
-  const [menu, setMenu] = useState(false)
+  const [settings, setSettings] = useState(false)
   const [issue, setIssue] = useState(null)   // null | {} | {machine_id, customer}
   const [theme, setTheme] = useState(localStorage.getItem('panel_theme') || 'dark')
   const [badges, setBadges] = useState({})
@@ -224,9 +229,16 @@ function Panel() {
   }, [data])
 
   const trialsBadge = actionableTrials(trials)
-  // За «Ещё» прячутся четыре раздела — их счётчики надо показать на нём самом,
-  // иначе заявка в «Облаке» становится невидимой на телефоне.
-  const moreBadge = trialsBadge + (badges.cloud || 0) + (badges.catalog || 0) + (badges.aliases || 0)
+  // Счётчик места — сумма счётчиков всего, что в нём лежит: иначе очередь в
+  // «Названиях» или лежачая облачная функция были бы не видны, пока не
+  // откроешь нужный переключатель.
+  const GROUP_BADGE = {
+    summary: 0,
+    // Облако живёт за строкой состояния в «Клиентах» — его беда считается тут же.
+    clients: (badges.clients || 0) + (badges.cloud || 0) + trialsBadge,
+    requests: badges.requests || 0,
+    goods: (badges.invoices || 0) + (badges.catalog || 0) + (badges.aliases || 0),
+  }
 
   // «Обновить» и время в шапке относились ТОЛЬКО к клиентам: остальные вкладки
   // грузятся своими хуками, и на «Заявках» кнопка дёргала невидимый запрос —
@@ -243,37 +255,42 @@ function Panel() {
   const isOwnData = needsClients
   const doReload = () => { reload(); reloadBadges(); if (!isOwnData) viewReload?.() }
 
-  const goto = (v) => { setView(v); setMenu(false); setViewReload(null) }
-  const open = (c) => { setOpenClient(c.subject); setMenu(false) }
+  const goto = (v) => { setView(v); setViewReload(null) }
+  const open = (c) => setOpenClient(c.subject)
 
   return (
     <div className="shell">
-      {menu && <div className="scrim" onClick={() => setMenu(false)} />}
-      <aside className={'side' + (menu ? ' open' : '')}>
+      <aside className="side">
         <div className="brand">iMag</div>
-        {VIEWS.map(v => {
-          const n = v.id === 'trials' ? trialsBadge : badges[v.id]
+        {GROUPS.map(g => {
+          const n = GROUP_BADGE[g.id]
           return (
-            <button key={v.id} className={'nav' + (view === v.id && !current ? ' active' : '')}
-              onClick={() => goto(v.id)}>
-              {v.label}{n > 0 && (
-                <span className={'count' + (URGENT.has(v.id) ? ' urgent' : '')}>{n}</span>
+            <button key={g.id} className={'nav' + (g.views.includes(view) && !current ? ' active' : '')}
+              onClick={() => goto(g.views[0])}>
+              {g.label}{n > 0 && (
+                <span className={'count' + (g.urgent ? ' urgent' : '')}>{n}</span>
               )}
             </button>
           )
         })}
-        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <PushButton />
-          <button className="nav" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
-          </button>
-          <button className="nav" onClick={logout}>Выйти</button>
+        <div style={{ marginTop: 'auto' }}>
+          <button className="nav" onClick={() => setSettings(true)}>Настройки</button>
         </div>
       </aside>
 
       <main className="main">
         <div className="topbar">
-          {!current && <h1>{VIEWS.find(v => v.id === view)?.label}</h1>}
+          {/* У места из одного экрана — обычный заголовок. Где экранов
+              несколько, заголовок ЗАМЕНЯЕТСЯ переключателем: он и так называет
+              раздел, а вторая строка сдвинула бы прилипшие панели вкладок. */}
+          {!current && (groupOf(view).views.length > 1
+            ? <div className="subtabs">
+                {groupOf(view).views.map(v => (
+                  <button key={v} className={'seg' + (v === view ? ' on' : '')}
+                    onClick={() => goto(v)}>{LABELS[v]}</button>
+                ))}
+              </div>
+            : <h1>{groupOf(view).label}</h1>)}
           {/* Время последней загрузки: без него не понять, свежие цифры или
               вкладка провисела ночь. Кнопка осталась — обновление само по себе
               работает, но иногда хочется дёрнуть прямо сейчас. */}
@@ -287,6 +304,8 @@ function Panel() {
                 ? 'данные на ' + new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
                 : ''}
           </span>
+          <button className="btn ghost icon" onClick={() => setSettings(true)}
+            aria-label="Настройки" title="Настройки">⚙</button>
         </div>
 
         {/* Ошибку фонового обновления не показываем баннером: он внезапно
@@ -329,18 +348,26 @@ function Panel() {
           <Aliases onReload={setViewReload} onCounts={setAliasCount} />
         )}
         {!current && view === 'invoices' && <Invoices onReload={setViewReload} />}
-        {!current && view === 'cloud' && <Cloud onReload={setViewReload} />}
       </main>
 
-      {/* Разделы под большим пальцем. Пять — потолок; остальное за «Ещё»,
-          где живёт то же боковое меню, что и на большом экране. */}
-      <TabBar active={current ? null : view} tabs={[
-        { id: 'summary', label: 'Сводка' },
-        { id: 'clients', label: 'Клиенты', badge: badges.clients, urgent: true },
-        { id: 'requests', label: 'Заявки', badge: badges.requests, urgent: true },
-        { id: 'invoices', label: 'Накладные', badge: badges.invoices },
-        { id: 'more', label: 'Ещё', badge: moreBadge, urgent: trialsBadge > 0 || badges.cloud > 0 },
-      ]} onPick={(id) => id === 'more' ? setMenu(true) : goto(id)} />
+      {/* Места под большим пальцем. Ровно те же четыре, что и в боковом меню
+          на большом экране — иначе это два разных приложения. */}
+      <TabBar active={current ? null : groupOf(view).id}
+        tabs={GROUPS.map(g => ({ id: g.id, label: g.label, badge: GROUP_BADGE[g.id], urgent: g.urgent }))}
+        onPick={(id) => goto(GROUPS.find(g => g.id === id).views[0])} />
+
+      {settings && (
+        <Modal title="Настройки" onClose={() => setSettings(false)}>
+          <h3 style={{ margin: '4px 0 0' }}>Уведомления</h3>
+          <PushSettings />
+          <div className="row" style={{ gap: 8, marginTop: 18 }}>
+            <button className="btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
+              {theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+            </button>
+            <button className="btn ghost" onClick={logout}>Выйти</button>
+          </div>
+        </Modal>
+      )}
 
       {issue && <IssueModal pre={issue} onClose={() => setIssue(null)} onDone={reload} />}
       <Toasts />

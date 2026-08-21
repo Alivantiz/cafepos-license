@@ -3,7 +3,7 @@
 // а не настройка, поэтому первым делом объясняем, что нажать.
 import { useEffect, useState } from 'react'
 import { api } from './api'
-import { Modal, toast } from './ui'
+import { toast } from './ui'
 
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
@@ -19,8 +19,9 @@ function keyBytes(s) {
 
 const supported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
 
-export function PushButton() {
-  const [open, setOpen] = useState(false)
+/** Раздел «Уведомления» окна настроек. Своего окна нет намеренно: настройки
+ *  сами открыты окном, а окно поверх окна на телефоне не закрыть. */
+export function PushSettings() {
   const [on, setOn] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -82,40 +83,28 @@ export function PushButton() {
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
+  if (!supported()) {
+    return isIOS() && !installed()
+      ? <p className="muted">
+          На iPhone уведомления получает только приложение с домашнего экрана.
+          В Safari: «Поделиться» → «На экран «Домой»», открыть iMag оттуда и
+          включить здесь.
+        </p>
+      : <p className="muted">Этот браузер не умеет push-уведомления.</p>
+  }
   return (
     <>
-      <button className="nav" onClick={() => setOpen(true)}>
-        Уведомления{on ? ' ✓' : ''}
-      </button>
-      {open && (
-        <Modal title="Уведомления" onClose={() => setOpen(false)}>
-          {!supported() && isIOS() && !installed() && (
-            <p className="muted">
-              На iPhone уведомления получает только приложение с домашнего экрана.
-              В Safari: «Поделиться» → «На экран «Домой»», открыть iMag оттуда и
-              включить здесь.
-            </p>
-          )}
-          {!supported() && !(isIOS() && !installed()) && (
-            <p className="muted">Этот браузер не умеет push-уведомления.</p>
-          )}
-          {supported() && (
-            <>
-              <p className="muted">
-                Приходят три вещи: касса сообщила о поломке, новая заявка на
-                активацию, у клиента заканчивается подписка. Очередь каталога и
-                накладных не тревожит.
-              </p>
-              <div className="row" style={{ gap: 8 }}>
-                {on
-                  ? <button className="btn" disabled={busy} onClick={disable}>Выключить</button>
-                  : <button className="btn pri" disabled={busy} onClick={enable}>Включить</button>}
-                <button className="btn ghost" disabled={busy || !on} onClick={check}>Проверить</button>
-              </div>
-            </>
-          )}
-        </Modal>
-      )}
+      <p className="muted">
+        Приходят три вещи: касса сообщила о поломке, новая заявка на активацию,
+        у клиента заканчивается подписка. Очередь каталога и накладных не
+        тревожит.
+      </p>
+      <div className="row" style={{ gap: 8 }}>
+        {on
+          ? <button className="btn" disabled={busy} onClick={disable}>Выключить</button>
+          : <button className="btn pri" disabled={busy} onClick={enable}>Включить</button>}
+        <button className="btn ghost" disabled={busy || !on} onClick={check}>Проверить</button>
+      </div>
     </>
   )
 }

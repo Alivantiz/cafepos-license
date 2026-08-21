@@ -233,13 +233,8 @@ tbody tr:hover td { background: var(--panel2); }
 
 /* ── Телефон ──────────────────────────────────────────────────────── */
 @media (max-width: 860px) {
-  .side {
-    position: fixed; inset: 0 auto 0 0; z-index: 40; transform: translateX(-100%);
-    transition: transform .18s ease; box-shadow: var(--shadow);
-    padding-top: calc(16px + env(safe-area-inset-top));
-  }
-  .side.open { transform: none; }
-  .scrim { position: fixed; inset: 0; z-index: 35; background: rgba(0,0,0,.45); }
+  /* Навигация переехала вниз — выездного меню больше нет. */
+  .side { display: none; }
   /* Место под нижнюю панель разделов и под системную полоску «домой». */
   .main { padding: 16px 14px calc(76px + env(safe-area-inset-bottom)); }
   .topbar {
@@ -319,6 +314,24 @@ tr.seen td { opacity: .45; }
 }
 
 @media (prefers-reduced-motion: reduce) { .side { transition: none; } }
+
+/* Переключатель экранов внутри места — вместо заголовка. Нарочно НЕ похож на
+   чипы фильтров ниже: там выбирают, что показать, здесь — куда перейти. Две
+   одинаковые синие строки подряд прочитать нельзя. */
+.subtabs {
+  display: flex; gap: 2px; min-width: 0; padding: 3px;
+  background: var(--panel2); border-radius: 11px; overflow-x: auto; scrollbar-width: none;
+}
+.subtabs::-webkit-scrollbar { display: none; }
+.seg {
+  border: 0; background: transparent; color: var(--mut); cursor: pointer;
+  padding: 6px 13px; border-radius: 9px; font-weight: 600; white-space: nowrap;
+}
+.seg.on { background: var(--panel); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+/* Кликабельная строка состояния: выглядит как текст, ведёт себя как кнопка. */
+.linkline { background: none; border: 0; padding: 0; margin: 0 0 8px; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; }
+.linkline:hover { color: var(--fg); }
 
 /* ── Нижняя панель разделов (только телефон) ───────────────────────────── */
 .tabbar { display: none; }

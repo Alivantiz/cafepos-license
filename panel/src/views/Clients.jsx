@@ -3,7 +3,8 @@
 // выручка за неделю, средний чек, когда последняя продажа.
 import { useMemo, useState } from 'react'
 import { daysLeft, daysAgo, fmtDate, money, agoText, isLive, useApi } from '../api'
-import { Tag, Spark, calendar } from '../ui'
+import { Tag, Spark, calendar, Modal } from '../ui'
+import Cloud from './Cloud'
 
 const status = (c) => {
   if (c.kind === 'trial') return { tone: 'warn', text: 'проба' }
@@ -27,26 +28,40 @@ const FILTERS = [
 // Подписывает ли облако лицензии. Молчаливая поломка этого секрета один раз
 // уже остановила кассы у клиентов: активация выдавала файл, который касса не
 // может проверить. Пока всё в порядке — строка не мозолит глаза.
+// Состояние облака лицензий — не раздел, а индикатор: открывают его тогда,
+// когда что-то сломалось. Отдельной вкладки он не стоил, зато строка отсюда
+// разворачивается в полный опрос всех облачных функций.
 function CloudHealth() {
   const { data } = useApi('health')
+  const [open, setOpen] = useState(false)
+  const details = open && (
+    <Modal title="Облачные функции" onClose={() => setOpen(false)}><Cloud /></Modal>
+  )
   if (!data) return null
   const bad = data.signing_key === 'missing' || data.table_licenses === 'no_table' || data.error
   if (!bad) {
     return (
-      <div className="muted2" style={{ marginBottom: 8 }}>
-        облако лицензий: подпись ок{data.version ? ` · ${data.version}` : ''}
-      </div>
+      <>
+        <button className="linkline muted2" onClick={() => setOpen(true)}>
+          облако лицензий: подпись ок{data.version ? ` · ${data.version}` : ''}
+        </button>
+        {details}
+      </>
     )
   }
   return (
-    <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 10 }}>
-      <b style={{ color: 'var(--bad)' }}>Облако лицензий не в порядке.</b>{' '}
-      {data.error ? data.error : <>
-        {data.signing_key === 'missing' && <>нет ключа подписи (LICENSE_PRIVATE_KEY) — активация выдаст файл,
-          который касса не примет. </>}
-        {data.table_licenses === 'no_table' && <>функция не видит таблицу лицензий. </>}
-      </>}
-    </div>
+    <>
+      <button className="card linkline" style={{ borderColor: 'var(--bad)', marginBottom: 10, textAlign: 'left' }}
+        onClick={() => setOpen(true)}>
+        <b style={{ color: 'var(--bad)' }}>Облако лицензий не в порядке.</b>{' '}
+        {data.error ? data.error : <>
+          {data.signing_key === 'missing' && <>нет ключа подписи (LICENSE_PRIVATE_KEY) — активация выдаст файл,
+            который касса не примет. </>}
+          {data.table_licenses === 'no_table' && <>функция не видит таблицу лицензий. </>}
+        </>}
+      </button>
+      {details}
+    </>
   )
 }
 

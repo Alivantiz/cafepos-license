@@ -424,14 +424,14 @@ async function testViewsRender() {
   const { default: App } = await import(pathToFileURL(out).href)
   fs.unlinkSync(out)
 
-  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'aliases', 'invoices', 'cloud']) {
+  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'aliases', 'invoices']) {
     globalThis.location = { hash: '#/' + view, href: 'https://x.test/#/' + view }
     const html = renderToString(React.createElement(App))
     assert.ok(html.includes('iMag'), `вкладка «${view}» отрисовалась`)
-    // Нижняя панель разделов — единственная навигация на телефоне: бургера
-    // больше нет, и если она пропадёт, переключаться станет нечем.
-    assert.ok(html.includes('tabbar') && html.includes('Ещё'),
-      `на вкладке «${view}» есть нижняя панель разделов`)
+    // Нижняя панель мест — единственная навигация на телефоне: бокового меню
+    // там больше нет, и если она пропадёт, переключаться станет нечем.
+    assert.ok(html.includes('tabbar') && html.includes('Товары'),
+      `на вкладке «${view}» есть нижняя панель мест`)
   }
   console.log('отрисовка вкладок: OK')
 }
