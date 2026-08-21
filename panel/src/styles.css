@@ -31,11 +31,6 @@
 }
 
 * { box-sizing: border-box; }
-/* Резерв под системную полоску «домой». iOS просит 34px — это высота ЖЕСТА,
-   а не самой полоски: сама она тонкая и спокойно лежит поверх нижней панели,
-   как в обычных приложениях. Полный резерв оставлял под иконками белое поле,
-   и панель выглядела висящей в воздухе. */
-:root { --safe-bottom: min(env(safe-area-inset-bottom), 14px); }
 html, body, #root { height: 100%; }
 body {
   margin: 0;
@@ -225,7 +220,7 @@ tbody tr:hover td { background: var(--panel2); }
   position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50;
   display: flex; align-items: center; justify-content: center;
   /* В полноэкранном режиме окно иначе залезает под вырез и полоску «домой». */
-  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + var(--safe-bottom));
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
 }
 .modal {
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
@@ -260,7 +255,13 @@ tbody tr:hover td { background: var(--panel2); }
     padding: 8px 14px;
     padding-top: calc(8px + env(safe-area-inset-top));
   }
-  .stickybar { margin-left: -14px; margin-right: -14px; padding: 8px 14px; }
+  /* На телефоне панель раздела НЕ липкая. Липкость внутри своей области
+     прокрутки iOS не держит: между шапкой и панелью проезжало содержимое.
+     Шапка с переключателем разделов стоит намертво — она снаружи прокрутки,
+     а фильтры внутри вкладки выбирают один раз и работают. */
+  .stickybar {
+    position: static; margin-left: -14px; margin-right: -14px; padding: 8px 14px;
+  }
   h1 { font-size: 18px; }
   /* Палец не попадает в кнопку высотой 26px */
   .btn.sm { padding: 8px 12px; font-size: 13px; }
@@ -354,7 +355,10 @@ tr.seen td { opacity: .45; }
   .tabbar {
     display: flex; flex: 0 0 auto;
     background: var(--panel); border-top: 1px solid var(--line);
-    padding-bottom: var(--safe-bottom);
+    /* Резерва под системную полоску «домой» нет намеренно: iOS просит под неё
+       34px, но это высота ЖЕСТА, а не самой полоски — она тонкая и лежит
+       поверх панели, как в обычных приложениях. Пустое поле под иконками
+       заметнее, чем полоска поверх них. */
   }
   .tab {
     flex: 1; min-width: 0; border: 0; background: transparent; cursor: pointer;
