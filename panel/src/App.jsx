@@ -278,7 +278,10 @@ function Panel() {
         </div>
       </aside>
 
-      <main className="main">
+      {/* Колонка: шапка — прокручиваемое содержимое — панель разделов.
+          Шапка и панель СНАРУЖИ прокрутки, иначе содержимое проезжает над
+          ними (и проезжало: строки уходили под системные часы). */}
+      <div className="col">
         <div className="topbar">
           {/* У места из одного экрана — обычный заголовок. Где экранов
               несколько, заголовок ЗАМЕНЯЕТСЯ переключателем: он и так называет
@@ -307,6 +310,8 @@ function Panel() {
           <button className="btn ghost icon" onClick={() => setSettings(true)}
             aria-label="Настройки" title="Настройки"><SettingsIcon /></button>
         </div>
+
+      <main className="main">
 
         {/* Ошибку фонового обновления не показываем баннером: он внезапно
             выталкивал содержимое вниз каждые пять минут. Баннер — только когда
@@ -355,6 +360,7 @@ function Panel() {
       <TabBar active={current ? null : groupOf(view).id}
         tabs={GROUPS.map(g => ({ id: g.id, label: g.label, badge: GROUP_BADGE[g.id], urgent: g.urgent }))}
         onPick={(id) => goto(GROUPS.find(g => g.id === id).views[0])} />
+      </div>
 
       {settings && (
         <Modal title="Настройки" onClose={() => setSettings(false)}>
