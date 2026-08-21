@@ -1,6 +1,7 @@
 // Мелкие кирпичики панели. Своя графика вместо библиотеки: линия по тридцати
 // точкам — это два десятка строк, а библиотека тянет сотни килобайт в бандл.
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { money } from './api'
 
 export function Tile({ label, value, hint, tone, onClick }) {
@@ -180,7 +181,7 @@ export function Modal({ title, onClose, children, keepOpen }) {
     addEventListener('keydown', esc)
     return () => removeEventListener('keydown', esc)
   }, [onClose, keepOpen])
-  return (
+  const node = (
     // Клик по фону закрывает только там, где терять нечего. У форм промах мимо
     // окна стирал введённое без предупреждения — а у выпуска лицензии уносил
     // ещё и показанный код активации.
@@ -201,6 +202,11 @@ export function Modal({ title, onClose, children, keepOpen }) {
       </div>
     </div>
   )
+  // Окно рисуется в корне страницы, а не там, где его позвали. Окна вкладок
+  // (выбор модели, привязка кода) лежали ВНУТРИ прокручиваемой области, и на
+  // iPhone она их запирала: затемнение не накрывало шапку и панель разделов,
+  // а крестик оставался выше видимой части — закрыть было нечем.
+  return typeof document === 'undefined' ? node : createPortal(node, document.body)
 }
 
 // ── Подтверждение ─────────────────────────────────────────────────────
