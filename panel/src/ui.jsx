@@ -189,12 +189,15 @@ export function Modal({ title, onClose, children, keepOpen }) {
         {/* Крестик обязателен: Escape на телефоне не нажать, а окно занимает
             весь экран — промахнуться по фону некуда. Показываем и у keepOpen:
             он защищает от СЛУЧАЙНОГО закрытия, а не от намеренного. */}
-        <div className="row" style={{ alignItems: 'flex-start' }}>
+        {/* Шапка НЕ прокручивается вместе с содержимым: у высокого окна
+            (выбор модели, выпуск лицензии) крестик уезжал за верхний край, и
+            закрыть его на телефоне становилось нечем — Escape там не нажать. */}
+        <div className="row modal-head" style={{ alignItems: 'flex-start' }}>
           <h3 style={{ flex: 1, minWidth: 0 }}>{title}</h3>
           <button className="btn sm ghost" onClick={onClose} aria-label="Закрыть" title="Закрыть"
             style={{ marginLeft: 8, lineHeight: 1 }}>✕</button>
         </div>
-        {children}
+        <div className="modal-body">{children}</div>
       </div>
     </div>
   )
