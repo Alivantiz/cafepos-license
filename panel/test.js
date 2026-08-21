@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelCost, bareModel, anthropicCost } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelCost, bareModel, anthropicCost, pushEvents, encryptPush, b64u, EXPIRE_SOON_DAYS } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -1005,12 +1005,136 @@ async function testInvoiceCodes() {
   console.log('коды из накладных: OK')
 }
 
+
+// Шифрование push сделано руками по RFC 8291, и проверить его иначе как
+// расшифровав нечем: push-служба на кривое тело отвечает 201 и молча ничего
+// не показывает. Здесь тест играет за браузер — заводит свою пару ключей и
+// разбирает то, что отдал воркер.
+async function testPushCrypto() {
+  const ua = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const uaPub = new Uint8Array(await crypto.subtle.exportKey('raw', ua.publicKey))
+  const auth = crypto.getRandomValues(new Uint8Array(16))
+  const text = JSON.stringify({ title: 'iMag', body: 'Касса не работает' })
+
+  const body = new Uint8Array(await encryptPush(text, b64u.enc(uaPub), b64u.enc(auth)))
+  const salt = body.slice(0, 16)
+  const rs = new DataView(body.buffer, body.byteOffset + 16, 4).getUint32(0)
+  assert.strictEqual(rs, 4096, 'размер записи в заголовке')
+  assert.strictEqual(body[20], 65, 'длина открытого ключа отправителя')
+  const asPub = body.slice(21, 21 + 65)
+  const ct = body.slice(21 + 65)
+
+  const hkdf = async (s_, ikm, info, len) => {
+    const k = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits'])
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: s_, info }, k, len * 8))
+  }
+  const cat = (...ps) => {
+    const out = new Uint8Array(ps.reduce((n, x) => n + x.length, 0))
+    let o = 0; for (const x of ps) { out.set(x, o); o += x.length }
+    return out
+  }
+  const asKey = await crypto.subtle.importKey('raw', asPub, { name: 'ECDH', namedCurve: 'P-256' }, false, [])
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: asKey }, ua.privateKey, 256))
+  const te = new TextEncoder()
+  const ikm = await hkdf(auth, shared, cat(te.encode('WebPush: info\0'), uaPub, asPub), 32)
+  const cek = await hkdf(salt, ikm, te.encode('Content-Encoding: aes128gcm\0'), 16)
+  const nonce = await hkdf(salt, ikm, te.encode('Content-Encoding: nonce\0'), 12)
+  const aes = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['decrypt'])
+  const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, aes, ct))
+  assert.strictEqual(plain[plain.length - 1], 2, 'признак последней записи')
+  assert.strictEqual(new TextDecoder().decode(plain.slice(0, -1)), text, 'браузер прочитает то же, что отправили')
+
+  // base64url без «=» и без «+/» — иначе браузер не примет ключ VAPID.
+  const enc = b64u.enc(new Uint8Array([251, 255, 190, 0]))
+  assert.ok(!/[+/=]/.test(enc), 'base64url, а не обычный base64: ' + enc)
+  assert.deepStrictEqual([...b64u.dec(enc)], [251, 255, 190, 0], 'обратный разбор')
+  console.log('шифрование push: OK')
+}
+
+function testPushEvents() {
+  const now = Date.parse('2026-08-21T10:00:00Z')
+  const day = 86400000
+  const lic = (o) => ({ id: 'L1', customer: 'Марал', revoked: false, hidden: false, ...o })
+
+  // SOS: ключ включает время — вторая авария у той же кассы это новое событие.
+  const a = pushEvents({ licenses: [lic({ last_sos_at: new Date(now - 3600e3).toISOString(), last_sos: { status: 'blocked' } })] }, now)
+  assert.strictEqual(a.length, 1)
+  assert.ok(a[0].body.includes('Марал') && a[0].body.includes('blocked'))
+  const b = pushEvents({ licenses: [lic({ last_sos_at: new Date(now - 2 * day).toISOString(), last_sos: {} })] }, now)
+  assert.strictEqual(b.length, 0, 'позавчерашний SOS — уже не новость')
+
+  // Окончание подписки: только ближние дни, и только у живых лицензий.
+  const soon = new Date(now + 2 * day).toISOString()
+  assert.strictEqual(pushEvents({ licenses: [lic({ expires_at: soon })] }, now).length, 1)
+  assert.strictEqual(pushEvents({ licenses: [lic({ expires_at: soon, revoked: true })] }, now).length, 0, 'отозванная не тревожит')
+  assert.strictEqual(pushEvents({ licenses: [lic({ expires_at: soon, hidden: true })] }, now).length, 0, 'скрытая (своя касса) не тревожит')
+  assert.strictEqual(pushEvents({ licenses: [lic({ expires_at: new Date(now + (EXPIRE_SOON_DAYS + 5) * day).toISOString() })] }, now).length, 0)
+  assert.strictEqual(pushEvents({ licenses: [lic({ expires_at: new Date(now - 5 * day).toISOString() })] }, now).length, 0,
+    'просроченную неделю назад напоминать поздно — это уже разговор, а не срочность')
+
+  // Ключ события устойчив: та же лицензия и та же дата — тот же ключ, значит
+  // проверка раз в четверть часа не пришлёт одно и то же 96 раз в сутки.
+  const k1 = pushEvents({ licenses: [lic({ expires_at: soon })] }, now)[0].key
+  const k2 = pushEvents({ licenses: [lic({ expires_at: soon })] }, now + 3600e3)[0].key
+  assert.strictEqual(k1, k2, 'ключ не зависит от момента проверки')
+
+  const r = pushEvents({ requests: [{ machine_id: 'M1', shop: 'Гулдер', city_raw: 'Шиели' }] }, now)
+  assert.strictEqual(r[0].key, 'req:M1')
+  assert.ok(r[0].body.includes('Гулдер') && r[0].body.includes('Шиели'))
+  console.log('события для уведомлений: OK')
+}
+
+
+// Маршрут проверки событий дёргается cron-воркером без пароля — и обязан
+// быть безобидным: ничего не отдавать наружу и не слать одно и то же дважды.
+async function testPushCheckRoute() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_push_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const ENV = { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' }
+  const call = () => worker.fetch(new Request('https://x.test/api/push/check'), ENV)
+
+  const real = global.fetch
+  try {
+    // Подписок нет — дальше воркер не ходит: некому слать.
+    const asked = []
+    global.fetch = async (url) => { asked.push(String(url)); return new Response('[]', { status: 200 }) }
+    const empty = await (await call()).json()
+    assert.strictEqual(empty.subs, 0, 'нет подписок — нет работы')
+    assert.strictEqual(asked.length, 1, 'один запрос, а не выборка лицензий впустую')
+
+    // Подписка есть, событие есть, но ключ уже занят прошлой проверкой —
+    // уведомление НЕ уходит. Это единственная защита от 96 звонков в сутки.
+    let pushed = 0
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.includes('push_subs')) return new Response(JSON.stringify([{ endpoint: 'https://push.test/1', p256dh: 'x', auth: 'y' }]), { status: 200 })
+      if (u.includes('activation_requests')) return new Response(JSON.stringify([{ machine_id: 'M1', shop: 'Гулдер' }]), { status: 200 })
+      if (u.includes('licenses')) return new Response('[]', { status: 200 })
+      // push_state: POST с ignore-duplicates возвращает только новые строки
+      if (u.includes('push_state') && init?.method === 'POST') return new Response('[]', { status: 201 })
+      if (u.includes('push_state')) return new Response('[]', { status: 200 })
+      pushed++
+      return new Response('', { status: 201 })
+    }
+    const seen = await (await call()).json()
+    assert.strictEqual(seen.events, 1, 'событие нашли')
+    assert.strictEqual(seen.fresh, 0, 'но про него уже уведомляли')
+    assert.strictEqual(pushed, 0, 'и второй раз не шлём')
+  } finally { global.fetch = real }
+  console.log('маршрут проверки событий: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
   await testHealthRoute()
   await testInvoiceCodes()
   await testTrialsMerge()
+  await testPushCrypto()
+  await testPushCheckRoute()
+  testPushEvents()
   testUsageWindows()
   await testViewsRender()
   console.log('ВСЁ OK')

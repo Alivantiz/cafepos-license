@@ -10,6 +10,7 @@ import Catalog from './views/Catalog'
 import Aliases from './views/Aliases'
 import Invoices from './views/Invoices'
 import Cloud, { brokenCount } from './views/Cloud'
+import { PushButton } from './push'
 
 // Срочное — то, где ждут ответа или что-то сломалось. Каталог и накладные
 // разбираются когда удобно, тревожить ими незачем.
@@ -224,6 +225,7 @@ function Panel() {
           )
         })}
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <PushButton />
           <button className="nav" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
           </button>

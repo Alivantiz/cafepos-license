@@ -419,6 +419,196 @@ export function window_(days) {
   }
 }
 
+// ── Push-уведомления вендору ───────────────────────────────────────────
+// Панель ставится на телефон как приложение (манифест + service worker) и
+// получает push: касса сообщила о поломке, пришла заявка, кончается лицензия.
+// Раньше про аварию владелец узнавал звонком клиента — данные в панели были,
+// но звать они не звали.
+//
+// Web Push сделан руками, без библиотек: в «Advanced mode» Pages воркер —
+// один файл без сборщика, npm-зависимость сюда просто не попадёт. Всё, что
+// нужно (ECDSA, ECDH, HKDF, AES-GCM), есть в Web Crypto.
+
+export const b64u = {
+  enc: (buf) => {
+    const b = new Uint8Array(buf)
+    let s = ''
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i])
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  },
+  dec: (s) => {
+    const t = String(s).replace(/-/g, '+').replace(/_/g, '/')
+    const bin = atob(t + '='.repeat((4 - t.length % 4) % 4))
+    const out = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+    return out
+  },
+}
+
+const cat = (...parts) => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let o = 0
+  for (const p of parts) { out.set(p, o); o += p.length }
+  return out
+}
+
+// Пара ключей VAPID. Генерируется при первой подписке и лежит в push_state —
+// это НЕ секрет в смысле «положи в настройки Cloudflare»: заводить руками
+// ещё один секрет значит ещё один шаг, на котором всё встанет. Приватная
+// часть не выходит за пределы воркера и Supabase, доступного только по
+// service-role ключу.
+export async function vapidKeys(db) {
+  const r = await sbFetch(`${db.url}/rest/v1/push_state?key=eq.vapid&select=value`, { headers: db.headers })
+  if (!r.ok) throw new Error('Нет таблицы push_state — выполните SQL из license-server/supabase/schema.sql')
+  const rows = await r.json()
+  if (rows[0]?.value?.pub) return rows[0].value
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const keys = {
+    priv: await crypto.subtle.exportKey('jwk', kp.privateKey),
+    pub: b64u.enc(await crypto.subtle.exportKey('raw', kp.publicKey)),
+  }
+  const w = await sbFetch(`${db.url}/rest/v1/push_state`, {
+    method: 'POST',
+    headers: { ...db.headers, Prefer: 'resolution=merge-duplicates' },
+    body: JSON.stringify({ key: 'vapid', value: keys }),
+  })
+  if (!w.ok) throw new Error('Не удалось сохранить ключи push: ' + await w.text())
+  return keys
+}
+
+// Подпись VAPID: JWT ES256 на адрес push-службы. Живёт 12 часов — служба
+// отвергает токены со сроком больше суток.
+async function vapidJwt(keys, audience, subject) {
+  const te = new TextEncoder()
+  const part = (o) => b64u.enc(te.encode(JSON.stringify(o)))
+  const head = part({ typ: 'JWT', alg: 'ES256' })
+  const body = part({ aud: audience, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: subject })
+  const key = await crypto.subtle.importKey('jwk', keys.priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, te.encode(head + '.' + body))
+  return `${head}.${body}.${b64u.enc(sig)}`
+}
+
+// Шифрование тела по RFC 8291 (aes128gcm). Push-служба содержимое не видит:
+// ключ выводится из открытого ключа браузера и секрета подписки.
+export async function encryptPush(text, p256dh, auth) {
+  const ua = b64u.dec(p256dh)
+  const authSecret = b64u.dec(auth)
+  const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const asPub = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey))
+  const uaKey = await crypto.subtle.importKey('raw', ua, { name: 'ECDH', namedCurve: 'P-256' }, false, [])
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaKey }, eph.privateKey, 256))
+
+  const hkdf = async (salt, ikm, info, len) => {
+    const k = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits'])
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, k, len * 8))
+  }
+  const te = new TextEncoder()
+  const ikm = await hkdf(authSecret, shared, cat(te.encode('WebPush: info\0'), ua, asPub), 32)
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  const cek = await hkdf(salt, ikm, te.encode('Content-Encoding: aes128gcm\0'), 16)
+  const nonce = await hkdf(salt, ikm, te.encode('Content-Encoding: nonce\0'), 12)
+  const aes = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt'])
+  // 0x02 — признак последней записи (padding delimiter): запись всегда одна.
+  const ct = new Uint8Array(await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce }, aes, cat(te.encode(text), new Uint8Array([2]))))
+  const head = new Uint8Array(21)
+  head.set(salt, 0)
+  new DataView(head.buffer).setUint32(16, 4096)   // размер записи
+  head[20] = asPub.length                          // длина открытого ключа отправителя
+  return cat(head, asPub, ct)
+}
+
+// Один пуш одной подписке. Возвращает HTTP-код службы: 404/410 значит, что
+// подписка мертва (приложение удалили) — такую надо вычистить.
+export async function pushOne(sub, payload, keys, subject) {
+  const body = await encryptPush(JSON.stringify(payload), sub.p256dh, sub.auth)
+  const jwt = await vapidJwt(keys, new URL(sub.endpoint).origin, subject)
+  const r = await fetch(sub.endpoint, {
+    method: 'POST',
+    headers: {
+      TTL: '86400',
+      Urgency: 'high',
+      'Content-Encoding': 'aes128gcm',
+      'Content-Type': 'application/octet-stream',
+      Authorization: `vapid t=${jwt}, k=${keys.pub}`,
+    },
+    body,
+    signal: AbortSignal.timeout(10_000),
+  })
+  return r.status
+}
+
+// Разослать всем подпискам. Мёртвые (404/410) удаляем сразу: иначе список
+// растёт переустановками приложения, и каждая проверка стучится в никуда.
+export async function pushAll(env, db, payload) {
+  const list = Array.isArray(payload) ? payload : [payload]
+  const keys = await vapidKeys(db)
+  const r = await sbFetch(`${db.url}/rest/v1/push_subs?select=endpoint,p256dh,auth`, { headers: db.headers })
+  if (!r.ok) throw new Error('Нет таблицы push_subs — выполните SQL из license-server/supabase/schema.sql')
+  const subs = await r.json()
+  const subject = env.VAPID_SUBJECT || 'https://imag-license-panel.pages.dev'
+  const dead = []
+  let sent = 0
+  for (const s of subs) {
+    for (const p of list) {
+      let code = 0
+      try { code = await pushOne(s, p, keys, subject) } catch { code = 0 }
+      if (code === 404 || code === 410) { dead.push(s.endpoint); break }
+      if (code >= 200 && code < 300) sent++
+    }
+  }
+  for (const e of dead) {
+    await sbFetch(`${db.url}/rest/v1/push_subs?endpoint=eq.${encodeURIComponent(e)}`,
+      { method: 'DELETE', headers: db.headers }).catch(() => {})
+  }
+  return { subs: subs.length, sent, dead: dead.length }
+}
+
+// О чём вообще стоит будить телефон. Всё остальное (каталог, накладные,
+// названия) — работа в очереди, она подождёт до утра.
+export const EXPIRE_SOON_DAYS = 3
+
+export function pushEvents({ licenses = [], requests = [] }, now = Date.now()) {
+  const out = []
+  const day = 86400000
+  for (const l of licenses) {
+    // Касса сама сказала «мне плохо». Ключ включает время SOS: второй сигнал
+    // от той же кассы — это новая авария, а не повтор старой.
+    if (l.last_sos_at && now - new Date(l.last_sos_at).getTime() < day) {
+      const why = l.last_sos?.status || l.last_sos?.reason || 'не запускается'
+      out.push({
+        key: `sos:${l.id}:${l.last_sos_at}`,
+        title: 'Касса не работает',
+        body: `${l.customer || l.machine_id || l.id}: ${why}`,
+        tag: 'sos',
+        url: '/#/clients/' + encodeURIComponent(l.id),
+      })
+    }
+    if (!l.revoked && !l.hidden && l.expires_at) {
+      const left = Math.ceil((new Date(l.expires_at).getTime() - now) / day)
+      if (left >= 0 && left <= EXPIRE_SOON_DAYS) {
+        out.push({
+          key: `exp:${l.id}:${l.expires_at}`,
+          title: 'Заканчивается подписка',
+          body: `${l.customer || l.id}: ${left <= 0 ? 'сегодня последний день' : 'осталось ' + left + ' дн'}`,
+          tag: 'expire',
+          url: '/#/clients/' + encodeURIComponent(l.id),
+        })
+      }
+    }
+  }
+  for (const r of requests) {
+    out.push({
+      key: `req:${r.machine_id}`,
+      title: 'Заявка на активацию',
+      body: [r.shop, r.city_raw].filter(Boolean).join(', ') || r.machine_id || 'без имени',
+      tag: 'request',
+      url: '/#/requests',
+    })
+  }
+  return out
+}
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url)
@@ -448,6 +638,63 @@ export default {
       }
       const [licenses, monitor] = await Promise.all([ping(sb(env)), ping(sb2(env))])
       return json({ ok: licenses && monitor, licenses, monitor }, licenses && monitor ? 200 : 502)
+    }
+
+    // Проверка событий: дёргает cron-воркер (imag-keepalive) раз в четверть
+    // часа. Пароля не просит — как и /api/keepalive: данных наружу не отдаёт,
+    // а разослать одно и то же дважды не может: ключ события пишется в
+    // push_state с resolution=ignore-duplicates, и повторный вызов получает
+    // в ответ пустой список «новых».
+    if (pathname === '/api/push/check') {
+      const db = sb(env)
+      if (!db.url || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ ok: false, error: 'нет ключей Supabase' }, 500)
+      try {
+        // Ни одной подписки — дальше можно не ходить: некому слать.
+        const head = await sbFetch(`${db.url}/rest/v1/push_subs?select=endpoint&limit=1`, { headers: db.headers })
+        if (!head.ok) return json({ ok: false, error: 'нет таблицы push_subs — не выполнен SQL' })
+        if ((await head.json()).length === 0) return json({ ok: true, subs: 0, events: 0 })
+
+        const day = 86400000
+        const since = new Date(Date.now() - day).toISOString()
+        const soon = new Date(Date.now() + EXPIRE_SOON_DAYS * day).toISOString()
+        const LIC = 'id,customer,machine_id,expires_at,revoked,hidden'
+        const get = async (q) => { const r = await sbFetch(`${db.url}/rest/v1/${q}`, { headers: db.headers }); return r.ok ? r.json() : [] }
+        const [expiring, sos, reqs] = await Promise.all([
+          get(`licenses?select=${LIC}&revoked=is.false&expires_at=lte.${soon}&limit=200`),
+          // Колонок SOS может ещё не быть — тогда просто пусто, а не 502.
+          get(`licenses?select=${LIC},last_sos,last_sos_at&last_sos_at=gte.${since}&limit=200`),
+          get('activation_requests?select=machine_id,shop,city_raw&status=eq.pending&limit=100'),
+        ])
+        // Одна касса может попасть в оба списка — иначе pushEvents прошёл бы
+        // по ней дважды и выдал одинаковые ключи.
+        const byId = new Map()
+        for (const l of [...expiring, ...sos]) byId.set(l.id, { ...byId.get(l.id), ...l })
+        const events = pushEvents({ licenses: [...byId.values()], requests: reqs })
+        if (!events.length) return json({ ok: true, events: 0 })
+
+        // Заявка на «это событие моё»: строки, которые вернулись, до нас никто
+        // не вставлял — про них и уведомляем. Уже существующие PostgREST
+        // молча пропускает.
+        const claim = await sbFetch(`${db.url}/rest/v1/push_state`, {
+          method: 'POST',
+          headers: { ...db.headers, Prefer: 'resolution=ignore-duplicates,return=representation' },
+          body: JSON.stringify(events.map(e => ({ key: e.key, value: {} }))),
+        })
+        const freshKeys = new Set((claim.ok ? await claim.json() : []).map(r => r.key))
+        const fresh = events.filter(e => freshKeys.has(e.key))
+        if (!fresh.length) return json({ ok: true, events: events.length, fresh: 0, sent: 0 })
+
+        // Первая проверка после установки поднимет разом всю накопившуюся
+        // очередь. Пять уведомлений подряд человек смахнёт не читая — сводим
+        // в одно, а разбираться он пойдёт в панель.
+        const payloads = fresh.length > 3
+          ? [{ title: 'iMag: ' + fresh.length + ' событий', body: fresh.slice(0, 3).map(e => e.body).join('; ') + '…', tag: 'digest', url: '/' }]
+          : fresh.map(e => ({ title: e.title, body: e.body, tag: e.tag, url: e.url }))
+        const res = await pushAll(env, db, payloads)
+        return json({ ok: true, events: events.length, fresh: fresh.length, ...res })
+      } catch (e) {
+        return json({ ok: false, error: String(e).slice(0, 200) }, 200)
+      }
     }
 
     // ponytail: простое сравнение пароля; при реальном риске перебора — Cloudflare Access
@@ -670,6 +917,52 @@ export default {
       // и лицензию можно было бы «продлить» мимо всех проверок.
       // Здоровье облака лицензий: подписывает ли оно вообще. Секретов ответ не
       // содержит — только «ok/missing» и номер версии функции.
+      // ── Push: подписка этого браузера ────────────────────────────────
+      // Открытый ключ VAPID: браузер обязан передать его в subscribe().
+      if (pathname === '/api/push/key') {
+        return json({ key: (await vapidKeys(db)).pub })
+      }
+
+      // Подписка идемпотентна: панель переподписывается при каждом открытии,
+      // потому что браузер может обновить endpoint сам и молча.
+      if (pathname === '/api/push/subscribe') {
+        const b = await request.json().catch(() => ({}))
+        const s = b.sub || b
+        const keys = s.keys || {}
+        if (!s.endpoint || !keys.p256dh || !keys.auth) return json({ error: 'Подписка неполная' }, 400)
+        const r = await sbFetch(`${db.url}/rest/v1/push_subs`, {
+          method: 'POST',
+          headers: { ...db.headers, Prefer: 'resolution=merge-duplicates' },
+          body: JSON.stringify({
+            endpoint: s.endpoint, p256dh: keys.p256dh, auth: keys.auth,
+            label: b.label || null, failed_at: null,
+          }),
+        })
+        if (!r.ok) return json({ error: 'Нет таблицы push_subs — выполните SQL из license-server/supabase/schema.sql' }, 502)
+        return json({ ok: true })
+      }
+
+      if (pathname === '/api/push/unsubscribe') {
+        const { endpoint } = await request.json().catch(() => ({}))
+        if (!endpoint) return json({ error: 'Не указан endpoint' }, 400)
+        await sbFetch(`${db.url}/rest/v1/push_subs?endpoint=eq.${encodeURIComponent(endpoint)}`,
+          { method: 'DELETE', headers: db.headers })
+        return json({ ok: true })
+      }
+
+      // Проверочное уведомление. Без него «подписался» — это просто надпись:
+      // разрешение выдано, а дойдёт ли до телефона, выяснялось бы аварией.
+      if (pathname === '/api/push/test') {
+        try {
+          const res = await pushAll(env, db, {
+            title: 'iMag', body: 'Уведомления работают', tag: 'test', url: '/',
+          })
+          return json(res)
+        } catch (e) {
+          return json({ error: String(e.message || e) }, 502)
+        }
+      }
+
       if (pathname === '/api/health') {
         try {
           const r = await sbFetch(LIC_FN_URL, { headers: { accept: 'application/json' } })
