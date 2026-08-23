@@ -2,7 +2,7 @@
 // на одной странице. Раньше владелец видел строку таблицы и кнопку «Продлить»,
 // а на вопрос «как у них дела» ответа не было нигде.
 import { useState } from 'react'
-import { api, fmtDate, daysLeft, daysAgo, money, agoText } from '../api'
+import { api, fmtDate, daysLeft, daysAgo, money, agoText, agoFine } from '../api'
 import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar, CopyBtn } from '../ui'
 
 export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor }) {
@@ -165,7 +165,7 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
               <dd style={{ margin: 0 }}>{c.price ? money(c.price) : <span className="muted2">не указана</span>}</dd>
               <dt className="muted2">Заведена</dt><dd style={{ margin: 0 }}>{fmtDate(c.created_at)}</dd>
             </>}
-            <dt className="muted2">Связь</dt><dd style={{ margin: 0 }}>{agoText(c.last_seen_at)}</dd>
+            <dt className="muted2">Связь</dt><dd style={{ margin: 0 }}>{agoFine(c.last_seen_at)}</dd>
             {trial && <><dt className="muted2">Проба с</dt><dd style={{ margin: 0 }}>{fmtDate(c.started_at)}</dd></>}
           </dl>
           {/* Горячий триал — главный повод действовать, а действия из карточки
@@ -267,10 +267,21 @@ function LogRequest({ c, onDone }) {
       <div className="row">
         <b>Журнал кассы</b>
         <span className="muted2">
-          {fresh ? `получен ${agoText(c.last_log_at)}`
-            : pending ? `запрошен ${agoText(c.log_requested_at)} — придёт при выходе кассы на связь: у работающей это 15 минут, у сломанной до часа. Молчит дольше — у кассы нет интернета, и дело не в лицензии`
+          {fresh ? `получен ${agoFine(c.last_log_at)}`
+            : pending ? `запрошен ${agoFine(c.log_requested_at)} — придёт при выходе кассы на связь: у работающей это 15 минут, у сломанной до часа`
               : 'запрашивается с кассы по кнопке, приходит при её выходе на связь'}
         </span>
+        {/* Главный вопрос во время аварии — звонит ли касса вообще. Без этой
+            строки «журнала нет» одинаково читается и как «кассу выключили», и
+            как «журнал теряется по дороге», а это разные починки. */}
+        {pending && (
+          <div className="muted2" style={{ marginTop: 6, width: '100%' }}>
+            касса выходила на связь: <b>{agoFine(c.last_seen_at)}</b>{' '}
+            {c.last_seen_at && Date.now() - new Date(c.last_seen_at) < 20 * 60000
+              ? '— значит связь есть, и журнал теряется по дороге'
+              : '— похоже, касса выключена; журнал придёт, когда её включат'}
+          </div>
+        )}
         <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || !!pending} onClick={ask}>
           {pending ? 'Запрошен…' : 'Запросить лог'}
         </button>
