@@ -2,7 +2,7 @@
 // на одной странице. Раньше владелец видел строку таблицы и кнопку «Продлить»,
 // а на вопрос «как у них дела» ответа не было нигде.
 import { useState } from 'react'
-import { api, fmtDate, daysLeft, daysAgo, money, agoText, agoFine } from '../api'
+import { api, useApi, fmtDate, daysLeft, daysAgo, money, agoText, agoFine } from '../api'
 import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar, CopyBtn } from '../ui'
 
 export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor, missingCols }) {
@@ -255,6 +255,12 @@ function History({ rows }) {
 // интернета, и это тоже ответ.
 function LogRequest({ c, onDone, missingCols = [] }) {
   const [busy, setBusy] = useState(false)
+  // Версия функции в облаке: до 2026-08-23.3 она выбрасывала неудачу записи
+  // МОЛЧА, и «запрошен» одинаково значил и «касса не прислала», и «прислала, но
+  // не записалось». Пока там старая версия, честнее сказать это прямо, чем
+  // делать вид, что панель знает ответ.
+  const { data: cloud } = useApi('health')
+  const oldFn = cloud?.version && String(cloud.version) < '2026-08-23.3'
   const ask = async () => {
     setBusy(true)
     try { await api('requestLog', { id: c.id }); toast.ok('Запрошено — касса дошлёт при выходе на связь'); onDone() }
@@ -296,6 +302,13 @@ function LogRequest({ c, onDone, missingCols = [] }) {
               ? <> — уже ПОСЛЕ запроса. Касса и интернет ни при чём: журнал
                   теряется в облаке, звонить клиенту незачем</>
               : <> — запроса она ещё не видела. Ждём её следующего звонка</>}
+            {oldFn && c.last_seen_at && new Date(c.last_seen_at) > new Date(c.log_requested_at) && (
+              <div style={{ color: 'var(--warn)', marginTop: 6 }}>
+                Почему именно теряется — сказать пока нечем: в облаке функция
+                {' '}{cloud.version}, она выбрасывает неудачу молча. Выложите
+                status (2026-08-23.3) — причина появится прямо здесь.
+              </div>
+            )}
           </div>
         )}
         <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || !!pending} onClick={ask}>

@@ -1195,6 +1195,49 @@ async function testMissingColumns() {
   console.log('отсутствующие колонки названы: OK')
 }
 
+
+// Карточка клиента не покрывалась отрисовкой: она видна только при выбранном
+// клиенте, и забытый импорт (useApi) собирался без ошибки, а падал уже у
+// вендора — ровно посреди разбора аварии. Рендерим её отдельно.
+async function testClientCardRender() {
+  const esbuild = await import('esbuild')
+  const out = path.join(__dirname, '.card-render-test.mjs')
+  await esbuild.build({
+    entryPoints: [path.join(__dirname, 'src', 'views', 'ClientCard.jsx')],
+    bundle: true, format: 'esm', jsx: 'automatic', outfile: out,
+    external: ['react', 'react/jsx-runtime', 'react-dom'], loader: { '.css': 'empty' },
+  })
+  globalThis.localStorage ||= {
+    store: { panel_pw: 'x' },
+    getItem(k) { return this.store[k] ?? null },
+    setItem(k, v) { this.store[k] = String(v) },
+    removeItem(k) { delete this.store[k] },
+  }
+  const { renderToString } = await import('react-dom/server')
+  const React = await import('react')
+  const { default: ClientCard } = await import(pathToFileURL(out).href)
+  fs.unlinkSync(out)
+
+  const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10)
+  const c = {
+    subject: 'a1', id: 'a1', customer: 'Назым', kind: 'license', machine_id: 'M1',
+    expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
+    last_seen_at: new Date(Date.now() - 9 * 60000).toISOString(),
+    log_requested_at: new Date(Date.now() - 53 * 60000).toISOString(),
+    last_log_at: null, telemetry: true, days: [{ day: day(1), revenue: 1000, receipts: 2 }],
+    renewals: [],
+  }
+  const html = renderToString(React.createElement(ClientCard, {
+    c, onBack() {}, onChanged() {}, kaspiPhone: '', cities: [], missingCols: ['last_log', 'last_log_at'],
+  }))
+  assert.ok(html.includes('Назым'), 'карточка отрисовалась')
+  // Связь после запроса — значит виновата не касса, и это должно быть сказано.
+  assert.ok(html.includes('ПОСЛЕ запроса'), 'сказано, что касса выходила на связь после запроса')
+  // Колонок нет — сохранять журнал некуда, и молчать об этом нельзя.
+  assert.ok(html.includes('нет колонок под журнал'), 'названа причина: нет колонок')
+  console.log('карточка клиента: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
@@ -1208,6 +1251,7 @@ try {
   testUsageWindows()
   await testViewsRender()
   await testSummaryReasons()
+  await testClientCardRender()
   console.log('ВСЁ OK')
 } catch (e) {
   console.error('УПАЛО:', e.message)
