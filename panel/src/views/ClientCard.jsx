@@ -276,6 +276,14 @@ function LogRequest({ c, onDone, missingCols = [] }) {
   // не записалось». Пока там старая версия, честнее сказать это прямо, чем
   // делать вид, что панель знает ответ.
   const { data: cloud } = useApi('health')
+  const [logText, setLogText] = useState(null)
+  const loadLog = async () => {
+    if (logText !== null) return
+    try {
+      const d = await api('client/log', { id: c.id })
+      setLogText(d.text || '(журнал пуст)')
+    } catch (e) { setLogText('Не удалось загрузить журнал: ' + e.message) }
+  }
   const oldFn = cloud?.version && String(cloud.version) < '2026-08-23.3'
   const ask = async () => {
     setBusy(true)
@@ -286,7 +294,7 @@ function LogRequest({ c, onDone, missingCols = [] }) {
   // и никакой ответ кассы делу не поможет. Это единственная причина, которую
   // облако сообщить не может (писать-то ему тоже некуда), зато панель ходит в
   // базу своим ключом и видит её сама.
-  const noColumn = missingCols.includes('last_log') || missingCols.includes('log_requested_at')
+  const noColumn = missingCols.includes('last_log_at') || missingCols.includes('log_requested_at')
   const pending = c.log_requested_at && (!c.last_log_at || new Date(c.last_log_at) < new Date(c.log_requested_at))
   const fresh = c.last_log_at && c.log_requested_at && new Date(c.last_log_at) >= new Date(c.log_requested_at)
   return (
@@ -331,10 +339,14 @@ function LogRequest({ c, onDone, missingCols = [] }) {
           {pending ? 'Запрошен…' : 'Запросить лог'}
         </button>
       </div>
-      {fresh && c.last_log && (
-        <details style={{ marginTop: 8 }}>
+      {/* Текст журнала грузим по требованию: в списке клиентов его нет, иначе
+          панель тащила бы до 30 КБ на каждого при каждом обновлении. */}
+      {fresh && (
+        <details style={{ marginTop: 8 }} onToggle={e => { if (e.target.open) loadLog() }}>
           <summary className="muted2" style={{ cursor: 'pointer' }}>показать журнал</summary>
-          <pre style={{ margin: '6px 0 0', maxHeight: 320, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>{c.last_log}</pre>
+          <pre style={{ margin: '6px 0 0', maxHeight: 320, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>
+            {logText ?? 'Загружаю…'}
+          </pre>
         </details>
       )}
     </div>

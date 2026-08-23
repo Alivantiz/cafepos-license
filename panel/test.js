@@ -1181,11 +1181,15 @@ async function testMissingColumns() {
   const real = global.fetch
   try {
     // Supabase не принимает две последние колонки — как если бы ALTER не выполнили.
+    const asked = []
     global.fetch = async (url) => {
       const u = String(url)
+      asked.push(u)
       if (u.includes('/licenses?select=')) {
-        const asksLog = u.includes('last_log')
-        if (asksLog) return new Response('{"message":"column licenses.last_log does not exist"}', { status: 400 })
+        // Колонки под журнал в базе нет — как если бы ALTER не выполнили.
+        if (u.includes('last_log_at')) {
+          return new Response('{"message":"column licenses.last_log_at does not exist"}', { status: 400 })
+        }
         return new Response('[]', { status: 200 })
       }
       return new Response('[]', { status: 200 })
@@ -1195,8 +1199,12 @@ async function testMissingColumns() {
     }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
     const d = await r.json()
     assert.ok(Array.isArray(d.missingCols), 'панель отчитывается, что выбросила')
-    assert.ok(d.missingCols.includes('last_log'), 'и называет колонку: ' + JSON.stringify(d.missingCols))
+    assert.ok(d.missingCols.includes('last_log_at'), 'и называет колонку: ' + JSON.stringify(d.missingCols))
     assert.ok(Array.isArray(d.licenses), 'но клиентов всё равно отдаёт — без списка панель бесполезна')
+    // Текст журнала в списке не запрашивается вовсе: до 30 КБ на клиента при
+    // каждом обновлении панели ради строчки «получен тогда-то».
+    assert.ok(!asked.some(u => /licenses\?select=[^&]*last_log(?!_at)/.test(u)),
+      'список клиентов не тянет тексты журналов')
   } finally { global.fetch = real }
   console.log('отсутствующие колонки названы: OK')
 }

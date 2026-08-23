@@ -728,8 +728,13 @@ export default {
         const LIC_BASE = 'id,customer,machine_id,expires_at,terminals,revoked,activated_at,last_seen_at,notes,created_at'
         // Колонки, добавленные ALTER-ами позже базовой схемы: на проекте, где
         // SQL ещё не выполнили, запрос с ними падает целиком.
+        // last_log здесь НЕТ намеренно: это до 30 КБ текста на клиента, и список
+        // тащил бы их все при каждом обновлении панели ради строчки «получен
+        // тогда-то». Сам журнал забирается по одному, когда его раскрывают
+        // (/api/client/log). last_log_at остаётся — по нему считается, пришёл
+        // ли ответ на запрос.
         const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city',
-          'last_sos', 'last_sos_at', 'log_requested_at', 'last_log', 'last_log_at']
+          'last_sos', 'last_sos_at', 'log_requested_at', 'last_log_at']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
@@ -967,6 +972,19 @@ export default {
         } catch (e) {
           return json({ error: String(e.message || e) }, 502)
         }
+      }
+
+      // Журнал одной кассы. Отдельно от списка клиентов: там он тянулся бы у
+      // всех сразу и на каждое обновление панели.
+      if (pathname === '/api/client/log') {
+        const { id } = await request.json().catch(() => ({}))
+        if (!id) return json({ error: 'Не указан клиент' }, 400)
+        const r = await sbFetch(
+          `${db.url}/rest/v1/licenses?select=last_log,last_log_at&id=eq.${encodeURIComponent(id)}`,
+          { headers: db.headers })
+        if (!r.ok) return json({ error: 'Журнал недоступен: ' + await r.text() }, 502)
+        const row = (await r.json())[0] || {}
+        return json({ text: row.last_log ?? null, at: row.last_log_at ?? null })
       }
 
       if (pathname === '/api/health') {
