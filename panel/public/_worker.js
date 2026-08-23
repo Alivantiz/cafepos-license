@@ -746,7 +746,13 @@ export default {
         // панель осталась бы вообще без клиентов. Отступаем по одной колонке с
         // конца, а не сразу к базе: иначе непринятая price уносила бы и телефон,
         // который на этом проекте давно работает.
+        // Какие колонки пришлось выбросить — НЕ молча. Панель отступала тихо, и
+        // отсутствующая колонка выглядела как «данных нет»: журнал кассы вечно
+        // «запрошен», хотя сохранять его просто некуда. Вендор в этом случае
+        // должен видеть причину у себя, а не искать её в Supabase.
+        let missingCols = []
         for (let n = LIC_OPT.length - 1; n >= 0 && !licR.ok; n--) {
+          missingCols = LIC_OPT.slice(n)
           licR = await licenses_(n ? LIC_BASE + ',' + LIC_OPT.slice(0, n).join(',') : LIC_BASE)
         }
         for (const [name, r] of [['licenses', licR], ['trials', trialR], ['usage_daily', dailyR], ['usage_state', stateR]]) {
@@ -801,7 +807,7 @@ export default {
         const trials = (await trialR.json())
           .filter(r => !licensedMachines.has(String(r.machine_id || '').trim()))
           .map(r => decorate(r, r.machine_id, 'trial'))
-        return json({ licenses, trials, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
+        return json({ licenses, trials, missingCols, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
       }
 
       if (pathname === '/api/renew') {

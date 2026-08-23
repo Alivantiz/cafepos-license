@@ -1162,10 +1162,44 @@ async function testSummaryReasons() {
   console.log('причины в сводке: OK')
 }
 
+
+// Колонка, которой нет в базе, выглядела как «данных нет»: журнал кассы вечно
+// «запрошен», а сохранять его некуда. Панель отступала по колонкам МОЛЧА —
+// и причину приходилось искать в Supabase, мимо самой панели.
+async function testMissingColumns() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_cols_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+
+  const real = global.fetch
+  try {
+    // Supabase не принимает две последние колонки — как если бы ALTER не выполнили.
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('/licenses?select=')) {
+        const asksLog = u.includes('last_log')
+        if (asksLog) return new Response('{"message":"column licenses.last_log does not exist"}', { status: 400 })
+        return new Response('[]', { status: 200 })
+      }
+      return new Response('[]', { status: 200 })
+    }
+    const r = await worker.fetch(new Request('https://x.test/api/clients', {
+      method: 'POST', headers: { 'x-panel-key': 'secret' }, body: '{}',
+    }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+    const d = await r.json()
+    assert.ok(Array.isArray(d.missingCols), 'панель отчитывается, что выбросила')
+    assert.ok(d.missingCols.includes('last_log'), 'и называет колонку: ' + JSON.stringify(d.missingCols))
+    assert.ok(Array.isArray(d.licenses), 'но клиентов всё равно отдаёт — без списка панель бесполезна')
+  } finally { global.fetch = real }
+  console.log('отсутствующие колонки названы: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
   await testHealthRoute()
+  await testMissingColumns()
   await testInvoiceCodes()
   await testTrialsMerge()
   await testPushCrypto()

@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { api, fmtDate, daysLeft, daysAgo, money, agoText, agoFine } from '../api'
 import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar, CopyBtn } from '../ui'
 
-export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor }) {
+export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor, missingCols }) {
   const [renew, setRenew] = useState(false)
   const [edit, setEdit] = useState(false)
   const [snooze, setSnooze] = useState(false)
@@ -116,7 +116,7 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
         </div>
       )}
 
-      {c.kind !== 'trial' && c.id && <LogRequest c={c} onDone={onChanged} />}
+      {c.kind !== 'trial' && c.id && <LogRequest c={c} onDone={onChanged} missingCols={missingCols} />}
 
       <div className="grid tiles" style={{ marginBottom: 16 }}>
         <Tile label="Выручка за 7 дней" value={money(c.revenue7 || 0)}
@@ -253,19 +253,31 @@ function History({ rows }) {
 // только вместе с SOS (SOS_EVERY_MS в license.service.ts). Обещать 15 минут
 // нельзя ровно там, где журнал и нужен. Не пришёл за час — у кассы нет
 // интернета, и это тоже ответ.
-function LogRequest({ c, onDone }) {
+function LogRequest({ c, onDone, missingCols = [] }) {
   const [busy, setBusy] = useState(false)
   const ask = async () => {
     setBusy(true)
     try { await api('requestLog', { id: c.id }); toast.ok('Запрошено — касса дошлёт при выходе на связь'); onDone() }
     catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
+  // Колонки под журнал могло не оказаться в базе — тогда сохранять его некуда,
+  // и никакой ответ кассы делу не поможет. Это единственная причина, которую
+  // облако сообщить не может (писать-то ему тоже некуда), зато панель ходит в
+  // базу своим ключом и видит её сама.
+  const noColumn = missingCols.includes('last_log') || missingCols.includes('log_requested_at')
   const pending = c.log_requested_at && (!c.last_log_at || new Date(c.last_log_at) < new Date(c.log_requested_at))
   const fresh = c.last_log_at && c.log_requested_at && new Date(c.last_log_at) >= new Date(c.log_requested_at)
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <div className="row">
         <b>Журнал кассы</b>
+        {noColumn && (
+          <div style={{ color: 'var(--bad)', width: '100%', marginTop: 6 }}>
+            В базе нет колонок под журнал ({missingCols.join(', ')}) — сохранять его некуда,
+            сколько ни запрашивай. Выполните SQL из конца
+            license-server/supabase/schema.sql.
+          </div>
+        )}
         <span className="muted2">
           {fresh ? `получен ${agoFine(c.last_log_at)}`
             : pending ? `запрошен ${agoFine(c.log_requested_at)} — придёт при выходе кассы на связь: у работающей это 15 минут, у сломанной до часа`

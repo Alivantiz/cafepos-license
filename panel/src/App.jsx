@@ -330,7 +330,8 @@ function Panel() {
         {!data && loading && <div className="empty">Загрузка…</div>}
 
         {data && current && (
-          <ClientCard c={current} kaspiPhone={data.kaspiPhone} cities={cities} onBack={() => setOpenClient(null)}
+          <ClientCard c={current} kaspiPhone={data.kaspiPhone} cities={cities} missingCols={data.missingCols}
+            onBack={() => setOpenClient(null)}
             onChanged={reload}
             onIssueFor={(t) => setIssue({ machine_id: t.machine_id, customer: t.shop || '' })} />
         )}
