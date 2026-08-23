@@ -977,20 +977,27 @@ export default {
           // Заодно считаем кассы, которые сами сообщили о беде за последнюю
           // неделю. Один дешёвый запрос на оба сигнала: бейдж в меню зовёт
           // владельца, а не ждёт, пока он откроет нужную карточку.
-          const countSince = async (col, days) => {
+          // Кассы, которые сообщили о беде и ЕЩЁ НЕ вылечились. Считать по одному
+          // last_sos_at нельзя: метка не гаснет, и починенный клиент неделю
+          // держал бы красную точку. Приученный к вечно красному бейджу вендор
+          // перестаёт его читать — это хуже, чем его отсутствие.
+          //
+          // Признак выздоровления — «связь» новее SOS. last_seen_at ставит
+          // только ЗДОРОВЫЙ звонок кассы (у сломанной нет id лицензии, и
+          // функция выходит раньше этой отметки), так что сравнение честное.
+          const countUnresolvedSos = async (days) => {
             try {
               const since = new Date(Date.now() - days * 86400000).toISOString()
               const r2 = await sbFetch(
-                `${db.url}/rest/v1/licenses?select=id&${col}=gte.${since}&limit=1`,
-                { headers: { ...db.headers, Prefer: 'count=exact' } })
+                `${db.url}/rest/v1/licenses?select=id,last_sos_at,last_seen_at&last_sos_at=gte.${since}&limit=500`,
+                { headers: db.headers })
               if (!r2.ok) return 0
-              const n = Number((r2.headers.get('content-range') || '').split('/')[1])
-              return Number.isFinite(n) ? n : 0
+              const rows = await r2.json()
+              return rows.filter(x => !x.last_seen_at
+                || new Date(x.last_seen_at) < new Date(x.last_sos_at)).length
             } catch { return 0 }   // колонок ещё нет — просто ноль
           }
-          // Заблокированные кассы за неделю: свежее — это авария, старее —
-          // либо починено, либо уже не новость.
-          const sos = await countSince('last_sos_at', 7)
+          const sos = await countUnresolvedSos(7)
           return json({
             ok: !!d?.ok,
             signing_key: d?.signing_key ?? null,

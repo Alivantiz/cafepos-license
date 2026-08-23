@@ -106,15 +106,31 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
           нового нет, проблема решена. Журнал — не автоматом, а по кнопке:
           если он не пришёл за 15–20 минут, у кассы нет интернета, и это само
           по себе диагноз. */}
-      {c.last_sos && daysAgo(c.last_sos_at) != null && daysAgo(c.last_sos_at) <= 7 && (
-        <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 16 }}>
-          <b style={{ color: 'var(--bad)' }}>Касса сообщала о проблеме</b>{' '}
-          <span className="muted2">{agoText(c.last_sos_at)} · версия {c.last_sos.app || '—'}</span>
-          <div className="muted2" style={{ marginTop: 4 }}>
-            статус: <b>{c.last_sos.grace ? `${c.last_sos.grace} (дорабатывала смену по отсрочке)` : c.last_sos.status}</b>
+      {c.last_sos && daysAgo(c.last_sos_at) != null && daysAgo(c.last_sos_at) <= 7 && (() => {
+        // Вылечилась ли касса. «Связь» ставит только ЗДОРОВЫЙ звонок: у
+        // сломанной нет id лицензии, и облако выходит раньше этой отметки. Если
+        // связь новее SOS — беда позади, и красным кричать больше не о чем.
+        // Раньше метка не гасла, и починенный клиент неделю висел красным;
+        // к вечно красному быстро привыкают и перестают его читать.
+        const fixed = c.last_seen_at && new Date(c.last_seen_at) > new Date(c.last_sos_at)
+        const what = c.last_sos.grace
+          ? `${c.last_sos.grace} (дорабатывала смену по отсрочке)` : c.last_sos.status
+        if (fixed) {
+          return (
+            <div className="muted2" style={{ marginBottom: 16 }}>
+              Касса сообщала о проблеме {agoText(c.last_sos_at)} (статус {what},
+              версия {c.last_sos.app || '—'}) — с тех пор вышла на связь и работает.
+            </div>
+          )
+        }
+        return (
+          <div className="card" style={{ borderColor: 'var(--bad)', marginBottom: 16 }}>
+            <b style={{ color: 'var(--bad)' }}>Касса сообщала о проблеме</b>{' '}
+            <span className="muted2">{agoText(c.last_sos_at)} · версия {c.last_sos.app || '—'}</span>
+            <div className="muted2" style={{ marginTop: 4 }}>статус: <b>{what}</b></div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {c.kind !== 'trial' && c.id && <LogRequest c={c} onDone={onChanged} missingCols={missingCols} />}
 

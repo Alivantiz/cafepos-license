@@ -506,15 +506,21 @@ async function testHealthRoute() {
     if (u.includes('/functions/v1/status')) {
       return new Response(JSON.stringify({ ok: false, signing_key: 'missing', table_licenses: 'ok', version: '7' }), { status: 200 })
     }
-    // Кассы, сообщившие о беде за неделю: бейджу нужно только число.
-    return new Response('[]', { status: 200, headers: { 'content-range': '0-0/2' } })
+    // Кассы, сообщившие о беде за неделю. Считать по одному last_sos_at нельзя:
+    // метка не гаснет, и починенный клиент неделю держал бы красную точку.
+    // Здесь одна касса ещё лежит (связи после SOS не было), вторая уже
+    // вылечилась — вышла на связь позже, чем кричала.
+    return new Response(JSON.stringify([
+      { id: 'A', last_sos_at: '2026-08-23T10:00:00Z', last_seen_at: '2026-08-23T09:00:00Z' },
+      { id: 'B', last_sos_at: '2026-08-23T10:00:00Z', last_seen_at: '2026-08-23T11:00:00Z' },
+    ]), { status: 200 })
   }
   const d = await (await call()).json()
   global.fetch = real
   assert.ok(asked[0].includes('/functions/v1/status'), 'спрашиваем функцию лицензий: ' + asked[0])
   assert.strictEqual(d.signing_key, 'missing', 'состояние ключа подписи доезжает до панели')
   assert.strictEqual(d.ok, false)
-  assert.strictEqual(d.sos, 2, 'и число касс, сообщивших о поломке — для красной точки в меню')
+  assert.strictEqual(d.sos, 1, 'считаем только НЕвылеченные: у второй кассы связь новее SOS')
   assert.ok(asked.some(u => u.includes('last_sos_at=gte.')), 'считаем только свежие SOS')
 
   const real2 = global.fetch
@@ -1235,6 +1241,19 @@ async function testClientCardRender() {
   assert.ok(html.includes('ПОСЛЕ запроса'), 'сказано, что касса выходила на связь после запроса')
   // Колонок нет — сохранять журнал некуда, и молчать об этом нельзя.
   assert.ok(html.includes('нет колонок под журнал'), 'названа причина: нет колонок')
+
+  // Вылечившаяся касса не должна неделю висеть красным: к вечно красному
+  // привыкают и перестают его читать.
+  const sosOld = new Date(Date.now() - 3 * 3600000).toISOString()
+  const withSos = (seenAt) => renderToString(React.createElement(ClientCard, {
+    c: { ...c, last_sos: { status: 'invalid', app: '1.26.12' }, last_sos_at: sosOld, last_seen_at: seenAt },
+    onBack() {}, onChanged() {}, kaspiPhone: '', cities: [], missingCols: [],
+  }))
+  const stillBad = withSos(new Date(Date.now() - 5 * 3600000).toISOString())
+  assert.ok(stillBad.includes('Касса сообщала о проблеме'), 'связи после SOS не было — кричим')
+  const recovered = withSos(new Date(Date.now() - 60000).toISOString())
+  assert.ok(recovered.includes('с тех пор вышла на связь'), 'вылечилась — говорим спокойно')
+  assert.ok(!/var\(--bad\)[^]{0,80}сообщала/.test(recovered), 'и не красным')
   console.log('карточка клиента: OK')
 }
 
