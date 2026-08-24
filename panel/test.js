@@ -888,14 +888,37 @@ async function testInvoiceCodes() {
     assert.strictEqual(body.barcode, '4605627012365', 'привязан именно введённый код')
     assert.ok(patched.includes('raw_name_norm=in.'), 'ищем по написанию строки накладной: ' + patched)
   }
+  // Ничего не изменилось — причин ДВЕ, и они требуют разных действий. Раньше
+  // обе назывались «код уже привязан», и вендор шёл искать во вкладке
+  // «Привязанные» то, чего там нет (24.08.2026).
   {
     const real = global.fetch
-    global.fetch = async (url, init) => init?.method === 'PATCH'
-      ? new Response('[]', { status: 200 })
-      : new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5' }] }]), { status: 200 })
+    // Написание в словаре ЕСТЬ и уже разобрано: менять код надо в «Названиях».
+    global.fetch = async (url, init) => {
+      if (init?.method === 'PATCH') return new Response('[]', { status: 200 })
+      if (String(url).includes('mon_invoice_aliases')) {
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Пепси 0.5'), status: 'approved' },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5' }] }]), { status: 200 })
+    }
     const d = await (await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4870204391237' })).json()
     global.fetch = real
-    assert.ok(d.note && d.note.includes('Названиях'), 'написания в очереди нет — объясняем, куда идти')
+    assert.ok(d.note && d.note.includes('Названиях'), 'уже привязано — объясняем, куда идти: ' + d.note)
+  }
+  {
+    const real = global.fetch
+    // Написания в словаре НЕТ вовсе: касса его туда не присылала.
+    global.fetch = async (url, init) => {
+      if (init?.method === 'PATCH') return new Response('[]', { status: 200 })
+      if (String(url).includes('mon_invoice_aliases')) return new Response('[]', { status: 200 })
+      return new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5' }] }]), { status: 200 })
+    }
+    const d = await (await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4870204391237' })).json()
+    global.fetch = real
+    assert.ok(d.note && d.note.includes('нет в словаре'),
+      'в словаре нет — так и говорим, а не «уже привязан»: ' + d.note)
   }
 
   // Расход берётся только из записанных токенов: накладные без записи в счёт
@@ -1056,7 +1079,19 @@ async function testInvoiceCodes() {
       { name: 'Мохито Lime & Mint ал/б 0,45*24', barcode: '4870204391510' },
     ]
     assert.deepStrictEqual(invoiceCodePairs(items), [],
-      'один код на разных товарах — не привязываем ничего')
+      'один код на разных товарах — массовая кнопка их не берёт')
+
+    // Но это НЕ всегда ошибка: один товар может идти двумя строками — обычная
+    // и бонусная. Отличить по названиям нельзя («Мохито Lime & Mint 0,45» и
+    // «Мохито Strawberry Lime & Mint 0,5» похожи сильнее), поэтому решение
+    // остаётся за вендором: массово не привязываем, поштучно даём.
+    const bonus = [
+      { name: 'Сары-Агаш Асем-Ай Минеральная вода с газом 1,0 л', barcode: '4870200192159' },
+      { name: 'БОНУС! Сары-АгАсем-Ай Минеральная вода с газом 1,0 л *6шт', barcode: '4870200192159' },
+    ]
+    assert.deepStrictEqual(invoiceCodePairs(bonus), [], 'скопом не берём и здесь')
+    assert.strictEqual(dupBarcodes(bonus.map(b => ({ barcode: b.barcode, keys: [invoiceNameKey(b.name)] }))).size, 1,
+      'но строку помечаем, чтобы вендор посмотрел на фото')
 
     // А законный повтор — то же написание несколькими строками (фасовки) —
     // по-прежнему привязывается, и ровно один раз.

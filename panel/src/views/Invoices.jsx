@@ -280,7 +280,7 @@ export default function Invoices({ onReload }) {
       {!!rows.length && (
         <div className="muted2" style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
           <span><b style={{ color: 'var(--ok)' }}>код</b> — привяжется кнопкой</span>
-          <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — тот же код у другого товара, ИИ ошибся</span>
+          <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — этот код и у другой строки; проверьте по фото</span>
           <span><b style={{ color: 'var(--bad)' }}>код ?</b> — контрольная сумма не сходится</span>
           <span><b style={{ color: 'var(--mut2)' }}>код</b> — привязывать нечего</span>
         </div>
@@ -345,7 +345,7 @@ export default function Invoices({ onReload }) {
                           cursor: it.code_dup ? 'pointer' : undefined,
                           fontVariantNumeric: 'tabular-nums',
                         }} title={it.code_dup
-                          ? 'Этот же код стоит у другого товара накладной — распознавание протянуло его по столбцу. Нажмите, чтобы вбить настоящий с бумаги'
+                          ? 'Этот код стоит и у другой строки накладной. Если это один товар (бонус, другая фасовка) — всё верно, привяжите по одному. Если разные товары — распознавание протянуло код по столбцу, нажмите и вбейте настоящий'
                           : !it.code_done ? 'Привяжется кнопкой'
                             : it.name_known === false
                               ? 'Этого написания нет в словаре — никто его сюда не присылал, привязывать нечего'
@@ -410,8 +410,8 @@ export default function Invoices({ onReload }) {
                 </button>
               : r.code_dup_count > 0 && r.code_total === 0
                 ? <span className="muted2" style={{ alignSelf: 'center' }}>
-                    Коды не привязать: {r.code_dup_count} штрихкод(ов) достались разным
-                    товарам — ИИ протянул один код по столбцу. Вбейте руками
+                    Кнопкой не привязать: {r.code_dup_count} код(ов) встречаются у нескольких
+                    строк. Проверьте по фото и привяжите по одному
                   </span>
                 : r.code_total > 0
                 ? <span className="muted2" style={{ alignSelf: 'center' }}>
