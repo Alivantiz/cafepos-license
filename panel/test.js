@@ -1363,6 +1363,19 @@ async function testClientCardRender() {
   console.log('карточка клиента: OK')
 }
 
+
+// Вкладка «Ждут кода» — те написания, у которых штрихкода ЕЩЁ НЕТ. Искать там
+// по коду нельзя в принципе, а панель советовала «попробуйте название или код»
+// и оставляла вендора в недоумении: где же тогда привязано (24.08.2026).
+async function testAliasSearchHint() {
+  const src = fs.readFileSync(path.join(__dirname, 'src', 'views', 'Aliases.jsx'), 'utf8')
+  assert.ok(src.includes('штрихкода ещё нет'), 'ловушка поиска по коду объяснена')
+  assert.ok(src.includes("setTab('approved')"), 'и предложен переход туда, где коды есть')
+  assert.ok(!src.includes('попробуйте часть названия или код'),
+    'совет искать по коду там, где кодов нет, убран')
+  console.log('поиск в «Названиях»: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
@@ -1377,6 +1390,7 @@ try {
   await testViewsRender()
   await testSummaryReasons()
   await testClientCardRender()
+  await testAliasSearchHint()
   console.log('ВСЁ OK')
 } catch (e) {
   console.error('УПАЛО:', e.message)
