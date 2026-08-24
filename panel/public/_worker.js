@@ -823,14 +823,15 @@ export default {
         // (/api/client/log). last_log_at остаётся — по нему считается, пришёл
         // ли ответ на запрос.
         const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city',
-          'last_sos', 'last_sos_at', 'log_requested_at', 'last_log_at']
+          'last_sos', 'last_sos_at', 'log_requested_at', 'last_log_at',
+          'cmd', 'cmd_requested_at', 'cmd_done_at', 'cmd_result']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
           licenses_(LIC_BASE + ',' + LIC_OPT.join(',')),
           sbFetch(`${db.url}/rest/v1/trials?select=machine_id,started_at,status,business_type,app_version,last_seen_at,created_at&order=last_seen_at.desc`, { headers: db.headers }),
           sbFetch(`${db.url}/rest/v1/usage_daily?select=subject,day,revenue,receipts&day=gte.${since}&order=day.asc&limit=20000`, { headers: db.headers }),
-          sbFetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at,app_version&limit=5000`, { headers: db.headers }),
           // История продлений здесь же, а не отдельным запросом с карточки:
           // строк мало (одно продление на клиента в месяц), зато сводка может
           // сложить из них «получено за 30 дней» — свои деньги, а не чужие.
@@ -844,6 +845,12 @@ export default {
         // отсутствующая колонка выглядела как «данных нет»: журнал кассы вечно
         // «запрошен», хотя сохранять его просто некуда. Вендор в этом случае
         // должен видеть причину у себя, а не искать её в Supabase.
+        // app_version в usage_state добавлена позже: без выполненного SQL запрос
+        // с ней падает — а падение здесь стоит ВСЕЙ телеметрии (registers,
+        // последняя продажа). Отступаем на старый список колонок.
+        if (!stateR.ok) {
+          stateR = await sbFetch(`${db.url}/rest/v1/usage_state?select=subject,registers,locations,last_sale_at,updated_at&limit=5000`, { headers: db.headers })
+        }
         let missingCols = []
         for (let n = LIC_OPT.length - 1; n >= 0 && !licR.ok; n--) {
           missingCols = LIC_OPT.slice(n)
@@ -880,6 +887,9 @@ export default {
             registers: st?.registers ?? null,
             locations: st?.locations ?? null,
             last_sale_at: st?.last_sale_at ?? null,
+            // Живая версия из телеметрии важнее застывшей в заявке триала:
+            // телеметрию касса шлёт каждые 15 минут, заявку — один раз.
+            app_version: st?.app_version ?? row.app_version ?? null,
             // Когда касса последний раз ПРИСЛАЛА итоги. Без этого «продаж нет»
             // не отличить от «касса молчит»: обе выглядят пустой датой продажи.
             usage_at: st?.updated_at ?? null,
@@ -1130,6 +1140,30 @@ export default {
           body: JSON.stringify({ log_requested_at: new Date().toISOString() }),
         })
         if (!r.ok) return json({ error: await sqlHint(r, ['log_requested_at']) }, 502)
+        return json({ ok: true })
+      }
+
+      // Команда кассе: слово из закрытого списка кладётся в строку лицензии,
+      // функция status передаст его кассе при следующем звонке (до 15 минут),
+      // касса выполнит и отчитается в cmd_done_at/cmd_result. Список сверяется
+      // и здесь, и в кассе: панель не даёт заказать то, чего касса не умеет,
+      // а касса не исполняет то, чего не знает, — защита с двух сторон.
+      if (pathname === '/api/requestCmd') {
+        const { id, cmd } = await request.json()
+        if (!id) return json({ error: 'Нужен id лицензии' }, 400)
+        const CMDS = ['restart', 'resync']
+        if (cmd !== null && !CMDS.includes(cmd)) {
+          return json({ error: `Неизвестная команда. Панель умеет: ${CMDS.join(', ')}` }, 400)
+        }
+        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { ...db.headers, Prefer: 'return=minimal' },
+          // null — отмена: касса ещё не забрала, вендор передумал.
+          body: JSON.stringify(cmd === null
+            ? { cmd: null, cmd_requested_at: null }
+            : { cmd, cmd_requested_at: new Date().toISOString() }),
+        })
+        if (!r.ok) return json({ error: await sqlHint(r, ['cmd', 'cmd_requested_at']) }, 502)
         return json({ ok: true })
       }
 

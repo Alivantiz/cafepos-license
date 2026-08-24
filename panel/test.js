@@ -1429,6 +1429,96 @@ async function testSummaryReasons() {
 // Колонка, которой нет в базе, выглядела как «данных нет»: журнал кассы вечно
 // «запрошен», а сохранять его некуда. Панель отступала по колонкам МОЛЧА —
 // и причину приходилось искать в Supabase, мимо самой панели.
+// Команда кассе из панели: слово из закрытого списка → строка лицензии →
+// функция status передаст кассе. Список сверяется и здесь: панель не даёт
+// заказать то, чего касса не умеет.
+async function testCmdRoute() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_cmd_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const call = (body) => worker.fetch(new Request('https://x.test/api/requestCmd', {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: JSON.stringify(body),
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+
+  assert.strictEqual((await call({ cmd: 'restart' })).status, 400, 'без id — 400')
+  {
+    const r = await call({ id: 'L1', cmd: 'format_c' })
+    assert.strictEqual(r.status, 400, 'чужое слово панель не отправляет')
+    assert.ok((await r.json()).error.includes('restart'), 'и называет, что умеет')
+  }
+  const real = global.fetch
+  let patched = null
+  global.fetch = async (url, init) => {
+    if (init?.method === 'PATCH') { patched = JSON.parse(init.body); return new Response(null, { status: 204 }) }
+    return new Response('[]', { status: 200 })
+  }
+  await call({ id: 'L1', cmd: 'restart' })
+  assert.strictEqual(patched.cmd, 'restart', 'слово легло в строку лицензии')
+  assert.ok(patched.cmd_requested_at, 'с меткой времени — по ней касса отличает новую просьбу')
+  await call({ id: 'L1', cmd: null })
+  global.fetch = real
+  assert.strictEqual(patched.cmd, null, 'отмена чистит слово')
+  assert.strictEqual(patched.cmd_requested_at, null, 'и метку')
+  console.log('команды кассе: OK')
+}
+
+// Версия кассы в списке клиентов. Живая (из телеметрии usage_state) важнее
+// застывшей в заявке триала; а пока SQL с колонкой не выполнен, падение
+// запроса не должно стоить ВСЕЙ телеметрии — отступаем на старый список.
+async function testAppVersion() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_ver_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const clients = () => worker.fetch(new Request('https://x.test/api/clients', {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: '{}',
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k' })
+
+  const real = global.fetch
+  try {
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('/licenses?select=')) {
+        return new Response(JSON.stringify([{ id: 'L1', customer: 'Назым', machine_id: 'M1' }]), { status: 200 })
+      }
+      if (u.includes('/usage_state?')) {
+        return new Response(JSON.stringify([
+          { subject: 'L1', registers: 1, locations: 1, last_sale_at: null, updated_at: '2026-08-24', app_version: '1.26.15' },
+        ]), { status: 200 })
+      }
+      return new Response('[]', { status: 200 })
+    }
+    let d = await (await clients()).json()
+    assert.strictEqual(d.licenses[0].app_version, '1.26.15', 'версия из телеметрии видна у платящего')
+
+    // Колонки ещё нет: первый запрос с app_version падает — телеметрия обязана
+    // приехать по старому списку колонок, а не пропасть.
+    let stateCalls = 0
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('/licenses?select=')) {
+        return new Response(JSON.stringify([{ id: 'L1', customer: 'Назым', machine_id: 'M1' }]), { status: 200 })
+      }
+      if (u.includes('/usage_state?')) {
+        stateCalls++
+        if (u.includes('app_version')) {
+          return new Response('{"message":"column usage_state.app_version does not exist"}', { status: 400 })
+        }
+        return new Response(JSON.stringify([
+          { subject: 'L1', registers: 2, locations: 1, last_sale_at: null, updated_at: '2026-08-24' },
+        ]), { status: 200 })
+      }
+      return new Response('[]', { status: 200 })
+    }
+    d = await (await clients()).json()
+    assert.strictEqual(stateCalls, 2, 'после падения запрос повторён без версии')
+    assert.strictEqual(d.licenses[0].registers, 2, 'телеметрия не потеряна')
+    assert.strictEqual(d.licenses[0].app_version, null, 'версии честно нет, а не мусор')
+  } finally { global.fetch = real }
+  console.log('версия кассы у клиентов: OK')
+}
+
 async function testMissingColumns() {
   const tmp = path.join(os.tmpdir(), 'imag_panel_cols_test_' + Date.now() + '.mjs')
   fs.copyFileSync(WORKER_PATH, tmp)
@@ -1518,6 +1608,30 @@ async function testClientCardRender() {
   assert.ok(stillBad.includes('Касса сообщала о проблеме'), 'связи после SOS не было — кричим')
   const recovered = withSos(new Date(Date.now() - 60000).toISOString())
   assert.ok(recovered.includes('с тех пор вышла на связь'), 'вылечилась — говорим спокойно')
+
+  // Управление кассой: отправленная команда видна со статусом, выполненная —
+  // с результатом. Красный про отсутствующие колонки — той же честности, что
+  // у журнала: кнопка, которая молча ставит метку в никуда, хуже отсутствия.
+  const base = { onBack() {}, onChanged() {}, kaspiPhone: '', cities: [] }
+  const sent = renderToString(React.createElement(ClientCard, {
+    ...base, missingCols: [],
+    c: { ...c, cmd: 'restart', cmd_requested_at: new Date(Date.now() - 120000).toISOString(), cmd_done_at: null },
+  }))
+  assert.ok(sent.includes('Управление кассой'), 'блок управления есть')
+  assert.ok(sent.includes('перезапуск кассы') && sent.includes('заберёт при выходе на связь'),
+    'отправленная команда названа по-русски и со сроком')
+  assert.ok(sent.includes('Отменить'), 'пока касса не забрала — можно передумать')
+  const done = renderToString(React.createElement(ClientCard, {
+    ...base, missingCols: [],
+    c: { ...c, cmd: 'resync', cmd_requested_at: new Date(Date.now() - 600000).toISOString(),
+         cmd_done_at: new Date(Date.now() - 60000).toISOString(), cmd_result: 'справочник: 120, написания: 7' },
+  }))
+  assert.ok(done.includes('выполнено') && done.includes('справочник: 120'),
+    'выполненная команда показывает отчёт кассы')
+  const noCols = renderToString(React.createElement(ClientCard, {
+    ...base, missingCols: ['cmd', 'cmd_requested_at'], c,
+  }))
+  assert.ok(noCols.includes('нет колонок под команды'), 'нет колонок — сказано прямо')
   assert.ok(!/var\(--bad\)[^]{0,80}сообщала/.test(recovered), 'и не красным')
   console.log('карточка клиента: OK')
 }
@@ -1606,6 +1720,8 @@ try {
   await testAliasRoutes()
   await testHealthRoute()
   await testMissingColumns()
+  await testCmdRoute()
+  await testAppVersion()
   await testInvoiceCodes()
   await testTrialsMerge()
   await testPushCrypto()

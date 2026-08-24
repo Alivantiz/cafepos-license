@@ -133,6 +133,7 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
       })()}
 
       {c.kind !== 'trial' && c.id && <LogRequest c={c} onDone={onChanged} missingCols={missingCols} />}
+      {c.kind !== 'trial' && c.id && <CmdPanel c={c} onDone={onChanged} missingCols={missingCols} />}
 
       <div className="grid tiles" style={{ marginBottom: 16 }}>
         <Tile label="Выручка за 7 дней" value={money(c.revenue7 || 0)}
@@ -263,6 +264,77 @@ function History({ rows }) {
 
 // «Отложить до даты»: клиент никуда не девается, но до этого дня не попадает
 // в блок «требует внимания сегодня».
+// Команды кассе — тем же каналом, что журнал: слово ложится в строку лицензии,
+// касса забирает его при следующем звонке /status, выполняет и отчитывается.
+// Список закрыт с обеих сторон (панель и касса), сюда попадает только то, что
+// касса умеет сама. Ехать в магазин ради «перезапустите программу» не надо.
+const CMD_LABEL = { restart: 'перезапуск кассы', resync: 'обновление справочников' }
+
+function CmdPanel({ c, onDone, missingCols = [] }) {
+  const [busy, setBusy] = useState(false)
+  const { data: cloud } = useApi('health')
+  // Команды передаёт только функция status ≥ 2026-08-24.1: на старой кнопка
+  // ставила бы метку, которую никто никогда не заберёт, — честнее сказать.
+  const oldFn = cloud?.version && String(cloud.version) < '2026-08-24.1'
+  const noColumn = missingCols.includes('cmd') || missingCols.includes('cmd_requested_at')
+  const pending = c.cmd_requested_at && (!c.cmd_done_at || new Date(c.cmd_done_at) < new Date(c.cmd_requested_at))
+  const done = c.cmd_requested_at && c.cmd_done_at && new Date(c.cmd_done_at) >= new Date(c.cmd_requested_at)
+
+  const send = async (cmd) => {
+    if (cmd === 'restart' && !await confirmDialog({
+      title: 'Перезапустить кассу?',
+      message: 'Касса закроется и откроется сама при следующем выходе на связь (до 15 минут). Если на ней сейчас пробивают чек — он не пропадёт, но экран моргнёт.',
+      confirmText: 'Перезапустить',
+    })) return
+    setBusy(true)
+    try {
+      await api('requestCmd', { id: c.id, cmd })
+      toast.ok('Отправлено — касса заберёт при следующем выходе на связь')
+      onDone()
+    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+  const cancel = async () => {
+    setBusy(true)
+    try { await api('requestCmd', { id: c.id, cmd: null }); toast.ok('Отменено'); onDone() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="row">
+        <b>Управление кассой</b>
+        {noColumn && (
+          <div style={{ color: 'var(--bad)', width: '100%', marginTop: 6 }}>
+            В базе нет колонок под команды ({missingCols.filter(x => x.startsWith('cmd')).join(', ')}) —
+            передавать их некуда. Выполните SQL из конца license-server/supabase/schema.sql.
+          </div>
+        )}
+        {oldFn && !noColumn && (
+          <div style={{ color: 'var(--warn)', width: '100%', marginTop: 6 }}>
+            В облаке функция {cloud.version} — команды кассе она не передаёт.
+            Выложите status (2026-08-24.1), иначе кнопки ставят метку впустую.
+          </div>
+        )}
+        <span className="muted2">
+          {pending
+            ? `отправлено: ${CMD_LABEL[c.cmd] || c.cmd} · ${agoFine(c.cmd_requested_at)} — касса заберёт при выходе на связь (до 15 минут)`
+            : done
+              ? `выполнено: ${CMD_LABEL[c.cmd] || c.cmd} · ${agoFine(c.cmd_done_at)}${c.cmd_result ? ` — ${c.cmd_result}` : ''}`
+              : 'перезапуск и обновление справочников — без выезда, при следующем звонке кассы'}
+        </span>
+      </div>
+      <div className="row" style={{ marginTop: 10 }}>
+        {pending
+          ? <button className="btn sm" disabled={busy} onClick={cancel}>Отменить</button>
+          : <>
+              <button className="btn sm" disabled={busy} onClick={() => send('restart')}>Перезапустить кассу</button>
+              <button className="btn sm" disabled={busy} onClick={() => send('resync')}>Обновить справочники</button>
+            </>}
+      </div>
+    </div>
+  )
+}
+
 // Журнал кассы — по запросу. Кнопка ставит метку; касса при следующем выходе
 // на связь досылает хвост лога. Здоровая звонит раз в 15 минут, а вот сломанная
 // — раз в час: у неё нет читаемого файла лицензии, и в облако она выходит
