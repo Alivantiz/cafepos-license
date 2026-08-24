@@ -1833,7 +1833,14 @@ export default {
               const live = new Set(pairs[i].filter(p => canBind(p.keys)).map(p => p.barcode))
               for (const it of row.items || []) {
                 const c = invoiceItemCode(it)
-                it.code = c.barcode
+                // Код, вбитый вендором с бумаги. Он лежит ОТДЕЛЬНЫМ полем, а
+                // распознанное в строке не трогается: по нему считается
+                // качество моделей, и затирать промах модели правкой человека
+                // значит хвалить её за чужую работу.
+                const fix = String(it.barcode_fixed ?? '').trim()
+                const eff = fix || c.barcode
+                it.code = eff
+                it.code_fixed = !!fix
                 // Чем разобрано: подсказка в строке должна называть причину, а
                 // не оставлять вендора гадать по цвету.
                 const state = aliasState(st, itemKeys(it))
@@ -1845,14 +1852,14 @@ export default {
                 // строки с задвоенным кодом в пары не попадают вовсе, и по
                 // ним «сделано» было бы правдой ещё до того, как вендор их
                 // привязал руками — а гаснуть они обязаны именно после.
-                it.code_done = !!c.barcode && (state
+                it.code_done = !!eff && (state
                   ? state === 'approved' || state === 'rejected'
-                  : !live.has(c.barcode))
-                it.code_bad = c.barcode ? null : c.found
+                  : !live.has(eff))
+                it.code_bad = eff ? null : c.found
                 // Тот же код у другого товара этой накладной — ошибка чтения,
                 // а не совпадение. Показываем словами, иначе строка выглядит
                 // как «уже привязано» и вендор о ней не узнает.
-                it.code_dup = !!c.barcode && dup.has(c.barcode)
+                it.code_dup = !!eff && dup.has(eff)
                 // Есть ли это написание в словаре вообще. null — спросить не
                 // удалось (словарь недоступен), и врать в обе стороны нельзя.
                 it.name_known = known(itemKeys(it))
@@ -1972,6 +1979,17 @@ export default {
           if (!it) return json({ error: 'Строка накладной не найдена' }, 404)
           const keys = itemKeys(it)
           if (!keys.length) return json({ error: 'У строки нет пригодного названия' }, 400)
+          // Поправку вендора запоминаем В САМОЙ накладной, иначе строка после
+          // привязки снова красная: распознанные цифры в журнале остались
+          // прежними, и панель каждый раз читает их заново.
+          //
+          // Отдельным полем, не поверх barcode: по распознанному считается
+          // качество моделей, и промах модели, затёртый рукой человека, — это
+          // похвала за чужую работу.
+          const items = (row.items || []).map((x, n) => n === index ? { ...x, barcode_fixed: bc } : x)
+          const saved = await sbFetch(
+            `${db2.url}/rest/v1/mon_ai_invoices?id=eq.${encodeURIComponent(id)}`,
+            { method: 'PATCH', headers: db2.headers, body: JSON.stringify({ items }) })
           const st = await normStatuses(db2, keys)
           const state = aliasState(st, keys)
           // Написания нет в словаре — заводим его прямо с накладной. Имя и код
@@ -1993,7 +2011,8 @@ export default {
           const hit = await patch.json().catch(() => [])
           // Не изменилось ничего — значит написание уже разобрано вендором, и
           // накладная не имеет права переписать это решение молча.
-          const note = hit.length ? null
+          const note = hit.length
+            ? (saved.ok ? null : 'Привязано, но поправку в накладной сохранить не вышло — строка останется красной.')
             : state === 'rejected'
               ? 'Это написание отклонено как мусор. Вернуть его можно в «Названиях» → «Отклонённые».'
               : 'Код у этого написания уже привязан. Поменять его можно в «Названиях» → «Привязанные».'

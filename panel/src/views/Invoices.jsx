@@ -290,6 +290,7 @@ export default function Invoices({ onReload }) {
           <span><b style={{ color: 'var(--ok)' }}>код</b> — привяжется кнопкой</span>
           <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — этот код и у другой строки; нажмите и привяжите по одной</span>
           <span><b style={{ color: 'var(--bad)' }}>код ?</b> — контрольная сумма не сходится</span>
+          <span><b style={{ color: 'var(--mut2)' }}>код ✎</b> — вбит вами с бумаги</span>
           <span><b style={{ color: 'var(--mut2)' }}>код</b> — уже в словаре</span>
         </div>
       )}
@@ -364,8 +365,9 @@ export default function Invoices({ onReload }) {
                           : !it.code_done ? 'Привяжется кнопкой'
                             : it.code_state === 'rejected'
                               ? 'Написание отклонено как мусор — вернуть можно в «Названиях» → «Отклонённые»'
-                              : 'Уже привязано — поменять код можно в «Названиях» → «Привязанные»'}>
-                          {it.code}{it.code_dup && !it.code_done ? ' ⧉' : ''}{' '}
+                              : (it.code_fixed ? 'Вбито вами с бумаги. ' : '')
+                                + 'Уже привязано — поменять код можно в «Названиях» → «Привязанные»'}>
+                          {it.code}{it.code_fixed ? ' ✎' : ''}{it.code_dup && !it.code_done ? ' ⧉' : ''}{' '}
                         </b>
                       : it.code_bad
                         ? <b onClick={() => open(r.id, i, it.code_bad)} style={{ color: 'var(--bad)', cursor: 'pointer' }}

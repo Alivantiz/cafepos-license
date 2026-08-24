@@ -874,6 +874,70 @@ async function testInvoiceCodes() {
     assert.strictEqual(row.items[0].code_done, false, 'и серым, будто работа сделана, оно не показывается')
   }
 
+  // Красная строка после ручной привязки обязана перестать быть красной. Сама
+  // привязка ничего не меняет в журнале распознавания, и панель каждый раз
+  // читала оттуда те же неверные цифры — работа выглядела несделанной.
+  {
+    const real = global.fetch
+    let patchedInvoice = null
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (init?.method === 'PATCH' && u.includes('mon_ai_invoices')) {
+        patchedInvoice = JSON.parse(init.body)
+        return new Response(null, { status: 204 })
+      }
+      if (init?.method === 'PATCH') return new Response(JSON.stringify([{ id: 3 }]), { status: 200 })
+      if (u.includes('mon_invoice_aliases')) {
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Сметановка 20% 185г'), status: 'pending', barcode: null },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ items: [
+        { name: 'Сметановка 20% 185г', barcode: '4605627012365' },   // контрольная не сходится
+      ] }]), { status: 200 })
+    }
+    const d = await (await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4605627012366' })).json()
+    global.fetch = real
+    assert.strictEqual(d.note, null, 'привязка прошла молча')
+    assert.strictEqual(patchedInvoice.items[0].barcode_fixed, '4605627012366',
+      'поправка сохранена В НАКЛАДНОЙ, иначе строка снова красная')
+    assert.strictEqual(patchedInvoice.items[0].barcode, '4605627012365',
+      'распознанное не затираем: по нему считается качество моделей')
+  }
+
+  // …и после этого строка показывается серой, с пометкой «вбито рукой».
+  {
+    const real = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('mon_invoice_aliases')) {
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Сметановка 20% 185г'), status: 'approved', barcode: '4605627012366' },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ id: 9, items: [
+        { name: 'Сметановка 20% 185г', barcode: '4605627012365', barcode_fixed: '4605627012366' },
+      ] }]), { status: 200, headers: { 'content-range': '0-0/1' } })
+    }
+    const [row] = (await (await call('/api/invoices/pending', {})).json()).rows
+    global.fetch = real
+    const it = row.items[0]
+    assert.strictEqual(it.code, '4605627012366', 'показываем поправленный код, а не распознанный')
+    assert.strictEqual(it.code_bad, null, 'красным он больше не горит')
+    assert.strictEqual(it.code_fixed, true, 'но видно, что цифры вбиты рукой, а не прочитаны')
+    assert.strictEqual(it.code_done, true, 'и что работа сделана')
+  }
+
+  // Качество моделей считается по РАСПОЗНАННОМУ: поправка вендора не должна
+  // превращать промах модели в её заслугу.
+  {
+    const st = modelStats([{ model: 'A', items: [
+      { name: 'Сметановка 20% 185г', barcode: '4605627012365', barcode_fixed: '4605627012366' },
+    ] }])[0]
+    assert.strictEqual(st.codeOk, 0, 'модель ошиблась — так и остаётся')
+    assert.strictEqual(st.codeAll, 1, 'а код в строке она вернула')
+  }
+
   // Задвоенный код после ручной привязки обязан ГАСНУТЬ. Массовая кнопка такие
   // строки не берёт (решает человек с фотографией), но привязанная руками
   // строка оставалась жёлтой — вендор не видел, что уже сделал.
@@ -997,6 +1061,7 @@ async function testInvoiceCodes() {
     let inserted = null, patched = 0
     global.fetch = async (url, init) => {
       const u = String(url)
+      if (init?.method === 'PATCH' && u.includes('mon_ai_invoices')) return new Response(null, { status: 204 })
       if (init?.method === 'PATCH') { patched++; return new Response('[]', { status: 200 }) }
       if (init?.method === 'POST' && u.includes('mon_invoice_aliases')) {
         inserted = JSON.parse(init.body)
