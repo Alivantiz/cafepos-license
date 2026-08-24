@@ -1288,6 +1288,47 @@ export default {
           return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
         }
 
+        // Поиск СРАЗУ ПО ВСЕМ трём состояниям.
+        //
+        // Раньше искали в текущей вкладке, и это регулярно заводило в тупик:
+        // «Ждут кода» — там штрихкода ещё нет, по нему не найдётся ничего
+        // никогда; не нашёл в «Привязанных» — значит ищи в «Отклонённых»;
+        // а вывод «этого написания в словаре НЕТ ВООБЩЕ» получался только
+        // после трёх заходов, и обычно не получался (24.08.2026).
+        // Пустой ответ здесь — уже ответ, окончательный.
+        if (pathname === '/api/aliases/search') {
+          const { q } = await request.json().catch(() => ({}))
+          const needle = String(q ?? '').trim()
+          if (needle.length < 3) return json({ rows: [], total: 0 })
+          const like = encodeURIComponent('*' + needle + '*')
+          const r = await sbFetch(
+            `${db2.url}/rest/v1/mon_invoice_aliases` +
+            `?or=(raw_name.ilike.${like},barcode.ilike.${like})` +
+            '&order=updated_at.desc&limit=200',
+            { headers: db2.headers })
+          if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+          const raw = await r.json()
+          // Группируем так же, как список: одно написание присылает каждое
+          // заведение своей строкой, и в поиске оно должно быть одной находкой.
+          const rows = groupAliases(raw)
+          // Состояние — главное, что нужно знать в поиске: ждёт кода, привязано
+          // или отклонено. Берём по самой свежей строке группы.
+          const st = new Map()
+          for (const x of raw) {
+            const k = x.raw_name_norm
+            const prev = st.get(k)
+            if (!prev || String(x.updated_at ?? '') > prev.at) st.set(k, { s: x.status, at: String(x.updated_at ?? '') })
+          }
+          for (const g of rows) g.status = st.get(g.raw_name_norm)?.s ?? null
+          const names = await catalogNames(db2,
+            [...new Set(rows.map(g => g.barcode || g.proposed).filter(Boolean))])
+          if (names) for (const g of rows) {
+            const code = g.barcode || g.proposed
+            if (code) g.code_names = names.get(code) ?? []
+          }
+          return json({ rows, total: rows.length })
+        }
+
         if (pathname === '/api/aliases/list') {
           const { status, countOnly } = await request.json().catch(() => ({}))
           const st = status === 'approved' || status === 'rejected' ? status : 'pending'

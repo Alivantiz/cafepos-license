@@ -1367,12 +1367,50 @@ async function testClientCardRender() {
 // Вкладка «Ждут кода» — те написания, у которых штрихкода ЕЩЁ НЕТ. Искать там
 // по коду нельзя в принципе, а панель советовала «попробуйте название или код»
 // и оставляла вендора в недоумении: где же тогда привязано (24.08.2026).
-async function testAliasSearchHint() {
+// Поиск по словарю — общий, а не по текущей вкладке. Внутри одной вкладки он
+// врал: у ждущих кода штрихкода ещё нет, и поиск по коду там пуст всегда — а
+// пустота читалась как «нет в словаре» (24.08.2026, дважды подряд).
+async function testAliasSearch() {
   const src = fs.readFileSync(path.join(__dirname, 'src', 'views', 'Aliases.jsx'), 'utf8')
-  assert.ok(src.includes('штрихкода ещё нет'), 'ловушка поиска по коду объяснена')
-  assert.ok(src.includes("setTab('approved')"), 'и предложен переход туда, где коды есть')
-  assert.ok(!src.includes('попробуйте часть названия или код'),
-    'совет искать по коду там, где кодов нет, убран')
+  assert.ok(src.includes("api('aliases/search'"), 'ищем на сервере по всем вкладкам')
+  assert.ok(!src.includes("list = list.filter(r => String(r.raw_name"),
+    'фильтрация внутри текущей вкладки убрана')
+  assert.ok(src.includes('showStatus'), 'у находки видно её состояние')
+
+  const tmp = path.join(os.tmpdir(), 'imag_panel_search_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const call = (p, body) => worker.fetch(new Request('https://x.test' + p, {
+    method: 'POST', headers: { 'x-panel-key': 'secret' }, body: JSON.stringify(body || {})
+  }), { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k',
+       MONITOR_SUPABASE_URL: 'https://mon.test', MONITOR_SUPABASE_SERVICE_ROLE_KEY: 'mk' })
+
+  const short = await call('/api/aliases/search', { q: 'ко' })
+  assert.deepStrictEqual((await short.json()).rows, [], 'запрос короче трёх символов в базу не ходит')
+
+  const real = global.fetch
+  let asked = ''
+  global.fetch = async (url) => {
+    const u = String(url)
+    if (u.includes('mon_barcodes')) return new Response(JSON.stringify([]), { status: 200 })
+    asked = u
+    return new Response(JSON.stringify([
+      // одно написание из двух точек: в поиске это ОДНА находка
+      { id: 1, raw_name_norm: 'дизи', raw_name: 'ДИЗИ', status: 'approved', barcode: '4870204391237', hits: 2, updated_at: '2026-08-01' },
+      { id: 2, raw_name_norm: 'дизи', raw_name: 'ДИЗИ', status: 'approved', barcode: '4870204391237', hits: 1, updated_at: '2026-08-20' },
+      { id: 3, raw_name_norm: 'дизи мини', raw_name: 'ДИЗИ мини', status: 'rejected', barcode: null, hits: 1, updated_at: '2026-08-10' },
+    ]), { status: 200 })
+  }
+  const d = await (await call('/api/aliases/search', { q: 'дизи' })).json()
+  global.fetch = real
+  assert.ok(!asked.includes('status=eq.'), 'состояние не фильтруем — ищем по всем трём вкладкам: ' + asked)
+  assert.ok(asked.includes('raw_name.ilike.') && asked.includes('barcode.ilike.'),
+    'ищем и по названию, и по коду')
+  assert.strictEqual(d.rows.length, 2, 'строки одного написания схлопнуты в одну находку')
+  const byName = Object.fromEntries(d.rows.map(r => [r.raw_name_norm, r.status]))
+  assert.strictEqual(byName['дизи'], 'approved', 'состояние находки видно')
+  assert.strictEqual(byName['дизи мини'], 'rejected', 'отклонённые тоже находятся')
   console.log('поиск в «Названиях»: OK')
 }
 
@@ -1390,7 +1428,7 @@ try {
   await testViewsRender()
   await testSummaryReasons()
   await testClientCardRender()
-  await testAliasSearchHint()
+  await testAliasSearch()
   console.log('ВСЁ OK')
 } catch (e) {
   console.error('УПАЛО:', e.message)

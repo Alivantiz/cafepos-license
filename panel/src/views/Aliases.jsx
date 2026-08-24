@@ -18,23 +18,40 @@ export default function Aliases({ onCounts, onReload }) {
   const { data, error, loading, reload } = useApi('aliases/list', { status: tab })
   useEffect(() => { onReload?.(() => reload) }, [reload, onReload])
   const [q, setQ] = useState('')
+  const needle = q.trim()
+  // Поиск — общий по всем трём вкладкам, а не по текущей. Внутри одной вкладки
+  // он врал: у ждущих кода штрихкода ещё нет, и поиск по коду там не найдёт
+  // ничего никогда, а вывод «этого написания в словаре нет вовсе» приходилось
+  // собирать из трёх заходов вручную. Теперь пусто — значит правда нет.
+  const searching = needle.length >= 3
+  const [found, setFound] = useState(null)
+  const [searchErr, setSearchErr] = useState(null)
+  const [searchTick, setSearchTick] = useState(0)
+  useEffect(() => {
+    if (!searching) { setFound(null); setSearchErr(null); return }
+    let alive = true
+    const t = setTimeout(() => {
+      api('aliases/search', { q: needle })
+        .then(d => { if (alive) { setFound(d.rows || []); setSearchErr(null) } })
+        .catch(e => { if (alive) { setFound([]); setSearchErr(e.message) } })
+    }, 300)
+    return () => { alive = false; clearTimeout(t) }
+  }, [needle, searching, searchTick])
+
   // «Ждут кода» — очередь работы, там порядок по частоте: сперва то, что реально
   // возят. «Привязанные» и «Отклонённые» — журнал сделанного, и там нужен
   // обратный порядок: только что разобранное написание имеет частоту 1–2 и по
   // частоте улетало в конец списка, где владелец его не находил вовсе.
-  const rows = useMemo(() => {
+  const tabRows = useMemo(() => {
     let list = data?.rows || []
-    const needle = q.trim().toLowerCase()
-    if (needle) {
-      list = list.filter(r => String(r.raw_name || '').toLowerCase().includes(needle)
-        || String(r.barcode || '').includes(needle))
-    }
     if (tab !== 'pending') {
       list = [...list].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
     }
     return list
-  }, [data, q, tab])
-  useEffect(() => { if (tab === 'pending') onCounts?.(data?.total ?? rows.length) }, [data, tab])
+  }, [data, tab])
+  const rows = searching ? (found || []) : tabRows
+  const afterChange = () => { reload(); if (searching) setSearchTick(t => t + 1) }
+  useEffect(() => { if (tab === 'pending') onCounts?.(data?.total ?? tabRows.length) }, [data, tab])
   useEffect(() => { setPage(0) }, [tab, q])
   // Сервер отдаёт ВСЕ написания (после схлопывания их в разы меньше строк),
   // а карточки рисуем страницами: тысяча карточек в DOM тормозит прокрутку,
@@ -44,7 +61,7 @@ export default function Aliases({ onCounts, onReload }) {
 
   // Бесспорные — те, где сами магазины с трёх независимых точек привязали один
   // и тот же код. Искать в них нечего, а разбирать по одной — терять вечер.
-  const trustedCount = rows.filter(r => r.trusted).length
+  const trustedCount = tabRows.filter(r => r.trusted).length
   const [approving, setApproving] = useState(false)
   const approveTrusted = async () => {
     if (!await confirmDialog({
@@ -77,31 +94,30 @@ export default function Aliases({ onCounts, onReload }) {
             {approving ? 'Одобряю…' : `Одобрить бесспорные · ${trustedCount}`}
           </button>
         )}
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Поиск по названию или коду"
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Поиск по всем вкладкам: название или код"
           style={{ marginLeft: 'auto', maxWidth: 260 }} />
         <span className="muted" style={{ fontSize: 13 }}>
-          {data?.total != null ? `${data.total} всего` : ''}
+          {searching
+            ? (found == null ? 'ищу…' : `${found.length} по всем вкладкам`)
+            : data?.total != null ? `${data.total} всего` : ''}
         </span>
       </div>
 
-      {!rows.length && (
+      {searchErr && <div className="card" style={{ borderColor: 'var(--bad)' }}>{searchErr}</div>}
+
+      {!rows.length && !searchErr && (
         <div className="empty">
-          {/* Ловушка, на которую легко попасться: у ждущих кода его ЕЩЁ НЕТ —
-              они здесь ровно поэтому. Искать по коду на этой вкладке нельзя в
-              принципе, а панель советовала «попробуйте название или код» и
-              оставляла в недоумении: где же тогда привязано? */}
-          {q && tab === 'pending' && /^\d{6,}$/.test(q.trim())
-            ? <>
-                У ждущих кода штрихкода ещё нет — по коду здесь не найдётся ничего.{' '}
-                <button className="btn sm" style={{ marginTop: 10 }} onClick={() => setTab('approved')}>
-                  Искать среди привязанных
-                </button>
-                <div className="muted2" style={{ marginTop: 10 }}>
-                  Не нашлось и там — значит этого написания в словаре нет вовсе:
-                  касса его сюда не присылала.
-                </div>
-              </>
-            : q ? 'Ничего не найдено — попробуйте часть названия'
+          {searching
+            ? found == null ? 'Ищу…'
+              : <>
+                  Этого написания в словаре нет вовсе — ни ждущих кода, ни
+                  привязанных, ни отклонённых.
+                  <div className="muted2" style={{ marginTop: 10 }}>
+                    Значит касса его сюда не присылала: либо накладную с ним ещё
+                    не разбирали, либо в накладной оно написано иначе.
+                  </div>
+                </>
+            : needle ? 'Введите хотя бы три символа'
             : tab === 'pending'
               ? 'Пусто — всё, что кассы не смогли сопоставить, уже разобрано'
               : 'Здесь пока пусто'}
@@ -109,7 +125,11 @@ export default function Aliases({ onCounts, onReload }) {
       )}
 
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
-        {shown.map(r => <AliasCard key={r.id} r={r} onDone={reload} tab={tab} />)}
+        {shown.map(r => (
+          <AliasCard key={r.id} r={r} onDone={afterChange}
+            tab={searching ? (r.status || 'pending') : tab}
+            showStatus={searching} />
+        ))}
       </div>
 
       {rows.length > PER_PAGE && (
@@ -143,7 +163,7 @@ function CodeName({ r }) {
   )
 }
 
-function AliasCard({ r, onDone, tab }) {
+function AliasCard({ r, onDone, tab, showStatus }) {
   // На «Привязанных» карточка тоже редактируемая: ошибиться кодом легко, а
   // исправить это раньше было нечем — только руками в базе.
   const bound = tab === 'approved'
@@ -204,6 +224,13 @@ function AliasCard({ r, onDone, tab }) {
 
   return (
     <div className="card">
+      {/* В общем поиске находка приходит из любой вкладки, и без метки
+          непонятно, что перед тобой: очередь, готовая привязка или мусор. */}
+      {showStatus && (
+        <div className="muted2" style={{ marginBottom: 6 }}>
+          {tab === 'approved' ? 'привязано' : tab === 'rejected' ? 'отклонено' : 'ждёт кода'}
+        </div>
+      )}
       <div style={{ fontWeight: 600, wordBreak: 'break-word' }}>{r.raw_name}</div>
       <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
         {r.supplier ? `${r.supplier} · ` : ''}
