@@ -285,7 +285,7 @@ export default function Invoices({ onReload }) {
       {!!rows.length && (
         <div className="muted2" style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
           <span><b style={{ color: 'var(--ok)' }}>код</b> — привяжется кнопкой</span>
-          <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — этот код и у другой строки; проверьте по фото</span>
+          <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — этот код и у другой строки; нажмите и привяжите по одной</span>
           <span><b style={{ color: 'var(--bad)' }}>код ?</b> — контрольная сумма не сходится</span>
           <span><b style={{ color: 'var(--mut2)' }}>код</b> — уже в словаре</span>
         </div>
@@ -345,17 +345,19 @@ export default function Invoices({ onReload }) {
                           // беды, и одним цветом их путать нельзя.
                           // Приглушённый — код есть, но привязывать нечего:
                           // магазин этот товар уже знает.
-                          color: it.code_dup ? 'var(--warn)' : it.code_done ? 'var(--mut2)' : 'var(--ok)',
-                          fontWeight: it.code_dup || !it.code_done ? 700 : 400,
+                          // Разобранное гаснет даже с задвоенным кодом: жёлтый
+                          // зовёт к работе, а работа тут уже сделана руками.
+                          color: it.code_done ? 'var(--mut2)' : it.code_dup ? 'var(--warn)' : 'var(--ok)',
+                          fontWeight: it.code_done ? 400 : 700,
                           cursor: it.code_dup ? 'pointer' : undefined,
                           fontVariantNumeric: 'tabular-nums',
-                        }} title={it.code_dup
+                        }} title={it.code_dup && !it.code_done
                           ? 'Этот код стоит и у другой строки накладной. Если это один товар (бонус, другая фасовка) — всё верно, привяжите по одному. Если разные товары — распознавание протянуло код по столбцу, нажмите и вбейте настоящий'
                           : !it.code_done ? 'Привяжется кнопкой'
                             : it.code_state === 'rejected'
                               ? 'Написание отклонено как мусор — вернуть можно в «Названиях» → «Отклонённые»'
                               : 'Уже привязано — поменять код можно в «Названиях» → «Привязанные»'}>
-                          {it.code}{it.code_dup ? ' ⧉' : ''}{' '}
+                          {it.code}{it.code_dup && !it.code_done ? ' ⧉' : ''}{' '}
                         </b>
                       : it.code_bad
                         ? <b onClick={() => open(r.id, i, it.code_bad)} style={{ color: 'var(--bad)', cursor: 'pointer' }}

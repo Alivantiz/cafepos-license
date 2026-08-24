@@ -1825,7 +1825,6 @@ export default {
             const known = (keys) => !st ? null : keys.some(k => st.has(k))
             rows.forEach((row, i) => {
               const dup = dups[i]
-              row.code_dup_count = dup.size
               row.code_count = pairs[i].filter(p => canBind(p.keys)).length
               // Сколько кодов в накладной вообще. Нужно, чтобы отличить
               // «работа сделана» от «читаемых кодов тут нет»: без этого
@@ -1835,12 +1834,20 @@ export default {
               for (const it of row.items || []) {
                 const c = invoiceItemCode(it)
                 it.code = c.barcode
+                // Чем разобрано: подсказка в строке должна называть причину, а
+                // не оставлять вендора гадать по цвету.
+                const state = aliasState(st, itemKeys(it))
+                it.code_state = state
                 // Код есть, но привязывать нечего: написание уже разобрано —
                 // привязано или отклонено. Единственный случай серого.
-                it.code_done = !!c.barcode && !live.has(c.barcode)
-                // Чем именно разобрано: подсказка в строке должна называть
-                // причину, а не оставлять вендора гадать по цвету.
-                it.code_state = aliasState(st, itemKeys(it))
+                //
+                // Считаем ПО СОСТОЯНИЮ написания, а не по остатку живых пар:
+                // строки с задвоенным кодом в пары не попадают вовсе, и по
+                // ним «сделано» было бы правдой ещё до того, как вендор их
+                // привязал руками — а гаснуть они обязаны именно после.
+                it.code_done = !!c.barcode && (state
+                  ? state === 'approved' || state === 'rejected'
+                  : !live.has(c.barcode))
                 it.code_bad = c.barcode ? null : c.found
                 // Тот же код у другого товара этой накладной — ошибка чтения,
                 // а не совпадение. Показываем словами, иначе строка выглядит
@@ -1850,6 +1857,10 @@ export default {
                 // удалось (словарь недоступен), и врать в обе стороны нельзя.
                 it.name_known = known(itemKeys(it))
               }
+              // Задвоенные коды, которые ЕЩЁ ждут руки. Разобранные считать
+              // нельзя: карточка бы вечно требовала работы, уже сделанной.
+              row.code_dup_count = new Set((row.items || [])
+                .filter(it => it.code_dup && !it.code_done).map(it => it.code)).size
             })
 
             // Подсказка вместо красного кода: чем он МОГ быть. Перебираем

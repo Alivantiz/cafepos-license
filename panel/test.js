@@ -874,6 +874,34 @@ async function testInvoiceCodes() {
     assert.strictEqual(row.items[0].code_done, false, 'и серым, будто работа сделана, оно не показывается')
   }
 
+  // Задвоенный код после ручной привязки обязан ГАСНУТЬ. Массовая кнопка такие
+  // строки не берёт (решает человек с фотографией), но привязанная руками
+  // строка оставалась жёлтой — вендор не видел, что уже сделал.
+  {
+    const real = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('mon_invoice_aliases')) {
+        // «Сары-Агаш» уже привязан руками, «БОНУС!» ещё нет.
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Сары-Агаш Асем-Ай 1,0 л'), status: 'approved', barcode: '4870200192159' },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ id: 8, items: [
+        { name: 'Сары-Агаш Асем-Ай 1,0 л', barcode: '4870200192159' },
+        { name: 'БОНУС! Сары-Аг 1,0 л *6шт', barcode: '4870200192159' },
+      ] }]), { status: 200, headers: { 'content-range': '0-0/1' } })
+    }
+    const [row] = (await (await call('/api/invoices/pending', {})).json()).rows
+    global.fetch = real
+    const done = row.items.find(x => /^Сары/.test(x.name))
+    const left = row.items.find(x => /БОНУС/.test(x.name))
+    assert.strictEqual(done.code_done, true, 'привязанная строка гаснет, хотя код задвоен')
+    assert.strictEqual(left.code_done, false, 'вторая всё ещё ждёт руки')
+    assert.strictEqual(row.code_dup_count, 1,
+      'и карточка считает только неразобранные дубли, а не требует работы, которая сделана')
+  }
+
   // Подсказка вместо красного кода: замена одной цифры, прошедшая контрольную
   // сумму. Из 117 замен их около десятка, а настоящий товар отсеет справочник.
   const fixes = oneDigitFixes('4605627012365')
