@@ -320,13 +320,21 @@ export default function Invoices({ onReload }) {
                         меньше привязок, чем кодов видно на фотографии, и
                         непонятно, каких именно строк не хватило. */}
                     {it.code
-                      ? <b style={{
+                      ? <b onClick={it.code_dup ? () => open(r.id, i, it.code) : undefined} style={{
+                          // Красный — код достался ещё какому-то товару этой же
+                          // накладной. Так не бывает: ИИ протянул одно значение
+                          // вниз по столбцу. Привязать нельзя, поправить можно.
                           // Приглушённый — код есть, но привязывать нечего:
                           // магазин этот товар уже знает.
-                          color: it.code_done ? 'var(--mut2)' : 'var(--ok)',
-                          fontWeight: it.code_done ? 400 : 700,
+                          color: it.code_dup ? 'var(--bad)' : it.code_done ? 'var(--mut2)' : 'var(--ok)',
+                          fontWeight: it.code_dup || !it.code_done ? 700 : 400,
+                          cursor: it.code_dup ? 'pointer' : undefined,
                           fontVariantNumeric: 'tabular-nums',
-                        }} title={it.code_done ? 'Уже разобрано — в очереди этого написания нет' : 'Привяжется кнопкой'}>{it.code} </b>
+                        }} title={it.code_dup
+                          ? 'Этот же код стоит у другого товара накладной — распознавание протянуло его по столбцу. Нажмите, чтобы вбить настоящий с бумаги'
+                          : it.code_done ? 'Уже разобрано — в очереди этого написания нет' : 'Привяжется кнопкой'}>
+                          {it.code}{it.code_dup ? ' ⚠' : ''}{' '}
+                        </b>
                       : it.code_bad
                         ? <b onClick={() => open(r.id, i, it.code_bad)} style={{ color: 'var(--bad)', cursor: 'pointer' }}
                             title="Контрольная цифра не сходится — распознавание ошиблось в цифре. Нажмите, чтобы поправить и привязать">
@@ -383,9 +391,14 @@ export default function Invoices({ onReload }) {
               ? <button className="btn" disabled={busy === r.id} onClick={() => bindCodes(r.id)}>
                   Привязать коды ({r.code_count})
                 </button>
-              : r.code_total > 0
+              : r.code_dup_count > 0 && r.code_total === 0
                 ? <span className="muted2" style={{ alignSelf: 'center' }}>
-                    Коды привязаны — в очереди по этой накладной ничего не ждёт
+                    Коды не привязать: {r.code_dup_count} штрихкод(ов) достались разным
+                    товарам — ИИ протянул один код по столбцу. Вбейте руками
+                  </span>
+                : r.code_total > 0
+                ? <span className="muted2" style={{ alignSelf: 'center' }}>
+                    Привязывать нечего: этих написаний нет в очереди «Названий»
                   </span>
                 : null}
             <button className="btn ghost" disabled={busy === r.id} onClick={() => remove(r.id)}>Удалить</button>

@@ -392,7 +392,24 @@ export function invoiceCodePairs(items) {
     // привязываем один раз.
     if (!by.has(id)) by.set(id, { name: raw, barcode, keys })
   }
-  return [...by.values()]
+  const all = [...by.values()]
+  const dup = dupBarcodes(all)
+  // Один код на РАЗНЫХ товарах одной накладной — это не данные, а ошибка
+  // распознавания: колонка штрихкодов на фото узкая и печатается мелко, и ИИ
+  // протягивает первое значение вниз по столбцу. Привязать такое — значит
+  // выдать пяти разным напиткам один код и сломать поиск в кассе у всех, кто
+  // этот словарь читает. Молча выбрасываем: пусть лучше вендор вобьёт руками.
+  return all.filter(p => !dup.has(p.barcode))
+}
+
+/** Штрихкоды, которые в одной накладной достались разным написаниям. */
+export function dupBarcodes(pairs) {
+  const names = new Map()
+  for (const p of pairs) {
+    if (!names.has(p.barcode)) names.set(p.barcode, new Set())
+    names.get(p.barcode).add(p.keys.join('|'))
+  }
+  return new Set([...names].filter(([, n]) => n.size > 1).map(([code]) => code))
 }
 
 // YYYY-MM-DD со сдвигом в днях. Панель и касса считают дни по-разному (у кассы
@@ -1674,9 +1691,16 @@ export default {
           // на фотографии, и грешат на панель.
           if (!countOnly) {
             const pairs = rows.map(row => invoiceCodePairs(row.items))
+            // Считаем повторы по ИСХОДНОМУ набору: invoiceCodePairs их уже
+            // выбросил, и по его результату они не видны.
+            const dups = rows.map(row => dupBarcodes((row.items || [])
+              .map(it => ({ barcode: invoiceItemCode(it).barcode, keys: itemKeys(it) }))
+              .filter(p => p.barcode && p.keys.length)))
             const waiting = await pendingNorms(db2, [...new Set(pairs.flat().flatMap(p => p.keys))])
             const isWaiting = (keys) => !waiting || keys.some(k => waiting.has(k))
             rows.forEach((row, i) => {
+              const dup = dups[i]
+              row.code_dup_count = dup.size
               row.code_count = pairs[i].filter(p => isWaiting(p.keys)).length
               // Сколько кодов в накладной вообще. Нужно, чтобы отличить
               // «работа сделана» от «читаемых кодов тут нет»: без этого
@@ -1690,6 +1714,10 @@ export default {
                 // либо написание разобрано раньше.
                 it.code_done = !!c.barcode && !live.has(c.barcode)
                 it.code_bad = c.barcode ? null : c.found
+                // Тот же код у другого товара этой накладной — ошибка чтения,
+                // а не совпадение. Показываем словами, иначе строка выглядит
+                // как «уже привязано» и вендор о ней не узнает.
+                it.code_dup = !!c.barcode && dup.has(c.barcode)
               }
             })
 

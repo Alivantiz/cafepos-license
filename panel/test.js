@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, invoiceNameKey, oneDigitFixes, modelStats, modelCost, bareModel, anthropicCost, pushEvents, encryptPush, b64u, EXPIRE_SOON_DAYS } from './public/_worker.js'
+import { window_, isoDay, groupAliases, invoiceItemCode, invoiceCodePairs, dupBarcodes, invoiceNameKey, oneDigitFixes, modelStats, modelCost, bareModel, anthropicCost, pushEvents, encryptPush, b64u, EXPIRE_SOON_DAYS } from './public/_worker.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const WORKER_PATH = path.join(__dirname, 'public', '_worker.js')
@@ -1010,6 +1010,38 @@ async function testInvoiceCodes() {
     const c = await anthropicCost({ ANTHROPIC_ADMIN_KEY: 'k' }, '2026-08-01', '2026-08-20')
     global.fetch = real
     assert.ok(c.error.includes('организации'), 'у личного аккаунта Admin API нет — говорим это прямо')
+  }
+
+
+  {
+    // Живой случай 24.08.2026: накладная на пять напитков, у всех строк один и
+    // тот же штрихкод. На фотографии колонка кодов узкая и печатается мелко —
+    // ИИ протянул первое значение вниз по столбцу. Привязать такое значит
+    // выдать пяти разным товарам один код и сломать поиск в кассе у ВСЕХ, кто
+    // читает общий словарь. Такие пары выбрасываются, а строки помечаются.
+    const items = [
+      { name: 'Dizzy Энерджи без/алк. 0,33', barcode: '4870204391510' },
+      { name: 'GRANAT газир. безалк. 0,45*24', barcode: '4870204391510' },
+      { name: 'Мохито Lime & Mint ал/б 0,45*24', barcode: '4870204391510' },
+    ]
+    assert.deepStrictEqual(invoiceCodePairs(items), [],
+      'один код на разных товарах — не привязываем ничего')
+
+    // А законный повтор — то же написание несколькими строками (фасовки) —
+    // по-прежнему привязывается, и ровно один раз.
+    const same = [
+      { name: 'Мохито Lime & Mint ал/б 0,45*24', barcode: '4870204391510' },
+      { name: 'Мохито Lime & Mint ал/б 0,45*24', barcode: '4870204391510' },
+    ]
+    assert.strictEqual(invoiceCodePairs(same).length, 1, 'одно написание — одна привязка')
+
+    // Разные товары с разными кодами не страдают.
+    const ok = [
+      { name: 'Dizzy Энерджи без/алк. 0,33', barcode: '4870204391510' },
+      { name: 'GRANAT газир. безалк. 0,45*24', barcode: '4870204391527' },
+    ]
+    assert.strictEqual(invoiceCodePairs(ok).length, 2, 'честные пары не трогаем')
+    assert.strictEqual(dupBarcodes(invoiceCodePairs(ok)).size, 0)
   }
 
   console.log('коды из накладных: OK')
