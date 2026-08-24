@@ -776,8 +776,11 @@ async function testInvoiceCodes() {
     global.fetch = async (url) => {
       const u = String(url)
       if (u.includes('mon_invoice_aliases')) {
-        // Ждёт кода только «Пепси»; сметана давно разобрана.
-        return new Response(JSON.stringify([{ raw_name_norm: invoiceNameKey('Пепси 0.5') }]), { status: 200 })
+        // Ждёт кода только «Пепси»; сметана уже привязана раньше.
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Пепси 0.5'), status: 'pending' },
+          { raw_name_norm: invoiceNameKey('Сметана Нежный 1,2%'), status: 'approved' },
+        ]), { status: 200 })
       }
       return new Response(JSON.stringify([{ id: 5, items: [
         { name: 'Пепси 0.5', barcode: '4870204391237' },
@@ -788,9 +791,37 @@ async function testInvoiceCodes() {
     global.fetch = real
     const [row] = (await r.json()).rows
     assert.strictEqual(row.code_count, 1, 'считаем только то, что реально ждёт кода')
-    assert.strictEqual(row.items[0].code_done, false, 'ждущая строка помечена как живая')
-    assert.strictEqual(row.items[1].code_done, true, 'разобранная — приглушена')
+    // «Привязано раньше» и «этого написания в словаре не было» — разные вещи, и
+    // серым одинаково их показывать нельзя: во втором случае работы не делал
+    // никто, а вендор идёт искать её результат во вкладке «Названия».
+    const bySmetana = row.items.find(x => /Сметана/.test(x.name))
+    assert.strictEqual(bySmetana.name_known, true, 'сметана в словаре есть — привязана раньше')
+    const byPepsi = row.items.find(x => /Пепси/.test(x.name))
+    assert.strictEqual(byPepsi.name_known, true, 'пепси в словаре есть — ждёт кода')
+    assert.strictEqual(byPepsi.code_done, false, 'ждущая строка помечена как живая')
+    assert.strictEqual(bySmetana.code_done, true, 'разобранная — приглушена')
     assert.strictEqual(row.code_total, 2, 'всего кодов в накладной — чтобы отличить «сделано» от «читать нечего»')
+  }
+
+  // Написание, которого в словаре нет вовсе. Раньше строка выглядела так же,
+  // как привязанная: серым и с подписью «уже разобрано». Вендор шёл во вкладку
+  // «Названия», не находил там ничего и не понимал, что произошло (24.08.2026).
+  {
+    const real = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      // Словарь пуст: этих написаний в него никто не присылал.
+      if (u.includes('mon_invoice_aliases')) return new Response('[]', { status: 200 })
+      return new Response(JSON.stringify([{ id: 7, items: [
+        { name: 'Dizzy Энерджи без/алк. 0,33', barcode: '4870204391510' },
+      ] }]), { status: 200, headers: { 'content-range': '0-0/1' } })
+    }
+    const r = await call('/api/invoices/pending', {})
+    global.fetch = real
+    const [row] = (await r.json()).rows
+    assert.strictEqual(row.code_count, 0, 'привязывать нечего')
+    assert.strictEqual(row.items[0].name_known, false,
+      'и панель это ЗНАЕТ — значит не имеет права писать «уже разобрано»')
   }
 
   // Подсказка вместо красного кода: замена одной цифры, прошедшая контрольную

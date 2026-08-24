@@ -155,10 +155,10 @@ const aliasByNorm = (db2, norm, all = false) =>
 // Несколько написаний разом — одним запросом. Нужно там, где у одной строки
 // накладной два возможных ключа (см. invoiceCodePairs): отдельными PATCH-ами
 // они удваивают число внешних подзапросов, а их у воркера считаное количество.
-const aliasByNorms = (db2, norms) =>
+const aliasByNorms = (db2, norms, anyStatus = false) =>
   `${db2.url}/rest/v1/mon_invoice_aliases?raw_name_norm=in.(`
   + norms.map(n => '"' + encodeURIComponent(n) + '"').join(',')
-  + ')&status=eq.pending'
+  + ')' + (anyStatus ? '' : '&status=eq.pending')
 
 // ── Коды, уже приехавшие в распознанных накладных ──────────────────────────
 // В mon_ai_invoices разобранный JSON лежит вечно (при «Разобрано» стирается
@@ -219,12 +219,33 @@ export function invoiceItemCode(it) {
 // она не резиновая. Не получилось — возвращаем null: пусть кнопка считает по
 // старому и обещает лишнего, это лучше, чем спрятать её совсем.
 async function pendingNorms(db2, keys) {
-  const out = new Set()
+  const map = await normStatuses(db2, keys)
+  if (!map) return null
+  return new Set([...map].filter(([, st]) => st === 'pending').map(([n]) => n))
+}
+
+/**
+ * В каком состоянии написание в словаре: pending / approved / rejected — или
+ * его там нет вовсе.
+ *
+ * Раньше спрашивали только про pending, и «не ждёт очереди» панель выдавала за
+ * «уже привязано». Разница существенная: привязано — работа сделана; НЕ БЫЛО В
+ * СЛОВАРЕ — работы не делал никто, и вендор ищет её результат во вкладке
+ * «Названия», где ничего нет. Ровно так и вышло 24.08.2026.
+ */
+async function normStatuses(db2, keys) {
+  const out = new Map()
   for (let i = 0; i < keys.length && i < 600; i += 120) {
-    const r = await sbFetch(aliasByNorms(db2, keys.slice(i, i + 120)) + '&select=raw_name_norm',
+    const r = await sbFetch(
+      aliasByNorms(db2, keys.slice(i, i + 120), true) + '&select=raw_name_norm,status',
       { headers: db2.headers })
     if (!r.ok) return null
-    for (const row of await r.json().catch(() => [])) out.add(row.raw_name_norm)
+    for (const row of await r.json().catch(() => [])) {
+      // Одно написание может лежать строкой на каждое заведение. Ждущая важнее:
+      // пока хоть где-то ждёт, кнопка обязана её привязать.
+      const prev = out.get(row.raw_name_norm)
+      if (prev !== 'pending') out.set(row.raw_name_norm, row.status)
+    }
   }
   return out
 }
@@ -1696,8 +1717,15 @@ export default {
             const dups = rows.map(row => dupBarcodes((row.items || [])
               .map(it => ({ barcode: invoiceItemCode(it).barcode, keys: itemKeys(it) }))
               .filter(p => p.barcode && p.keys.length)))
-            const waiting = await pendingNorms(db2, [...new Set(pairs.flat().flatMap(p => p.keys))])
+            // Состояние КАЖДОГО написания, а не только «ждёт ли». Иначе строка
+            // «этого написания нет в словаре» и строка «привязано» выглядят
+            // одинаково серыми, и вендор ищет во вкладке «Названия» работу,
+            // которой никто не делал.
+            const allKeys = [...new Set(rows.flatMap(r2 => (r2.items || []).flatMap(itemKeys)))]
+            const st = await normStatuses(db2, allKeys)
+            const waiting = st && new Set([...st].filter(([, v]) => v === 'pending').map(([n]) => n))
             const isWaiting = (keys) => !waiting || keys.some(k => waiting.has(k))
+            const known = (keys) => !st ? null : keys.some(k => st.has(k))
             rows.forEach((row, i) => {
               const dup = dups[i]
               row.code_dup_count = dup.size
@@ -1718,6 +1746,9 @@ export default {
                 // а не совпадение. Показываем словами, иначе строка выглядит
                 // как «уже привязано» и вендор о ней не узнает.
                 it.code_dup = !!c.barcode && dup.has(c.barcode)
+                // Есть ли это написание в словаре вообще. null — спросить не
+                // удалось (словарь недоступен), и врать в обе стороны нельзя.
+                it.name_known = known(itemKeys(it))
               }
             })
 
