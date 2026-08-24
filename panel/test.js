@@ -1509,6 +1509,33 @@ async function testAliasSearch() {
   console.log('поиск в «Названиях»: OK')
 }
 
+// Увеличение фотографии накладной. Страница зумом не тянется — панель работает
+// как приложение, — поэтому просмотр свой, и он обязан хотя бы собираться и
+// рисоваться: сломанный импорт тут виден только на телефоне.
+async function testPhotoView() {
+  const esbuild = await import('esbuild')
+  const out = path.join(__dirname, '.photo-render-test.mjs')
+  await esbuild.build({
+    entryPoints: [path.join(__dirname, 'src', 'ui.jsx')],
+    bundle: true, format: 'esm', jsx: 'automatic', outfile: out,
+    external: ['react', 'react/jsx-runtime', 'react-dom'], loader: { '.css': 'empty' },
+  })
+  const { renderToString } = await import('react-dom/server')
+  const React = await import('react')
+  const { PhotoView } = await import(pathToFileURL(out).href)
+  fs.unlinkSync(out)
+  const html = renderToString(React.createElement(PhotoView, {
+    src: 'data:image/jpeg;base64,AAAA', alt: 'Фото накладной', onClose: () => {},
+  }))
+  assert.ok(html.includes('data:image/jpeg;base64,AAAA'), 'снимок в просмотре есть')
+  assert.ok(html.includes('Закрыть'), 'и его есть чем закрыть — на телефоне это единственный выход')
+
+  const src = fs.readFileSync(path.join(__dirname, 'src', 'views', 'Invoices.jsx'), 'utf8')
+  assert.ok(src.includes('PhotoView') && src.includes('setPhoto('),
+    'фото в карточке открывает просмотр')
+  console.log('увеличение фото: OK')
+}
+
 try {
   await testServerRoutes()
   await testAliasRoutes()
@@ -1524,6 +1551,7 @@ try {
   await testSummaryReasons()
   await testClientCardRender()
   await testAliasSearch()
+  await testPhotoView()
   console.log('ВСЁ OK')
 } catch (e) {
   console.error('УПАЛО:', e.message)

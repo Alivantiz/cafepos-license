@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 // Разбор ИИ-распознаваний накладных: фото, что распозналось, и решение —
 // «разобрано» (фото удаляется) или «удалить целиком».
 import { api, useApi } from '../api'
-import { toast, confirmDialog, Modal } from '../ui'
+import { toast, confirmDialog, Modal, PhotoView } from '../ui'
 
 // Выбор модели распознавания. Открывается кликом по нынешней модели: сперва
 // показываем, как модели показали себя на ЖИВЫХ накладных и сколько это стоит,
@@ -214,6 +214,7 @@ export default function Invoices({ onReload }) {
   // привязать, не уходя во вкладку «Названия».
   const [edit, setEdit] = useState(null)     // `${id}:${index}`
   const [val, setVal] = useState('')
+  const [photo, setPhoto] = useState(null)  // снимок, открытый во весь экран
   const open = (id, i, code) => { setEdit(`${id}:${i}`); setVal(code || '') }
   const bindOne = async (id, index) => {
     try {
@@ -282,6 +283,8 @@ export default function Invoices({ onReload }) {
       {/* Цветов четыре, и раньше два из них были красными — «код не читается» и
           «код повторяется» выглядели одинаково. Подпись объясняет их один раз,
           вместо того чтобы объяснять каждый раз мне. */}
+      {photo && <PhotoView src={photo} alt="Фото накладной" onClose={() => setPhoto(null)} />}
+
       {!!rows.length && (
         <div className="muted2" style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
           <span><b style={{ color: 'var(--ok)' }}>код</b> — привяжется кнопкой</span>
@@ -315,9 +318,14 @@ export default function Invoices({ onReload }) {
             </span>
           </div>
           <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
+            {/* Фото открывается во весь экран: штрихкод на бумаге напечатан
+                мелко, и сверять его в снимке размером с ладонь невозможно. */}
             {r.image_b64
-              ? <img alt="Фото накладной" src={`data:${r.image_mime || 'image/jpeg'};base64,${r.image_b64}`}
-                style={{ maxWidth: 260, maxHeight: 360, borderRadius: 8, objectFit: 'contain' }} />
+              ? <button className="photo-open" title="Открыть фото"
+                  onClick={() => setPhoto(`data:${r.image_mime || 'image/jpeg'};base64,${r.image_b64}`)}>
+                  <img alt="Фото накладной" src={`data:${r.image_mime || 'image/jpeg'};base64,${r.image_b64}`}
+                    style={{ maxWidth: 260, maxHeight: 360, borderRadius: 8, objectFit: 'contain' }} />
+                </button>
               : <div className="muted2">фото удалено</div>}
             <div style={{ flex: 1, minWidth: 220 }}>
               {(r.items || []).map((it, i) => (

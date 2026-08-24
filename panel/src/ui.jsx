@@ -280,3 +280,89 @@ export function Toasts() {
     </div>
   )
 }
+
+// ── Просмотр фотографии накладной ──────────────────────────────────────
+// Сверять штрихкод с бумагой приходится глазами: тринадцать цифр мелким
+// шрифтом в углу снимка. В карточке фото размером с ладонь, а страница зумом
+// не тянется — панель работает как приложение (user-scalable=no), иначе от
+// случайного щипка разъезжалась вёрстка. Значит увеличение нужно своё.
+//
+// Жесты: щипок двумя пальцами, перетаскивание одним, двойное касание —
+// туда-обратно между «целиком» и ×3. Колесо мыши — для настольного браузера.
+export function PhotoView({ src, alt, onClose }) {
+  const [t, setT] = useState({ k: 1, x: 0, y: 0 })
+  const box = useRef(null)
+  const g = useRef(null)                       // состояние текущего жеста
+  const tapAt = useRef(0)
+
+  // Пока смотрим фото, страница под ним не должна прокручиваться.
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const esc = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', esc)
+    return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', esc) }
+  }, [onClose])
+
+  const clamp = (v) => {
+    const k = Math.min(8, Math.max(1, v.k))
+    // Не даём утащить снимок за край: на единичном масштабе он всегда по центру,
+    // дальше ходим в пределах того, что вылезло за экран.
+    const r = box.current?.getBoundingClientRect()
+    const mx = r ? (r.width * (k - 1)) / 2 : 0
+    const my = r ? (r.height * (k - 1)) / 2 : 0
+    return { k, x: Math.min(mx, Math.max(-mx, v.x)), y: Math.min(my, Math.max(-my, v.y)) }
+  }
+
+  const dist = (ts) => Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY)
+  const mid = (ts) => ({ x: (ts[0].clientX + ts[1].clientX) / 2, y: (ts[0].clientY + ts[1].clientY) / 2 })
+
+  const onTouchStart = (e) => {
+    const ts = e.touches
+    if (ts.length === 2) g.current = { d: dist(ts), m: mid(ts), t }
+    else if (ts.length === 1) {
+      g.current = { p: { x: ts[0].clientX, y: ts[0].clientY }, t }
+      const now = Date.now()
+      if (now - tapAt.current < 300) {
+        setT(v => clamp(v.k > 1 ? { k: 1, x: 0, y: 0 } : { k: 3, x: 0, y: 0 }))
+        tapAt.current = 0
+      } else tapAt.current = now
+    }
+  }
+  const onTouchMove = (e) => {
+    const ts = e.touches
+    const s = g.current
+    if (!s) return
+    e.preventDefault()
+    if (ts.length === 2 && s.d) {
+      const k = s.t.k * (dist(ts) / s.d)
+      const m = mid(ts)
+      setT(clamp({ k, x: s.t.x + (m.x - s.m.x), y: s.t.y + (m.y - s.m.y) }))
+    } else if (ts.length === 1 && s.p) {
+      setT(clamp({ k: s.t.k, x: s.t.x + (ts[0].clientX - s.p.x), y: s.t.y + (ts[0].clientY - s.p.y) }))
+    }
+  }
+  const onWheel = (e) => {
+    e.preventDefault()
+    setT(v => clamp({ ...v, k: v.k * (e.deltaY < 0 ? 1.15 : 1 / 1.15) }))
+  }
+
+  const node = (
+    <div className="photoview" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="photoview-bar">
+        <span className="muted2">{t.k > 1 ? `×${t.k.toFixed(1)}` : 'щипком увеличить'}</span>
+        {t.k > 1 && (
+          <button className="btn sm ghost" onClick={() => setT({ k: 1, x: 0, y: 0 })}>Целиком</button>
+        )}
+        <button className="btn sm" onClick={onClose} aria-label="Закрыть">✕</button>
+      </div>
+      <div className="photoview-box" ref={box}
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={() => { g.current = null }}
+        onWheel={onWheel}>
+        <img alt={alt || ''} src={src} draggable="false"
+          style={{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.k})` }} />
+      </div>
+    </div>
+  )
+  return typeof document === 'undefined' ? node : createPortal(node, document.body)
+}
