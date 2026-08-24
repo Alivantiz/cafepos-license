@@ -274,6 +274,18 @@ export default function Invoices({ onReload }) {
         )}
       </div>
 
+      {/* Цветов четыре, и раньше два из них были красными — «код не читается» и
+          «код повторяется» выглядели одинаково. Подпись объясняет их один раз,
+          вместо того чтобы объяснять каждый раз мне. */}
+      {!!rows.length && (
+        <div className="muted2" style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+          <span><b style={{ color: 'var(--ok)' }}>код</b> — привяжется кнопкой</span>
+          <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — тот же код у другого товара, ИИ ошибся</span>
+          <span><b style={{ color: 'var(--bad)' }}>код ?</b> — контрольная сумма не сходится</span>
+          <span><b style={{ color: 'var(--mut2)' }}>код</b> — привязывать нечего</span>
+        </div>
+      )}
+
       {!rows.length && (
         <div className="empty">{reviewed ? 'Разобранных накладных пока нет' : 'Неразобранных накладных нет'}</div>
       )}
@@ -321,12 +333,14 @@ export default function Invoices({ onReload }) {
                         непонятно, каких именно строк не хватило. */}
                     {it.code
                       ? <b onClick={it.code_dup ? () => open(r.id, i, it.code) : undefined} style={{
-                          // Красный — код достался ещё какому-то товару этой же
-                          // накладной. Так не бывает: ИИ протянул одно значение
-                          // вниз по столбцу. Привязать нельзя, поправить можно.
+                          // Жёлтый — сам код читается и контрольная сумма сошлась,
+                          // но он достался ещё какому-то товару этой накладной:
+                          // ИИ протянул одно значение вниз по столбцу. Красный
+                          // приберегаем для НЕЧИТАЕМОГО кода (ниже) — это разные
+                          // беды, и одним цветом их путать нельзя.
                           // Приглушённый — код есть, но привязывать нечего:
                           // магазин этот товар уже знает.
-                          color: it.code_dup ? 'var(--bad)' : it.code_done ? 'var(--mut2)' : 'var(--ok)',
+                          color: it.code_dup ? 'var(--warn)' : it.code_done ? 'var(--mut2)' : 'var(--ok)',
                           fontWeight: it.code_dup || !it.code_done ? 700 : 400,
                           cursor: it.code_dup ? 'pointer' : undefined,
                           fontVariantNumeric: 'tabular-nums',
@@ -336,7 +350,7 @@ export default function Invoices({ onReload }) {
                             : it.name_known === false
                               ? 'Этого написания нет в словаре — никто его сюда не присылал, привязывать нечего'
                               : 'Уже привязано — в очереди этого написания нет'}>
-                          {it.code}{it.code_dup ? ' ⚠' : ''}{' '}
+                          {it.code}{it.code_dup ? ' ⧉' : ''}{' '}
                         </b>
                       : it.code_bad
                         ? <b onClick={() => open(r.id, i, it.code_bad)} style={{ color: 'var(--bad)', cursor: 'pointer' }}
