@@ -232,9 +232,14 @@ export default function Invoices({ onReload }) {
     setBusy(id)
     try {
       const r = await api('invoices/bindCodes', { id: Number(id) })
-      toast.ok(r.names
-        ? `Привязано написаний: ${r.names}` + (r.left ? ` — осталось ${r.left}, нажмите ещё раз` : '')
-        : 'Ничего не изменилось — эти названия уже разобраны или их нет в очереди')
+      // «Новых» — те, которых в словаре не было вовсе: они пришли прямо с этой
+      // накладной, а не из очереди. Их обычно большинство, и молчать о них
+      // значит делать вид, что кнопка ничего не сделала.
+      if (r.error) toast.err('Часть написаний завести не удалось. ' + r.error)
+      else toast.ok(r.names
+        ? `Привязано написаний: ${r.names}` + (r.added ? ` (новых: ${r.added})` : '')
+          + (r.left ? ` — осталось ${r.left}, нажмите ещё раз` : '')
+        : 'Ничего не изменилось — эти написания уже разобраны')
       reload()
     } catch (e) { toast.err(e.message) } finally { setBusy(null) }
   }
@@ -282,7 +287,7 @@ export default function Invoices({ onReload }) {
           <span><b style={{ color: 'var(--ok)' }}>код</b> — привяжется кнопкой</span>
           <span><b style={{ color: 'var(--warn)' }}>код ⧉</b> — этот код и у другой строки; проверьте по фото</span>
           <span><b style={{ color: 'var(--bad)' }}>код ?</b> — контрольная сумма не сходится</span>
-          <span><b style={{ color: 'var(--mut2)' }}>код</b> — привязывать нечего</span>
+          <span><b style={{ color: 'var(--mut2)' }}>код</b> — уже в словаре</span>
         </div>
       )}
 
@@ -347,9 +352,9 @@ export default function Invoices({ onReload }) {
                         }} title={it.code_dup
                           ? 'Этот код стоит и у другой строки накладной. Если это один товар (бонус, другая фасовка) — всё верно, привяжите по одному. Если разные товары — распознавание протянуло код по столбцу, нажмите и вбейте настоящий'
                           : !it.code_done ? 'Привяжется кнопкой'
-                            : it.name_known === false
-                              ? 'Этого написания нет в словаре — никто его сюда не присылал, привязывать нечего'
-                              : 'Уже привязано — в очереди этого написания нет'}>
+                            : it.code_state === 'rejected'
+                              ? 'Написание отклонено как мусор — вернуть можно в «Названиях» → «Отклонённые»'
+                              : 'Уже привязано — поменять код можно в «Названиях» → «Привязанные»'}>
                           {it.code}{it.code_dup ? ' ⧉' : ''}{' '}
                         </b>
                       : it.code_bad
@@ -415,7 +420,7 @@ export default function Invoices({ onReload }) {
                   </span>
                 : r.code_total > 0
                 ? <span className="muted2" style={{ alignSelf: 'center' }}>
-                    Привязывать нечего: этих написаний нет в очереди «Названий»
+                    Все коды этой накладной уже в словаре
                   </span>
                 : null}
             <button className="btn ghost" disabled={busy === r.id} onClick={() => remove(r.id)}>Удалить</button>

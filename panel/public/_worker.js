@@ -221,7 +221,7 @@ export function invoiceItemCode(it) {
 async function pendingNorms(db2, keys) {
   const map = await normStatuses(db2, keys)
   if (!map) return null
-  return new Set([...map].filter(([, st]) => st === 'pending').map(([n]) => n))
+  return new Set([...map].filter(([, v]) => v.status === 'pending').map(([n]) => n))
 }
 
 /**
@@ -237,17 +237,58 @@ async function normStatuses(db2, keys) {
   const out = new Map()
   for (let i = 0; i < keys.length && i < 600; i += 120) {
     const r = await sbFetch(
-      aliasByNorms(db2, keys.slice(i, i + 120), true) + '&select=raw_name_norm,status',
+      aliasByNorms(db2, keys.slice(i, i + 120), true) + '&select=raw_name_norm,status,barcode',
       { headers: db2.headers })
     if (!r.ok) return null
     for (const row of await r.json().catch(() => [])) {
       // Одно написание может лежать строкой на каждое заведение. Ждущая важнее:
       // пока хоть где-то ждёт, кнопка обязана её привязать.
       const prev = out.get(row.raw_name_norm)
-      if (prev !== 'pending') out.set(row.raw_name_norm, row.status)
+      if (prev?.status !== 'pending') out.set(row.raw_name_norm, { status: row.status, barcode: row.barcode })
     }
   }
   return out
+}
+
+// Состояние строки накладной в словаре. null — спросить не удалось.
+//
+// 'absent' здесь — не тупик, а работа: написание видит только эта накладная, и
+// пара «имя + код» с неё берётся напрямую (см. vendorAlias). Раньше 'absent'
+// значил «привязывать нечего», и готовая пара с фотографии выбрасывалась
+// только потому, что у ЭТОГО магазина товар уже заведён.
+function aliasState(st, keys) {
+  if (!st) return null
+  let seen = null
+  for (const k of keys) {
+    const v = st.get(k)
+    if (!v) continue
+    if (v.status === 'pending') return 'pending'
+    seen = v.status
+  }
+  return seen ?? 'absent'
+}
+
+// Строка словаря от самого вендора. venue_id общий («panel-owner») — точно так
+// же заводится карточка в «Каталоге»: это решение вендора, а не заявка точки.
+async function vendorAlias(db2, { keys, name, barcode, supplier }) {
+  const r = await sbFetch(`${db2.url}/rest/v1/mon_invoice_aliases`, {
+    method: 'POST',
+    headers: { ...db2.headers, Prefer: 'return=representation' },
+    body: JSON.stringify({
+      venue_id: 'panel-owner',
+      // Ключ берём последний: itemKeys отдаёт [с кодом внутри имени, без него],
+      // и в словарь должно лечь написание без кода — так его шлют новые кассы.
+      raw_name_norm: keys[keys.length - 1],
+      raw_name: name,
+      supplier: supplier ?? null,
+      barcode,
+      status: 'approved',
+      updated_at: new Date().toISOString(),
+    }),
+  })
+  // Причину возвращаем словами: если облако не примет общий venue_id, кнопка
+  // обязана сказать об этом, а не молча «ничего не изменилось».
+  return r.ok ? null : `Supabase: ${r.status} ${await r.text()}`
 }
 
 // Ключи одной строки накладной. Их два: старые строки очереди приехали с кодом
@@ -404,14 +445,14 @@ export function oneDigitFixes(code) {
 export function invoiceCodePairs(items) {
   const by = new Map()
   for (const it of items || []) {
-    const { barcode, raw } = invoiceItemCode(it)
+    const { barcode, raw, clean } = invoiceItemCode(it)
     if (!barcode) continue
     const keys = itemKeys(it)
     if (!keys.length) continue
     const id = keys.join('|')
     // Одно написание в накладной может идти несколькими строками (фасовки) —
     // привязываем один раз.
-    if (!by.has(id)) by.set(id, { name: raw, barcode, keys })
+    if (!by.has(id)) by.set(id, { name: raw, clean, barcode, keys })
   }
   const all = [...by.values()]
   const dup = dupBarcodes(all)
@@ -1774,24 +1815,32 @@ export default {
             // которой никто не делал.
             const allKeys = [...new Set(rows.flatMap(r2 => (r2.items || []).flatMap(itemKeys)))]
             const st = await normStatuses(db2, allKeys)
-            const waiting = st && new Set([...st].filter(([, v]) => v === 'pending').map(([n]) => n))
-            const isWaiting = (keys) => !waiting || keys.some(k => waiting.has(k))
+            // Привязать можно и то, чего в словаре ещё нет: пара «имя + код»
+            // лежит на самой накладной. Нельзя только переписать чужое решение —
+            // уже привязанное или отклонённое как мусор.
+            const canBind = (keys) => {
+              const state = aliasState(st, keys)
+              return state === null || state === 'pending' || state === 'absent'
+            }
             const known = (keys) => !st ? null : keys.some(k => st.has(k))
             rows.forEach((row, i) => {
               const dup = dups[i]
               row.code_dup_count = dup.size
-              row.code_count = pairs[i].filter(p => isWaiting(p.keys)).length
+              row.code_count = pairs[i].filter(p => canBind(p.keys)).length
               // Сколько кодов в накладной вообще. Нужно, чтобы отличить
               // «работа сделана» от «читаемых кодов тут нет»: без этого
               // карточка молча остаётся без кнопки, и непонятно, что произошло.
               row.code_total = pairs[i].length
-              const live = new Set(pairs[i].filter(p => isWaiting(p.keys)).map(p => p.barcode))
+              const live = new Set(pairs[i].filter(p => canBind(p.keys)).map(p => p.barcode))
               for (const it of row.items || []) {
                 const c = invoiceItemCode(it)
                 it.code = c.barcode
-                // Код есть, но привязывать нечего: магазин этот товар уже знает
-                // либо написание разобрано раньше.
+                // Код есть, но привязывать нечего: написание уже разобрано —
+                // привязано или отклонено. Единственный случай серого.
                 it.code_done = !!c.barcode && !live.has(c.barcode)
+                // Чем именно разобрано: подсказка в строке должна называть
+                // причину, а не оставлять вендора гадать по цвету.
+                it.code_state = aliasState(st, itemKeys(it))
                 it.code_bad = c.barcode ? null : c.found
                 // Тот же код у другого товара этой накладной — ошибка чтения,
                 // а не совпадение. Показываем словами, иначе строка выглядит
@@ -1859,8 +1908,22 @@ export default {
           // не привязать, а воркеру на бесплатном тарифе положено 50 внешних
           // подзапросов — остаток возвращаем числом, панель попросит нажать ещё.
           const batch = pairs.slice(0, 40)
-          let bound = 0, names = 0
+          const st = await normStatuses(db2, [...new Set(batch.flatMap(p => p.keys))])
+          let bound = 0, names = 0, added = 0, addError = null
           for (const p of batch) {
+            const state = aliasState(st, p.keys)
+            // Уже разобрано вендором (привязано или отклонено как мусор) —
+            // молча переписывать его накладной нельзя.
+            if (state === 'approved' || state === 'rejected') continue
+            // Написания нет ни у кого: накладная — единственный его источник, и
+            // пара «имя + код» на ней уже есть. Заводим сами, не дожидаясь, пока
+            // на эту же строку споткнётся следующий магазин.
+            if (state === 'absent') {
+              const err = await vendorAlias(db2, { keys: p.keys, name: p.clean || p.name, barcode: p.barcode })
+              if (err) addError ??= err
+              else { names++; added++ }
+              continue
+            }
             const patch = await sbFetch(aliasByNorms(db2, p.keys) + '&select=id', {
               method: 'PATCH',
               headers: { ...db2.headers, Prefer: 'return=representation' },
@@ -1872,7 +1935,7 @@ export default {
             const hit = await patch.json().catch(() => [])
             if (hit.length) { names++; bound += hit.length }
           }
-          return json({ ok: true, codes: pairs.length, names, bound, left: Math.max(0, pairs.length - batch.length) })
+          return json({ ok: true, codes: pairs.length, names, bound, added, error: addError, left: Math.max(0, pairs.length - batch.length) })
         }
 
         // Один код на одну строку накладной — руками. Нужен там, где
@@ -1898,6 +1961,16 @@ export default {
           if (!it) return json({ error: 'Строка накладной не найдена' }, 404)
           const keys = itemKeys(it)
           if (!keys.length) return json({ error: 'У строки нет пригодного названия' }, 400)
+          const st = await normStatuses(db2, keys)
+          const state = aliasState(st, keys)
+          // Написания нет в словаре — заводим его прямо с накладной. Имя и код
+          // тут оба перед глазами, ждать чужой заявки незачем.
+          if (state === 'absent') {
+            const { raw, clean } = invoiceItemCode(it)
+            const err = await vendorAlias(db2, { keys, name: clean || raw, barcode: bc })
+            if (err) return json({ error: 'Не удалось завести написание в словаре. ' + err }, 502)
+            return json({ ok: true, bound: 1, added: 1, checksum: validBarcode(bc), note: null })
+          }
           const patch = await sbFetch(aliasByNorms(db2, keys) + '&select=id', {
             method: 'PATCH',
             headers: { ...db2.headers, Prefer: 'return=representation' },
@@ -1907,18 +1980,13 @@ export default {
           })
           if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
           const hit = await patch.json().catch(() => [])
-          // Ничего не изменилось — причин ДВЕ, и они требуют разных действий.
-          // Раньше обе назывались «код уже привязан», и вендор шёл искать во
-          // вкладке «Привязанные» то, чего там нет (24.08.2026).
-          let note = null
-          if (!hit.length) {
-            const st = await normStatuses(db2, keys)
-            const known = st && keys.some(k => st.has(k))
-            note = known
-              ? 'В очереди этого написания нет — код уже привязан. Поменять его можно в «Названиях» → «Привязанные».'
-              : 'Этого написания нет в словаре: касса его туда не присылала, привязывать нечего. Оно попадёт в очередь, когда магазин впервые не сможет сопоставить эту строку.'
-          }
-          return json({ ok: true, bound: hit.length, checksum: validBarcode(bc), note })
+          // Не изменилось ничего — значит написание уже разобрано вендором, и
+          // накладная не имеет права переписать это решение молча.
+          const note = hit.length ? null
+            : state === 'rejected'
+              ? 'Это написание отклонено как мусор. Вернуть его можно в «Названиях» → «Отклонённые».'
+              : 'Код у этого написания уже привязан. Поменять его можно в «Названиях» → «Привязанные».'
+          return json({ ok: true, bound: hit.length, added: 0, checksum: validBarcode(bc), note })
         }
 
         // Что за модель сейчас распознаёт, как она себя показала на живых

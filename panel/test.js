@@ -743,16 +743,33 @@ async function testInvoiceCodes() {
 
   assert.strictEqual((await call('/api/invoices/bindCodes', {})).status, 400, 'привязка без id — 400')
 
+  // Накладная — сама по себе источник пар «написание → код»: обе половины
+  // напечатаны на бумаге. Раньше кнопка умела только одобрять то, что кассы уже
+  // прислали в очередь, и готовую пару выбрасывала, если у ЭТОГО магазина товар
+  // уже заведён. Следующему магазину приходилось спотыкаться о ту же строку
+  // заново (24.08.2026).
   {
     const real = global.fetch
-    let patched = '', body = null
+    let patched = '', body = null, inserted = null
     global.fetch = async (url, init) => {
+      const u = String(url)
       if (init?.method === 'PATCH') {
-        patched = String(url); body = JSON.parse(init.body)
+        patched = u; body = JSON.parse(init.body)
         return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 })
+      }
+      if (init?.method === 'POST' && u.includes('mon_invoice_aliases')) {
+        inserted = JSON.parse(init.body)
+        return new Response(JSON.stringify([{ id: 9 }]), { status: 201 })
+      }
+      // Словарь знает только сметану — она ждёт кода. Про Dizzy не слышал никто.
+      if (u.includes('mon_invoice_aliases')) {
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Сметана Нежный 1,2%'), status: 'pending', barcode: null },
+        ]), { status: 200 })
       }
       return new Response(JSON.stringify([{ items: [
         { name: 'Сметана Нежный 1,2% / ШК: 4870204391237' },
+        { name: 'Dizzy Энерджи без/алк. 0,33', barcode: '4605627012366' },
         { name: 'Пепси 0.5', barcode: '4870204391234' },   // битая контрольная — не берём
       ] }]), { status: 200 })
     }
@@ -760,13 +777,47 @@ async function testInvoiceCodes() {
     global.fetch = real
     const d = await r.json()
     assert.strictEqual(r.status, 200, 'привязка проходит')
-    assert.strictEqual(d.codes, 1, 'в накладной один пригодный код')
-    assert.strictEqual(d.names, 1, 'одно написание привязано')
+    assert.strictEqual(d.codes, 2, 'в накладной два пригодных кода')
+    assert.strictEqual(d.names, 2, 'привязаны оба: и ждавшее очереди, и новое')
     assert.strictEqual(d.bound, 2, 'решение уехало на все точки с этим написанием')
+    assert.strictEqual(d.added, 1, 'написание, которого в словаре не было, заведено с накладной')
     assert.ok(patched.includes('raw_name_norm=in.'), 'ищем по обоим ключам одним запросом: ' + patched)
     assert.ok(patched.includes('status=eq.pending'), 'уже разобранное чужим кодом не переписываем')
     assert.strictEqual(body.barcode, '4870204391237')
     assert.strictEqual(body.status, 'approved', 'код без статуса кассы не заберут')
+    assert.strictEqual(inserted.barcode, '4605627012366', 'новая строка несёт код с накладной')
+    assert.strictEqual(inserted.status, 'approved', 'заводит её вендор — она сразу готова к выдаче')
+    assert.strictEqual(inserted.raw_name_norm, invoiceNameKey('Dizzy Энерджи без/алк. 0,33'),
+      'ключ считается ровно как на кассе')
+  }
+
+  // Уже разобранное вендором накладная переписывать не смеет: ни привязанное
+  // чужим кодом, ни отклонённое как мусор.
+  {
+    const real = global.fetch
+    let posted = 0, patched = 0
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (init?.method === 'PATCH') { patched++; return new Response('[]', { status: 200 }) }
+      if (init?.method === 'POST' && u.includes('mon_invoice_aliases')) {
+        posted++; return new Response('[]', { status: 201 })
+      }
+      if (u.includes('mon_invoice_aliases')) {
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Сметана Нежный 1,2%'), status: 'approved', barcode: '4605627012366' },
+          { raw_name_norm: invoiceNameKey('Мусор строка накладной'), status: 'rejected', barcode: null },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify([{ items: [
+        { name: 'Сметана Нежный 1,2% / ШК: 4870204391237' },
+        { name: 'Мусор строка накладной', barcode: '4605627012366' },
+      ] }]), { status: 200 })
+    }
+    const d = await (await call('/api/invoices/bindCodes', { id: 6 })).json()
+    global.fetch = real
+    assert.strictEqual(d.names, 0, 'разобранное не трогаем')
+    assert.strictEqual(posted, 0, 'и не заводим дубль поверх чужого решения')
+    assert.strictEqual(patched, 0, 'запроса на правку тоже не делаем')
   }
 
   // Кнопка обязана обещать ровно то, что изменится: касса шлёт в очередь
@@ -778,8 +829,8 @@ async function testInvoiceCodes() {
       if (u.includes('mon_invoice_aliases')) {
         // Ждёт кода только «Пепси»; сметана уже привязана раньше.
         return new Response(JSON.stringify([
-          { raw_name_norm: invoiceNameKey('Пепси 0.5'), status: 'pending' },
-          { raw_name_norm: invoiceNameKey('Сметана Нежный 1,2%'), status: 'approved' },
+          { raw_name_norm: invoiceNameKey('Пепси 0.5'), status: 'pending', barcode: null },
+          { raw_name_norm: invoiceNameKey('Сметана Нежный 1,2%'), status: 'approved', barcode: '4605627012366' },
         ]), { status: 200 })
       }
       return new Response(JSON.stringify([{ id: 5, items: [
@@ -790,22 +841,21 @@ async function testInvoiceCodes() {
     const r = await call('/api/invoices/pending', {})
     global.fetch = real
     const [row] = (await r.json()).rows
-    assert.strictEqual(row.code_count, 1, 'считаем только то, что реально ждёт кода')
-    // «Привязано раньше» и «этого написания в словаре не было» — разные вещи, и
-    // серым одинаково их показывать нельзя: во втором случае работы не делал
-    // никто, а вендор идёт искать её результат во вкладке «Названия».
+    assert.strictEqual(row.code_count, 1, 'разобранное вендором не считаем')
+    // Серый остался ровно за одним смыслом: написание УЖЕ разобрано. Всё
+    // остальное — работа, которую кнопка сделает.
     const bySmetana = row.items.find(x => /Сметана/.test(x.name))
-    assert.strictEqual(bySmetana.name_known, true, 'сметана в словаре есть — привязана раньше')
+    assert.strictEqual(bySmetana.code_state, 'approved', 'сметана привязана раньше')
     const byPepsi = row.items.find(x => /Пепси/.test(x.name))
-    assert.strictEqual(byPepsi.name_known, true, 'пепси в словаре есть — ждёт кода')
+    assert.strictEqual(byPepsi.code_state, 'pending', 'пепси ждёт кода')
     assert.strictEqual(byPepsi.code_done, false, 'ждущая строка помечена как живая')
     assert.strictEqual(bySmetana.code_done, true, 'разобранная — приглушена')
     assert.strictEqual(row.code_total, 2, 'всего кодов в накладной — чтобы отличить «сделано» от «читать нечего»')
   }
 
-  // Написание, которого в словаре нет вовсе. Раньше строка выглядела так же,
-  // как привязанная: серым и с подписью «уже разобрано». Вендор шёл во вкладку
-  // «Названия», не находил там ничего и не понимал, что произошло (24.08.2026).
+  // Написания нет в словаре вовсе — и это РАБОТА, а не тупик: имя и код есть на
+  // самой накладной. Раньше такая строка была серой и «привязывать нечего»,
+  // хотя привязать её можно было прямо отсюда (24.08.2026).
   {
     const real = global.fetch
     global.fetch = async (url) => {
@@ -819,9 +869,9 @@ async function testInvoiceCodes() {
     const r = await call('/api/invoices/pending', {})
     global.fetch = real
     const [row] = (await r.json()).rows
-    assert.strictEqual(row.code_count, 0, 'привязывать нечего')
-    assert.strictEqual(row.items[0].name_known, false,
-      'и панель это ЗНАЕТ — значит не имеет права писать «уже разобрано»')
+    assert.strictEqual(row.code_count, 1, 'пара «имя + код» с накладной привязывается сама')
+    assert.strictEqual(row.items[0].code_state, 'absent', 'в словаре его нет')
+    assert.strictEqual(row.items[0].code_done, false, 'и серым, будто работа сделана, оно не показывается')
   }
 
   // Подсказка вместо красного кода: замена одной цифры, прошедшая контрольную
@@ -878,6 +928,11 @@ async function testInvoiceCodes() {
         patched = String(url); body = JSON.parse(init.body)
         return new Response(JSON.stringify([{ id: 3 }]), { status: 200 })
       }
+      if (String(url).includes('mon_invoice_aliases')) {
+        return new Response(JSON.stringify([
+          { raw_name_norm: invoiceNameKey('Сметановка 20% 185г / ШК: 4605627012365'), status: 'pending', barcode: null },
+        ]), { status: 200 })
+      }
       return new Response(JSON.stringify([{ items: [{ name: 'Сметановка 20% 185г / ШК: 4605627012365' }] }]), { status: 200 })
     }
     const r = await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4605627012365' })
@@ -888,9 +943,8 @@ async function testInvoiceCodes() {
     assert.strictEqual(body.barcode, '4605627012365', 'привязан именно введённый код')
     assert.ok(patched.includes('raw_name_norm=in.'), 'ищем по написанию строки накладной: ' + patched)
   }
-  // Ничего не изменилось — причин ДВЕ, и они требуют разных действий. Раньше
-  // обе назывались «код уже привязан», и вендор шёл искать во вкладке
-  // «Привязанные» то, чего там нет (24.08.2026).
+  // Уже разобранное вендором строка накладной переписать не может — но и
+  // молчать нельзя: говорим, куда идти менять.
   {
     const real = global.fetch
     // Написание в словаре ЕСТЬ и уже разобрано: менять код надо в «Названиях».
@@ -898,7 +952,7 @@ async function testInvoiceCodes() {
       if (init?.method === 'PATCH') return new Response('[]', { status: 200 })
       if (String(url).includes('mon_invoice_aliases')) {
         return new Response(JSON.stringify([
-          { raw_name_norm: invoiceNameKey('Пепси 0.5'), status: 'approved' },
+          { raw_name_norm: invoiceNameKey('Пепси 0.5'), status: 'approved', barcode: '4605627012366' },
         ]), { status: 200 })
       }
       return new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5' }] }]), { status: 200 })
@@ -907,18 +961,30 @@ async function testInvoiceCodes() {
     global.fetch = real
     assert.ok(d.note && d.note.includes('Названиях'), 'уже привязано — объясняем, куда идти: ' + d.note)
   }
+  // Написания в словаре нет вовсе — заводим его прямо с накладной. Имя и код
+  // напечатаны на бумаге, ждать, пока на эту строку споткнётся чужая касса,
+  // незачем.
   {
     const real = global.fetch
-    // Написания в словаре НЕТ вовсе: касса его туда не присылала.
+    let inserted = null, patched = 0
     global.fetch = async (url, init) => {
-      if (init?.method === 'PATCH') return new Response('[]', { status: 200 })
-      if (String(url).includes('mon_invoice_aliases')) return new Response('[]', { status: 200 })
-      return new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5' }] }]), { status: 200 })
+      const u = String(url)
+      if (init?.method === 'PATCH') { patched++; return new Response('[]', { status: 200 }) }
+      if (init?.method === 'POST' && u.includes('mon_invoice_aliases')) {
+        inserted = JSON.parse(init.body)
+        return new Response(JSON.stringify([{ id: 9 }]), { status: 201 })
+      }
+      if (u.includes('mon_invoice_aliases')) return new Response('[]', { status: 200 })
+      return new Response(JSON.stringify([{ items: [{ name: 'Пепси 0.5 / ШК: 4870204391237' }] }]), { status: 200 })
     }
     const d = await (await call('/api/invoices/bindOne', { id: 5, index: 0, barcode: '4870204391237' })).json()
     global.fetch = real
-    assert.ok(d.note && d.note.includes('нет в словаре'),
-      'в словаре нет — так и говорим, а не «уже привязан»: ' + d.note)
+    assert.strictEqual(d.added, 1, 'написание заведено с накладной')
+    assert.strictEqual(d.note, null, 'и никаких «привязывать нечего»')
+    assert.strictEqual(patched, 0, 'править было нечего — сразу заводим')
+    assert.strictEqual(inserted.raw_name_norm, invoiceNameKey('Пепси 0.5'),
+      'в словарь ложится написание БЕЗ кода внутри имени — так его шлют кассы')
+    assert.strictEqual(inserted.venue_id, 'panel-owner', 'это решение вендора, а не заявка точки')
   }
 
   // Расход берётся только из записанных токенов: накладные без записи в счёт
