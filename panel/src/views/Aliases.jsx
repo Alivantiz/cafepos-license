@@ -87,7 +87,11 @@ export default function Aliases({ onCounts, onReload }) {
     <>
       <div className="row stickybar" style={{ marginBottom: 14 }}>
         {[['pending', 'Ждут кода'], ['approved', 'Привязанные'], ['rejected', 'Отклонённые']].map(([id, label]) => (
-          <button key={id} className={'btn sm' + (tab === id ? ' pri' : '')} onClick={() => setTab(id)}>{label}</button>
+          <button key={id} className={'btn sm' + (tab === id && !searching ? ' pri' : '')}
+            // Пока идёт поиск, вкладки на выдачу не влияют: подсвеченная кнопка
+            // тут врала бы, что находки именно из неё.
+            style={searching ? { opacity: 0.5 } : undefined}
+            onClick={() => { setQ(''); setTab(id) }}>{label}</button>
         ))}
         {tab === 'pending' && trustedCount > 0 && (
           <button className="btn sm pri" disabled={approving} onClick={approveTrusted}>
@@ -224,11 +228,14 @@ function AliasCard({ r, onDone, tab, showStatus }) {
 
   return (
     <div className="card">
-      {/* В общем поиске находка приходит из любой вкладки, и без метки
-          непонятно, что перед тобой: очередь, готовая привязка или мусор. */}
+      {/* В общем поиске находка приходит из любой вкладки. Называем вкладку
+          прямо, а не состояние словами: искать её потом всё равно там. */}
       {showStatus && (
-        <div className="muted2" style={{ marginBottom: 6 }}>
-          {tab === 'approved' ? 'привязано' : tab === 'rejected' ? 'отклонено' : 'ждёт кода'}
+        <div style={{ marginBottom: 8 }}>
+          <span className={'tag ' + (tab === 'approved' ? 'ok' : tab === 'rejected' ? 'bad' : 'warn')}>
+            <span className="dot" />
+            во вкладке «{tab === 'approved' ? 'Привязанные' : tab === 'rejected' ? 'Отклонённые' : 'Ждут кода'}»
+          </span>
         </div>
       )}
       <div style={{ fontWeight: 600, wordBreak: 'break-word' }}>{r.raw_name}</div>

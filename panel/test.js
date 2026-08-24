@@ -1442,6 +1442,7 @@ async function testAliasSearch() {
   assert.ok(!src.includes("list = list.filter(r => String(r.raw_name"),
     'фильтрация внутри текущей вкладки убрана')
   assert.ok(src.includes('showStatus'), 'у находки видно её состояние')
+  assert.ok(src.includes('во вкладке'), 'и названо вкладкой, где её потом искать')
 
   const tmp = path.join(os.tmpdir(), 'imag_panel_search_test_' + Date.now() + '.mjs')
   fs.copyFileSync(WORKER_PATH, tmp)
