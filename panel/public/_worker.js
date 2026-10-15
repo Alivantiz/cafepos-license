@@ -47,6 +47,64 @@ async function sqlHint(res, cols) {
   return `Supabase: ${res.status} ${text}`
 }
 
+// ── Реквизиты оплаты лицензии ─────────────────────────────────────────
+// Цена, Kaspi QR и контакты, которые касса показывает на экране активации.
+// Живут в mon_settings, а не в коде кассы: QR самозанятого и цена меняются,
+// а выпускать ради этого новую версию iMag и ждать, пока все обновятся, —
+// значит месяцами показывать клиентам старые реквизиты.
+export const PAY_KEY = 'license_pay'
+// Только ссылки самого Kaspi: касса рисует из неё QR, по которому клиент
+// переводит деньги. Чужая ссылка здесь — это деньги не туда.
+export const KASPI_QR_RE = /^https:\/\/(?:qr|pay)\.kaspi\.kz\/[A-Za-z0-9._~\-/?=&%]+$/
+
+const payPhone = (v) => String(v ?? '').replace(/\D/g, '')
+
+/** Проверка формы «Оплата лицензии». { value } — что пишем в базу, или { error }. */
+export function cleanPayInfo(b) {
+  if (!b || typeof b !== 'object') return { error: 'Пустой запрос' }
+  const price = typeof b.price === 'string' && b.price.trim() !== '' ? Number(b.price) : b.price
+  if (!Number.isInteger(price) || price < 1 || price > 10_000_000) {
+    return { error: 'Цена — целое число тенге от 1 до 10 000 000' }
+  }
+  const qr = String(b.kaspi_qr_url ?? '').trim()
+  if (qr && !KASPI_QR_RE.test(qr)) {
+    return { error: 'Ссылка Kaspi QR должна начинаться с https://qr.kaspi.kz/ или https://pay.kaspi.kz/' }
+  }
+  const phone = payPhone(b.phone)
+  if (!/^7\d{10}$/.test(phone)) return { error: 'Телефон — 11 цифр, начиная с 7 (например 7 706 406 03 03)' }
+  // WhatsApp для чеков по умолчанию тот же номер — так было всегда.
+  const whatsapp = payPhone(b.whatsapp) || phone
+  if (!/^7\d{10}$/.test(whatsapp)) return { error: 'WhatsApp — 11 цифр, начиная с 7' }
+  const holder = String(b.holder ?? '').trim()
+  if (holder.length > 60) return { error: 'Получатель — не длиннее 60 символов' }
+  const note = String(b.note ?? '').trim()
+  if (note.length > 300) return { error: 'Текст для клиента — не длиннее 300 символов' }
+  return { value: { price, kaspi_qr_url: qr || null, phone, whatsapp, holder: holder || null, note: note || null } }
+}
+
+/**
+ * То, что уходит наружу без пароля. Поля перечислены поимённо: строка в базе
+ * может со временем обрасти служебным, и оно не должно утечь само собой.
+ * Битая запись — null (касса тогда покажет свои встроенные реквизиты).
+ */
+export function publicPayInfo(row) {
+  const v = row?.value
+  if (!v || typeof v !== 'object') return null
+  if (!Number.isInteger(v.price) || v.price < 1) return null
+  if (!/^7\d{10}$/.test(String(v.phone ?? ''))) return null
+  const str = (s) => (typeof s === 'string' && s.trim() ? s.trim() : null)
+  const qr = str(v.kaspi_qr_url)
+  return {
+    price: v.price,
+    kaspi_qr_url: qr && KASPI_QR_RE.test(qr) ? qr : null,
+    phone: v.phone,
+    whatsapp: /^7\d{10}$/.test(String(v.whatsapp ?? '')) ? v.whatsapp : v.phone,
+    holder: str(v.holder),
+    note: str(v.note),
+    updated_at: row.updated_at ?? null,
+  }
+}
+
 // ── Словарь написаний: строка на заведение, решение — одно ──────────────
 // В mon_invoice_aliases ключ (venue_id, raw_name_norm): одно и то же написание
 // присылает КАЖДОЕ заведение своей строкой. Для вендора это одна работа, а не
@@ -786,6 +844,32 @@ export default {
       }
     }
 
+    // Реквизиты оплаты для экрана активации кассы. Без пароля: касса без
+    // лицензии пароля панели не знает и знать не должна. Отдаёт ровно одну
+    // строку mon_settings и только перечисленные поля (publicPayInfo) — те же,
+    // что клиент и так видит на экране. Сохранение (POST) — под паролем, ниже.
+    if (pathname === '/api/pay-info' && request.method === 'GET') {
+      const db2 = sb2(env)
+      if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
+        return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
+      }
+      try {
+        const r = await sbFetch(
+          `${db2.url}/rest/v1/mon_settings?select=value,updated_at&key=eq.${PAY_KEY}&limit=1`, { headers: db2.headers })
+        if (!r.ok) return json({ error: `Supabase: ${r.status}` }, 502)
+        const rows = await r.json().catch(() => [])
+        const info = publicPayInfo(rows?.[0])
+        if (!info) return json({ error: 'Реквизиты оплаты не заданы' }, 404)
+        // Пять минут кэша: экран активации открывают редко, а правка в панели
+        // должна доехать до касс быстро.
+        return new Response(JSON.stringify(info), {
+          status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' },
+        })
+      } catch {
+        return json({ error: 'Supabase не ответил' }, 504)
+      }
+    }
+
     // ponytail: простое сравнение пароля; при реальном риске перебора — Cloudflare Access
     if (!env.PANEL_PASSWORD || request.headers.get('x-panel-key') !== env.PANEL_PASSWORD) {
       return json({ error: 'Неверный пароль' }, 401)
@@ -798,6 +882,30 @@ export default {
     }
 
     try {
+      // Сохранение реквизитов оплаты (чтение — без пароля, выше).
+      if (pathname === '/api/pay-info') {
+        const db2 = sb2(env)
+        if (!db2.url || !env.MONITOR_SUPABASE_SERVICE_ROLE_KEY) {
+          return json({ error: 'Не заданы секреты MONITOR_SUPABASE_URL / MONITOR_SUPABASE_SERVICE_ROLE_KEY' }, 500)
+        }
+        const c = cleanPayInfo(await request.json().catch(() => null))
+        if (c.error) return json({ error: c.error }, 400)
+        const updated_at = new Date().toISOString()
+        const up = await sbFetch(`${db2.url}/rest/v1/mon_settings?on_conflict=key`, {
+          method: 'POST',
+          headers: { ...db2.headers, Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify([{ key: PAY_KEY, value: c.value, updated_at }]),
+        })
+        if (!up.ok) {
+          const text = await up.text()
+          if (/does not exist|PGRST205|42P01/.test(text)) {
+            return json({ error: 'Нет таблицы mon_settings (SQL из monitor-schema.sql не выполнен)' }, 502)
+          }
+          return json({ error: `Supabase: ${up.status} ${text}` }, 502)
+        }
+        return json({ ok: true, info: publicPayInfo({ value: c.value, updated_at }) })
+      }
+
       // --- Клиенты: лицензии/триалы, склеенные с дневными итогами ------------
       // Раньше панель показывала строки licenses и всё: ни выручки, ни среднего
       // чека, ни внятного «когда последний раз работал» (last_seen_at пишется
