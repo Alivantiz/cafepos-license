@@ -517,26 +517,6 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
   const [msg, setMsg] = useState('')
   const n = Number(days) || 0
 
-  // Счёт: клиент платит по ссылке, подписка продлевается вебхуком ПО ФАКТУ
-  // оплаты. Правильный порядок — в отличие от кнопки ниже, где владелец сам
-  // ручается, что деньги пришли.
-  const invoice = async () => {
-    setBusy(true)
-    try {
-      const r = await api('invoice', {
-        id: c.id, days: Number(days), amount: Number(amount),
-        phone: (c.phone || '').trim() || undefined,
-      })
-      setMsg(r.link
-        ? `Здравствуйте! Счёт на продление подписки iMag (${n} дн.): ${r.link}`
-        : `Счёт выставлен на номер клиента. Подписка продлится автоматически после оплаты.`)
-      toast.ok('Счёт выставлен — продление придёт после оплаты')
-      onDone()
-    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
-  }
-
-  // Ручное продление — запасной путь: Aitole может быть не подключён, клиент
-  // мог заплатить переводом мимо счёта.
   const go = async () => {
     setBusy(true)
     try {
@@ -580,16 +560,7 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
       </>}
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Закрыть</button>
-        {/* «Продлить» теперь не главное действие: оно записывает продление без
-            подтверждения оплаты. Главное — выставить счёт. */}
-        <button className="btn" disabled={busy || n <= 0} onClick={go}
-          title="Продлить без счёта — если клиент уже заплатил переводом">
-          {busy ? '…' : 'Продлить вручную'}
-        </button>
-        <button className="btn pri" disabled={busy || n <= 0 || !(Number(amount) > 0)} onClick={invoice}
-          title="Клиент платит по ссылке Kaspi, подписка продлится сама">
-          {busy ? 'Секунду…' : 'Выставить счёт'}
-        </button>
+        <button className="btn pri" disabled={busy || n <= 0} onClick={go}>{busy ? 'Секунду…' : 'Продлить'}</button>
       </div>
     </Modal>
   )

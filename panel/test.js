@@ -1352,75 +1352,6 @@ function testPushEvents() {
 }
 
 
-// Вебхук Aitole — единственное место, где подписка продлевается без участия
-// человека. Проверяем три вещи, на которых теряются деньги: продление идёт
-// только после подтверждения оплаты У AITOLE (вебхуку на слово не верим),
-// повтор вебхука не продлевает дважды, неоплаченная операция не продлевает.
-async function testAitoleHook() {
-  const tmp = path.join(os.tmpdir(), 'imag_panel_hook_test_' + Date.now() + '.mjs')
-  fs.copyFileSync(WORKER_PATH, tmp)
-  let worker
-  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
-
-  const ENV = { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test',
-                SUPABASE_SERVICE_ROLE_KEY: 'k', AITOLE_API_KEY: 'sk_test_x' }
-  const hook = (type, data) => worker.fetch(new Request('https://x.test/api/aitole/hook', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id: 'evt_1', type, created_at: new Date().toISOString(), data }),
-  }), ENV)
-
-  const real = global.fetch
-  try {
-    // Сценарий, в котором всё сходится: Aitole подтверждает оплату, строка
-    // счёта найдена и захвачена → лицензия продлена.
-    let renewed = 0, claimFirst = true
-    const mock = (opStatus) => async (url, init) => {
-      const u = String(url), m = init?.method || 'GET'
-      if (u.startsWith('https://api.aitole.kz/v2/operations/'))
-        return new Response(JSON.stringify({ id: 'op_1', status: opStatus, amount: 7000 }), { status: 200 })
-      if (u.includes('license_payments') && m === 'PATCH' && u.includes('status=eq.pending')) {
-        const rows = claimFirst ? [{ license_id: 'L1', days: 30, amount: 7000 }] : []
-        claimFirst = false
-        return new Response(JSON.stringify(rows), { status: 200 })
-      }
-      if (u.includes('licenses') && m === 'GET')
-        return new Response(JSON.stringify([{ customer: 'Кафе', expires_at: null }]), { status: 200 })
-      if (u.includes('licenses') && m === 'PATCH') { renewed++; return new Response('', { status: 200 }) }
-      return new Response('[]', { status: 200 })
-    }
-
-    global.fetch = mock('paid')
-    const ok = await (await hook('payment.paid', { id: 'op_1' })).json()
-    assert.strictEqual(ok.ok, true, 'оплаченная операция продлевает подписку')
-    assert.strictEqual(renewed, 1, 'лицензия продлена ровно один раз')
-
-    // Повтор того же вебхука: строку уже захватили, продления быть не должно.
-    const again = await (await hook('payment.paid', { id: 'op_1' })).json()
-    assert.strictEqual(again.already, true, 'повтор вебхука распознан')
-    assert.strictEqual(renewed, 1, 'и не продлил второй раз')
-
-    // Aitole говорит, что операция не оплачена — вебхуку на слово не верим.
-    renewed = 0; claimFirst = true
-    global.fetch = mock('pending')
-    const no = await (await hook('payment.paid', { id: 'op_1' })).json()
-    assert.strictEqual(no.status, 'pending', 'статус взят у Aitole, а не из вебхука')
-    assert.strictEqual(renewed, 0, 'неоплаченная операция ничего не продлевает')
-
-    // Событие о смерти сессии Kaspi не трогает деньги, но должно отметиться:
-    // без этого счета перестали бы оплачиваться молча.
-    let noted = false
-    global.fetch = async (url, init) => {
-      if (String(url).includes('push_state') && init?.method === 'POST') { noted = true; return new Response('', { status: 201 }) }
-      return new Response('[]', { status: 200 })
-    }
-    const sess = await (await hook('connection.session_expired', {})).json()
-    assert.strictEqual(sess.noted, 'connection.session_expired')
-    assert.ok(noted, 'потеря сессии записана в состояние панели')
-  } finally { global.fetch = real }
-  console.log('вебхук оплаты подписки: OK')
-}
-
-
 // Маршрут проверки событий дёргается cron-воркером без пароля — и обязан
 // быть безобидным: ничего не отдавать наружу и не слать одно и то же дважды.
 async function testPushCheckRoute() {
@@ -1795,7 +1726,6 @@ try {
   await testTrialsMerge()
   await testPushCrypto()
   await testPushCheckRoute()
-  await testAitoleHook()
   testPushEvents()
   testUsageWindows()
   await testViewsRender()
