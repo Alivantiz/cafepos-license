@@ -38,6 +38,66 @@ const json = (data, status = 200) =>
 // добавляются отдельными ALTER, и пока их не выполнили, запись падала с
 // «PGRST204 column ... does not exist» — владельцу такое сообщение не говорит
 // ничего, а сделать надо ровно одну понятную вещь.
+// Продление подписки. Вынесено из /api/renew, потому что теперь продлевать
+// умеют двое: кассир панели кнопкой и вебхук Aitole по факту оплаты. Логика
+// обязана быть одна, иначе «продлено вручную» и «продлено по оплате» разойдутся
+// в датах.
+async function applyRenewal(db, id, days, amount, paymentId) {
+  const n = Number(days)
+  if (!id || !Number.isFinite(n) || n <= 0) return { error: 'Нужны id и положительное число дней', status: 400 }
+
+  const getRes = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}&select=customer,expires_at`, { headers: db.headers })
+  if (!getRes.ok) return { error: `Supabase: ${getRes.status}`, status: 502 }
+  const rows = await getRes.json()
+  if (!rows.length) return { error: 'Лицензия не найдена', status: 404 }
+
+  // Та же логика, что в license-renew.mjs: продлеваем от сегодня или от
+  // текущего срока — что позже; заодно снимаем revoked (оплатил = вернули).
+  const now = new Date()
+  const cur = rows[0].expires_at ? new Date(rows[0].expires_at) : null
+  const base = cur && cur > now ? cur : now
+  const newExpires = new Date(base.getTime() + n * 86400000).toISOString()
+
+  const patch = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { ...db.headers, Prefer: 'return=minimal' },
+    body: JSON.stringify({ expires_at: newExpires, revoked: false })
+  })
+  if (!patch.ok) return { error: `Supabase: ${patch.status} ${await patch.text()}`, status: 502 }
+
+  // История продлений: раньше от платежа не оставалось ничего, кроме сдвинутой
+  // даты. Запись — не критичная часть: если таблицы ещё нет, подписка всё равно
+  // продлена, и валить операцию из-за журнала нельзя.
+  const paid = Number(amount)
+  await sbFetch(`${db.url}/rest/v1/license_renewals`, {
+    method: 'POST',
+    headers: { ...db.headers, Prefer: 'return=minimal' },
+    body: JSON.stringify({
+      license_id: String(id), days: n,
+      amount: Number.isFinite(paid) && paid > 0 ? Math.round(paid) : null,
+      from_expires: rows[0].expires_at || null, to_expires: newExpires,
+      payment_id: paymentId || null,
+    })
+  }).catch(() => {})
+  return { ok: true, customer: rows[0].customer, expires_at: newExpires }
+}
+
+// Запрос к Aitole своим ключом. Вебхуку мы не верим на слово: в документации не
+// назван заголовок с таймстампом для проверки подписи и не раскрыта схема data,
+// поэтому вебхук служит только будильником, а факт оплаты подтверждается здесь.
+async function aitole(env, path, init) {
+  const key = (env.AITOLE_API_KEY || '').trim()
+  if (!key) return { error: 'Не задан секрет AITOLE_API_KEY', status: 500 }
+  const r = await fetch(`https://api.aitole.kz${path}`, {
+    ...init,
+    headers: { 'X-API-Key': key, 'content-type': 'application/json', ...(init?.headers || {}) },
+    signal: AbortSignal.timeout(SB_TIMEOUT_MS),
+  })
+  const body = await r.json().catch(() => ({}))
+  if (!r.ok) return { error: body?.error?.message || `Aitole: ${r.status}`, status: r.status === 401 || r.status === 403 ? 500 : 502 }
+  return { ok: true, data: body }
+}
+
 async function sqlHint(res, cols) {
   const text = await res.text()
   const missing = cols.find(c => text.includes(`'${c}'`) || text.includes(`"${c}"`))
@@ -786,6 +846,71 @@ export default {
       }
     }
 
+    // Вебхук Aitole: «с операцией что-то произошло». Пароля панели тут нет —
+    // запрос приходит не из браузера. Подпись X-Webhook-Signature НЕ проверяем:
+    // в документации не назван заголовок с таймстампом, из которого строится
+    // HMAC, а писать проверку на догадке — хуже, чем не писать. Поэтому вебхуку
+    // верим только как будильнику: статус операции подтверждаем сами запросом
+    // в Aitole своим ключом, и продлеваем лицензию по ЕГО ответу.
+    if (pathname === '/api/aitole/hook') {
+      if (request.method !== 'POST') return json({ error: 'POST only' }, 405)
+      const db2 = sb(env)
+      if (!db2.url) return json({ error: 'Supabase не настроен' }, 500)
+
+      const ev = await request.json().catch(() => null)
+      if (!ev || typeof ev !== 'object') return json({ ok: true, skipped: 'не JSON' })
+
+      // Схема data в документации не раскрыта — достаём id операции осторожно.
+      const d = ev.data || {}
+      const opId = d.id || d.operation_id || d.operationId || null
+
+      // Сессия Kaspi умирает, если под тем же номером зайти в приложение. Без
+      // этой отметки счета просто перестали бы оплачиваться молча.
+      if (ev.type === 'connection.session_expired' || ev.type === 'connection.restored') {
+        // В push_state — он уже есть и ровно для такого состояния панели
+        // (там же лежат ключи VAPID). Новой таблицы ради одной строки не надо.
+        await sbFetch(`${db2.url}/rest/v1/push_state`, {
+          method: 'POST', headers: { ...db2.headers, Prefer: 'resolution=merge-duplicates' },
+          body: JSON.stringify({ key: 'aitole_connection',
+            value: { type: ev.type, at: ev.created_at || new Date().toISOString() } })
+        }).catch(() => {})
+        return json({ ok: true, noted: ev.type })
+      }
+
+      if (!opId) return json({ ok: true, skipped: 'нет id операции' })
+
+      const chk = await aitole(env, `/v2/operations/${encodeURIComponent(opId)}`)
+      // 502 — Aitole временно недоступен: отдаём ошибку, чтобы он повторил
+      // доставку по своему расписанию (1 мин, 5 мин, 30 мин, 2 ч, 6 ч, 24 ч).
+      if (chk.error) return json({ error: chk.error }, chk.status || 502)
+      if (chk.data?.status !== 'paid') return json({ ok: true, status: chk.data?.status || 'unknown' })
+
+      // Захват строки: pending → processing. Если вернулось пусто, значит этот
+      // платёж уже обработан (повтор вебхука) — выходим с ok, иначе продлим дважды.
+      const claim = await sbFetch(
+        `${db2.url}/rest/v1/license_payments?operation_id=eq.${encodeURIComponent(opId)}&status=eq.pending`, {
+        method: 'PATCH',
+        headers: { ...db2.headers, Prefer: 'return=representation' },
+        body: JSON.stringify({ status: 'processing' })
+      })
+      if (!claim.ok) return json({ error: `Supabase: ${claim.status}` }, 502)
+      const claimed = await claim.json().catch(() => [])
+      if (!claimed.length) return json({ ok: true, already: true })
+
+      const row = claimed[0]
+      const r = await applyRenewal(db2, row.license_id, row.days, row.amount, String(opId))
+      if (r.error) {
+        // Строка остаётся processing: деньги пришли, подписка не продлена.
+        // Это видно в панели как «разберитесь», а не теряется молча.
+        return json({ error: r.error }, 502)
+      }
+      await sbFetch(`${db2.url}/rest/v1/license_payments?operation_id=eq.${encodeURIComponent(opId)}`, {
+        method: 'PATCH', headers: { ...db2.headers, Prefer: 'return=minimal' },
+        body: JSON.stringify({ status: 'paid', paid_at: new Date().toISOString() })
+      }).catch(() => {})
+      return json({ ok: true, renewed_to: r.expires_at })
+    }
+
     // ponytail: простое сравнение пароля; при реальном риске перебора — Cloudflare Access
     if (!env.PANEL_PASSWORD || request.headers.get('x-panel-key') !== env.PANEL_PASSWORD) {
       return json({ error: 'Неверный пароль' }, 401)
@@ -915,49 +1040,49 @@ export default {
       }
 
       if (pathname === '/api/renew') {
+        // Ручное продление: владелец сам убедился, что деньги пришли. Остаётся
+        // как запасной путь — Aitole может быть не подключён или не ответить.
         const { id, days, amount } = await request.json()
-        const n = Number(days)
+        const r = await applyRenewal(db, id, days, amount, null)
+        return r.error ? json({ error: r.error }, r.status || 400) : json(r)
+      }
+
+      // Счёт клиенту на продление. Раньше панель отдавала текст с номером
+      // Kaspi, подписка продлевалась СРАЗУ, а поступление денег нигде не
+      // сверялось. Теперь порядок правильный: счёт → оплата → продление
+      // вебхуком. Запись в license_payments — это «ждём оплату», а не «продлено».
+      if (pathname === '/api/invoice') {
+        const { id, days, amount, phone } = await request.json()
+        const n = Number(days), sum = Math.round(Number(amount))
         if (!id || !Number.isFinite(n) || n <= 0) return json({ error: 'Нужны id и положительное число дней' }, 400)
+        if (!Number.isFinite(sum) || sum <= 0) return json({ error: 'Нужна сумма счёта' }, 400)
 
-        const getRes = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}&select=customer,expires_at`, { headers: db.headers })
-        if (!getRes.ok) return json({ error: `Supabase: ${getRes.status}` }, 502)
-        const rows = await getRes.json()
-        if (!rows.length) return json({ error: 'Лицензия не найдена' }, 404)
+        // Idempotency-Key обязателен у Aitole: повтор той же кнопки не должен
+        // плодить второй счёт. Ключ уникален на аккаунт, поэтому с префиксом.
+        const idem = `imag-${id}-${n}-${sum}-${Math.floor(Date.now() / 60000)}`
+        const tel = String(phone || '').trim()
+        const res = tel
+          ? await aitole(env, '/v2/invoices', { method: 'POST', headers: { 'Idempotency-Key': idem },
+              body: JSON.stringify({ amount: sum, phone: tel, comment: `iMag: продление на ${n} дн.` }) })
+          : await aitole(env, '/v2/qr', { method: 'POST', headers: { 'Idempotency-Key': idem },
+              body: JSON.stringify({ amount: sum, comment: `iMag: продление на ${n} дн.` }) })
+        if (res.error) return json({ error: res.error }, res.status || 502)
 
-        // Та же логика, что в license-renew.mjs: продлеваем от сегодня или от
-        // текущего срока — что позже; заодно снимаем revoked (оплатил = вернули).
-        const now = new Date()
-        const cur = rows[0].expires_at ? new Date(rows[0].expires_at) : null
-        const base = cur && cur > now ? cur : now
-        const newExpires = new Date(base.getTime() + n * 86400000).toISOString()
+        const op = res.data || {}
+        if (!op.id) return json({ error: 'Aitole не вернул id операции' }, 502)
 
-        const patch = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
-          method: 'PATCH',
-          headers: { ...db.headers, Prefer: 'return=minimal' },
-          body: JSON.stringify({ expires_at: newExpires, revoked: false })
-        })
-        if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
-
-        // История продлений: раньше от платежа не оставалось ничего, кроме
-        // сдвинутой даты. На вопрос «сколько он уже заплатил и как давно с
-        // нами» ответить было нечем — а это первое, что смотрят перед скидкой
-        // или перед тем, как отпускать клиента.
-        //
-        // Запись — не критичная часть продления: если таблицы ещё нет, подписка
-        // всё равно продлена, и валить операцию из-за журнала нельзя.
-        const paid = Number(amount)
-        await sbFetch(`${db.url}/rest/v1/license_renewals`, {
+        const ins = await sbFetch(`${db.url}/rest/v1/license_payments`, {
           method: 'POST',
           headers: { ...db.headers, Prefer: 'return=minimal' },
           body: JSON.stringify({
-            license_id: String(id), days: n,
-            amount: Number.isFinite(paid) && paid > 0 ? Math.round(paid) : null,
-            from_expires: rows[0].expires_at || null, to_expires: newExpires,
+            license_id: String(id), operation_id: String(op.id),
+            days: n, amount: sum, status: 'pending',
           })
-        }).catch(() => {})
-        return json({ ok: true, customer: rows[0].customer, expires_at: newExpires })
-      }
+        })
+        if (!ins.ok) return json({ error: await sqlHint(ins, ['license_payments']) }, 502)
 
+        return json({ ok: true, operation_id: op.id, link: op.qr_token || null, expires_at: op.expires_at || null })
+      }
 
       if (pathname === '/api/issue') {
         // Новая лицензия под активацию по коду: строка в таблице, id = код
