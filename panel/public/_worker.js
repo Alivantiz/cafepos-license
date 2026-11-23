@@ -932,7 +932,10 @@ export default {
         // ли ответ на запрос.
         const LIC_OPT = ['contact', 'hidden', 'price', 'snoozed_until', 'city',
           'last_sos', 'last_sos_at', 'log_requested_at', 'last_log_at',
-          'cmd', 'cmd_requested_at', 'cmd_done_at', 'cmd_result']
+          'cmd', 'cmd_requested_at', 'cmd_done_at', 'cmd_result',
+          // Точки и восстановление облачной копии (24.11.2026) — в конце
+          // списка: если SQL ещё не выполнен, отступ выбросит только их
+          'point_id', 'restore_until']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
@@ -945,6 +948,18 @@ export default {
           // сложить из них «получено за 30 дней» — свои деньги, а не чужие.
           sbFetch(`${db.url}/rest/v1/license_renewals?select=license_id,days,amount,to_expires,created_at&order=created_at.desc&limit=500`, { headers: db.headers }),
         ])
+        // Точки и отметка «ключ восстановления сдан» — без самих ключей: их
+        // панель достаёт по одному кнопкой «Показать ключ», с записью в журнал.
+        // Таблиц может не быть (SQL не выполнен) — тогда просто пусто.
+        const [pointsR, keysR] = await Promise.all([
+          sbFetch(`${db.url}/rest/v1/points?select=id,name,created_at&order=name.asc`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/venue_keys?select=license_id,updated_at&limit=5000`, { headers: db.headers }),
+        ])
+        const points = pointsR.ok ? await pointsR.json() : []
+        const keyAt = new Map()
+        for (const k of (keysR.ok ? await keysR.json() : [])) {
+          if (!keyAt.has(k.license_id) || keyAt.get(k.license_id) < k.updated_at) keyAt.set(k.license_id, k.updated_at)
+        }
         // Пока ALTER-ы не выполнили, запрос с этими колонками падает целиком — и
         // панель осталась бы вообще без клиентов. Отступаем по одной колонке с
         // конца, а не сразу к базе: иначе непринятая price уносила бы и телефон,
@@ -1005,7 +1020,7 @@ export default {
           }
         }
         const licenses = (await licR.json()).map(r =>
-          ({ ...decorate(r, r.id, 'license'), renewals: byRenewal.get(r.id) || [] }))
+          ({ ...decorate(r, r.id, 'license'), renewals: byRenewal.get(r.id) || [], key_at: keyAt.get(r.id) ?? null }))
         // Один ПК — одна карточка. После активации касса перестаёт слать /trial
         // (license.service.ts: с лицензией работает /status), поэтому строка в
         // trials навсегда застывает в статусе «пробный» и клиент двоился — и в
@@ -1019,7 +1034,7 @@ export default {
         const trials = (await trialR.json())
           .filter(r => !licensedMachines.has(String(r.machine_id || '').trim()))
           .map(r => decorate(r, r.machine_id, 'trial'))
-        return json({ licenses, trials, missingCols, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
+        return json({ licenses, trials, points, missingCols, kaspiPhone: (env.OWNER_KASPI_PHONE || '').trim() })
       }
 
       if (pathname === '/api/renew') {
@@ -1066,6 +1081,97 @@ export default {
         return json({ ok: true, customer: rows[0].customer, expires_at: newExpires })
       }
 
+
+      // --- Точки: несколько касс одного магазина — одно продление ------------
+      // Точка — только группа: у каждой кассы своя лицензия, привязка и цена.
+      // Продление точки сдвигает срок у всех её касс до ОДНОЙ даты, и каждая
+      // касса подтягивает его обычной проверкой /status — кассы про точки
+      // ничего не знают, обновлять их ради этого не нужно.
+      if (pathname === '/api/points/save') {
+        const { id, name } = await request.json()
+        const nm = String(name ?? '').trim().slice(0, 80)
+        if (!nm) return json({ error: 'Нужно название точки' }, 400)
+        const r = id
+          ? await sbFetch(`${db.url}/rest/v1/points?id=eq.${encodeURIComponent(id)}`, {
+              method: 'PATCH', headers: { ...db.headers, Prefer: 'return=representation' }, body: JSON.stringify({ name: nm }) })
+          : await sbFetch(`${db.url}/rest/v1/points`, {
+              method: 'POST', headers: { ...db.headers, Prefer: 'return=representation' }, body: JSON.stringify({ name: nm }) })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        const rows = await r.json()
+        return json({ ok: true, point: rows[0] ?? null })
+      }
+
+      if (pathname === '/api/points/assign') {
+        const { license_id, point_id } = await request.json()
+        if (!license_id) return json({ error: 'Нужен id лицензии' }, 400)
+        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(license_id)}`, {
+          method: 'PATCH', headers: { ...db.headers, Prefer: 'return=minimal' }, body: JSON.stringify({ point_id: point_id || null }) })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        return json({ ok: true })
+      }
+
+      if (pathname === '/api/points/renew') {
+        const { point_id, days, amount } = await request.json()
+        const n = Number(days)
+        if (!point_id || !Number.isFinite(n) || n <= 0) return json({ error: 'Нужны точка и положительное число дней' }, 400)
+        const getRes = await sbFetch(`${db.url}/rest/v1/licenses?point_id=eq.${encodeURIComponent(point_id)}&select=id,customer,expires_at&order=created_at.asc`, { headers: db.headers })
+        if (!getRes.ok) return json({ error: `Supabase: ${getRes.status}` }, 502)
+        const lics = await getRes.json()
+        if (!lics.length) return json({ error: 'В точке нет касс' }, 404)
+        // От самой поздней даты точки (или от сегодня): кассы выравниваются,
+        // и ни одна не теряет уже оплаченные дни
+        const now = Date.now()
+        const latest = Math.max(now, ...lics.map(l => l.expires_at ? new Date(l.expires_at).getTime() : 0))
+        const newExpires = new Date(latest + n * 86400000).toISOString()
+        const patch = await sbFetch(`${db.url}/rest/v1/licenses?point_id=eq.${encodeURIComponent(point_id)}`, {
+          method: 'PATCH', headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({ expires_at: newExpires, revoked: false }) })
+        if (!patch.ok) return json({ error: `Supabase: ${patch.status} ${await patch.text()}` }, 502)
+        // История — у каждой кассы, а сумма один раз (на первой): иначе
+        // «получено за 30 дней» в сводке посчитало бы оплату точки дважды
+        const paid = Number(amount)
+        await sbFetch(`${db.url}/rest/v1/license_renewals`, {
+          method: 'POST', headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify(lics.map((l, i) => ({
+            license_id: String(l.id), days: Math.max(1, Math.ceil((new Date(newExpires).getTime() - Math.max(now, l.expires_at ? new Date(l.expires_at).getTime() : 0)) / 86400000)),
+            amount: i === 0 && Number.isFinite(paid) && paid > 0 ? Math.round(paid) : null,
+            from_expires: l.expires_at || null, to_expires: newExpires,
+          }))),
+        }).catch(() => {})
+        return json({ ok: true, expires_at: newExpires, count: lics.length, customers: lics.map(l => l.customer) })
+      }
+
+      // --- Ключ восстановления облачной копии ---------------------------------
+      // Касса сдаёт ключ сама (функция venue-key). Здесь — разрешить кассе
+      // забрать его после переустановки и посмотреть глазами. Каждое действие
+      // пишется в key_audit: ключ открывает базу клиента.
+      if (pathname === '/api/keys/allow') {
+        const { license_id, hours } = await request.json()
+        if (!license_id) return json({ error: 'Нужен id лицензии' }, 400)
+        const h = Math.min(72, Math.max(1, Number(hours) || 24))
+        const until = new Date(Date.now() + h * 3600000).toISOString()
+        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(license_id)}`, {
+          method: 'PATCH', headers: { ...db.headers, Prefer: 'return=minimal' }, body: JSON.stringify({ restore_until: until }) })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        await sbFetch(`${db.url}/rest/v1/key_audit`, {
+          method: 'POST', headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({ license_id, action: 'allow', note: `на ${h} ч` }) }).catch(() => {})
+        return json({ ok: true, restore_until: until })
+      }
+
+      if (pathname === '/api/keys/reveal') {
+        const { license_id } = await request.json()
+        if (!license_id) return json({ error: 'Нужен id лицензии' }, 400)
+        const [kr, ar] = await Promise.all([
+          sbFetch(`${db.url}/rest/v1/venue_keys?license_id=eq.${encodeURIComponent(license_id)}&select=venue_id,venue_key,app_version,updated_at&order=updated_at.desc`, { headers: db.headers }),
+          sbFetch(`${db.url}/rest/v1/key_audit?license_id=eq.${encodeURIComponent(license_id)}&select=action,note,created_at&order=created_at.desc&limit=20`, { headers: db.headers }),
+        ])
+        if (!kr.ok) return json({ error: `Supabase: ${kr.status} ${await kr.text()}` }, 502)
+        await sbFetch(`${db.url}/rest/v1/key_audit`, {
+          method: 'POST', headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({ license_id, action: 'reveal' }) }).catch(() => {})
+        return json({ ok: true, keys: await kr.json(), audit: ar.ok ? await ar.json() : [] })
+      }
 
       if (pathname === '/api/issue') {
         // Новая лицензия под активацию по коду: строка в таблице, id = код

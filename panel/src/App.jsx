@@ -339,6 +339,7 @@ function Panel() {
 
         {data && current && (
           <ClientCard c={current} kaspiPhone={data.kaspiPhone} cities={cities} missingCols={data.missingCols}
+            points={data.points || []} licenses={data.licenses || []}
             onBack={() => setOpenClient(null)}
             onChanged={reload}
             onIssueFor={(t) => setIssue({ machine_id: t.machine_id, customer: t.shop || '' })} />

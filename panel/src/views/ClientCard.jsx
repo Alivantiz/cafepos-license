@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { api, useApi, fmtDate, daysLeft, daysAgo, money, agoText, agoFine } from '../api'
 import { Tile, Chart, Tag, Modal, toast, confirmDialog, calendar, CopyBtn } from '../ui'
 
-export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor, missingCols }) {
+export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, onIssueFor, missingCols, points = [], licenses = [] }) {
   const [renew, setRenew] = useState(false)
   const [edit, setEdit] = useState(false)
   const [snooze, setSnooze] = useState(false)
@@ -212,6 +212,10 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
         </div>
 
         {!trial && <History rows={c.renewals} />}
+
+        {!trial && <PointBlock c={c} points={points} licenses={licenses} kaspiPhone={kaspiPhone} onChanged={onChanged} />}
+
+        {!trial && <RestoreBlock c={c} onChanged={onChanged} />}
 
         {!trial && (
           <div className="card">
@@ -563,5 +567,185 @@ function RenewModal({ c, kaspiPhone, onClose, onDone }) {
         <button className="btn pri" disabled={busy || n <= 0} onClick={go}>{busy ? 'Секунду…' : 'Продлить'}</button>
       </div>
     </Modal>
+  )
+}
+
+// Точка — несколько касс одного магазина, которые продлеваются одной кнопкой.
+// У каждой кассы остаются своя лицензия и своя цена; продление точки
+// выравнивает их сроки до одной даты. Кассы про точку не знают: новый срок
+// каждая подтягивает обычной проверкой лицензии.
+function PointBlock({ c, points, licenses, kaspiPhone, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const [pick, setPick] = useState('')
+  const [newName, setNewName] = useState('')
+  const [renew, setRenew] = useState(false)
+  const point = points.find(p => p.id === c.point_id) || null
+  const members = point ? licenses.filter(l => l.point_id === point.id) : []
+
+  const assign = async (pointId) => {
+    setBusy(true)
+    try { await api('points/assign', { license_id: c.id, point_id: pointId }); toast.ok(pointId ? 'Добавлена в точку' : 'Убрана из точки'); onChanged() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+  const create = async () => {
+    setBusy(true)
+    try {
+      const r = await api('points/save', { name: newName })
+      await api('points/assign', { license_id: c.id, point_id: r.point.id })
+      toast.ok(`Точка «${r.point.name}» создана`); setNewName(''); onChanged()
+    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="card">
+      <b>Точка</b>
+      {point ? (
+        <>
+          <div style={{ margin: '10px 0 6px' }}>{point.name} · касс: {members.length}</div>
+          <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '5px 12px' }}>
+            {members.map(m => (
+              <div key={m.id} style={{ display: 'contents' }}>
+                <dt>{m.customer}</dt>
+                <dd style={{ margin: 0 }} className="muted2">{m.expires_at ? `до ${fmtDate(m.expires_at)}` : 'бессрочно'}</dd>
+                <dd style={{ margin: 0 }}>{m.price ? money(m.price) : <span className="muted2">—</span>}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="row" style={{ marginTop: 14 }}>
+            <button className="btn pri" disabled={busy} onClick={() => setRenew(true)}>Продлить точку</button>
+            <button className="btn ghost" disabled={busy} onClick={() => assign(null)}>Убрать из точки</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="muted2" style={{ margin: '10px 0' }}>Кассы одного магазина в точке продлеваются одной кнопкой, до одной даты.</div>
+          {points.length > 0 && (
+            <div className="row">
+              <select value={pick} onChange={e => setPick(e.target.value)}>
+                <option value="">Выберите точку…</option>
+                {points.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button className="btn" disabled={busy || !pick} onClick={() => assign(pick)}>Добавить</button>
+            </div>
+          )}
+          <div className="row" style={{ marginTop: 8 }}>
+            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Новая точка, напр. «Магазин Улжан»" />
+            <button className="btn" disabled={busy || !newName.trim()} onClick={create}>Создать</button>
+          </div>
+        </>
+      )}
+      {renew && point && <PointRenewModal point={point} members={members} kaspiPhone={kaspiPhone}
+        onClose={() => setRenew(false)} onDone={onChanged} />}
+    </div>
+  )
+}
+
+function PointRenewModal({ point, members, kaspiPhone, onClose, onDone }) {
+  const [days, setDays] = useState(30)
+  // Сумма — цены всех касс точки: в 9 случаях из 10 платят ровно её
+  const sum = members.reduce((a, m) => a + (Number(m.price) || 0), 0)
+  const [amount, setAmount] = useState(sum || '')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const n = Number(days) || 0
+  const latest = Math.max(Date.now(), ...members.map(m => m.expires_at ? new Date(m.expires_at).getTime() : 0))
+
+  const go = async () => {
+    setBusy(true)
+    try {
+      const r = await api('points/renew', { point_id: point.id, days: n, amount: amount === '' ? null : Number(amount) })
+      setMsg(`Здравствуйте! Подписка iMag на ${r.count} ${r.count === 1 ? 'кассу' : 'кассы'} продлена до ${fmtDate(r.expires_at)}.`
+        + (kaspiPhone ? ` Оплата на Kaspi: ${kaspiPhone}.` : ''))
+      toast.ok(`Точка продлена до ${fmtDate(r.expires_at)}`)
+      onDone()
+    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal title="Продлить точку" onClose={onClose} keepOpen>
+      <div className="muted2">{point.name}: {members.map(m => m.customer).join(', ')}</div>
+      <div className="row">
+        <input type="number" min="1" value={days} onChange={e => setDays(e.target.value)} style={{ maxWidth: 110 }} />
+        {[30, 90, 365].map(d => (
+          <button key={d} className="btn sm" onClick={() => setDays(d)}>{d === 365 ? '1 год' : d + ' дн'}</button>
+        ))}
+      </div>
+      <label>Сумма за всю точку, ₸
+        <input type="number" min="0" value={amount} onChange={e => setAmount(e.target.value)} placeholder="необязательно" />
+      </label>
+      <div className="muted2">
+        {n > 0 ? `Все кассы точки — до ${fmtDate(new Date(latest + n * 86400000))}` : 'Укажите число дней'}
+      </div>
+      {msg && <>
+        <textarea readOnly rows={3} value={msg} />
+        <button className="btn" onClick={() => { navigator.clipboard.writeText(msg); toast.ok('Скопировано') }}>
+          Скопировать текст клиенту
+        </button>
+      </>}
+      <div className="row">
+        <button className="btn ghost spacer" onClick={onClose}>Закрыть</button>
+        <button className="btn pri" disabled={busy || n <= 0} onClick={go}>{busy ? 'Секунду…' : 'Продлить'}</button>
+      </div>
+    </Modal>
+  )
+}
+
+// Восстановление облачной копии после поломки: ключ, которым касса шифрует
+// копию, она сдаёт сама. Клиент поставил программу заново и активировал ту
+// же лицензию — владелец разрешает здесь восстановление, касса забирает
+// ключ и свою копию (Настройки → Бэкапы → «Восстановить через разработчика»).
+const AUDIT_RU = { allow: 'разрешено восстановление', reveal: 'просмотр ключа', fetch: 'касса забрала ключ', deposit_new: 'касса сдала ключ', deposit_conflict: 'пришёл другой ключ — оставлен прежний' }
+function RestoreBlock({ c, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const [shown, setShown] = useState(null)
+  const allowed = c.restore_until && new Date(c.restore_until).getTime() > Date.now()
+
+  const allow = async () => {
+    if (!await confirmDialog({
+      title: 'Разрешить восстановление',
+      message: `Касса с лицензией «${c.customer}» в течение суток сможет забрать ключ и восстановить свою облачную копию. Разрешайте, только если клиент сам попросил.`,
+      confirmText: 'Разрешить',
+    })) return
+    setBusy(true)
+    try { await api('keys/allow', { license_id: c.id, hours: 24 }); toast.ok('Разрешено на 24 часа'); onChanged() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+  const reveal = async () => {
+    setBusy(true)
+    try { setShown(await api('keys/reveal', { license_id: c.id })) }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="card">
+      <b>Восстановление облачной копии</b>
+      <div style={{ margin: '10px 0' }}>
+        {c.key_at
+          ? <>Ключ сдан · {fmtDate(c.key_at)}</>
+          : <span className="muted2">Касса ещё не сдала ключ — сдаст сама после обновления, при связи с интернетом.</span>}
+      </div>
+      {allowed && <div style={{ marginBottom: 10 }}><Tag tone="warn">разрешено до {new Date(c.restore_until).toLocaleString('ru-RU')}</Tag></div>}
+      <div className="row">
+        <button className="btn" disabled={busy || !c.key_at} onClick={allow}>Разрешить восстановление (24 ч)</button>
+        <button className="btn ghost" disabled={busy || !c.key_at} onClick={reveal}>Показать ключ</button>
+      </div>
+      {shown && (
+        <Modal title="Ключ восстановления" onClose={() => setShown(null)}>
+          <div className="muted2">Просмотр записан в журнал. Ключ открывает облачную копию базы клиента — никому не пересылайте.</div>
+          {shown.keys.map(k => (
+            <div key={k.venue_id} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, wordBreak: 'break-all', margin: '8px 0' }}>
+              заведение {k.venue_id}<br />ключ {k.venue_key} <CopyBtn text={k.venue_key} title="Скопировать ключ" />
+              <div className="muted2">сдан {fmtDate(k.updated_at)}{k.app_version ? ` · v${k.app_version}` : ''}</div>
+            </div>
+          ))}
+          {shown.audit.length > 0 && <>
+            <b>Журнал</b>
+            {shown.audit.map((a, i) => (
+              <div key={i} className="muted2">{new Date(a.created_at).toLocaleString('ru-RU')} — {AUDIT_RU[a.action] ?? a.action}{a.note ? ` (${a.note})` : ''}</div>
+            ))}
+          </>}
+        </Modal>
+      )}
+    </div>
   )
 }
