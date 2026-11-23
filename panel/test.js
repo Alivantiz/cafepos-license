@@ -179,6 +179,71 @@ async function testServerRoutes() {
   const renewNoDays = await authed('/api/renew', { id: 'x' })
   assert.strictEqual(renewNoDays.status, 400, 'продление без числа дней — отказ')
 
+  // Точка: одна кнопка продлевает все кассы магазина до ОДНОЙ даты — от самой
+  // поздней из них, чтобы ни одна не потеряла оплаченные дни. Сумма в истории
+  // одна: иначе сводка посчитала бы оплату точки дважды.
+  {
+    const real = global.fetch
+    const later = new Date(Date.now() + 40 * 86400000).toISOString()
+    const sooner = new Date(Date.now() + 10 * 86400000).toISOString()
+    let patched = null, journal = null
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.includes('license_renewals')) { journal = JSON.parse(init.body); return new Response(null, { status: 201 }) }
+      if (init?.method === 'PATCH') { patched = { url: u, body: JSON.parse(init.body) }; return new Response(null, { status: 204 }) }
+      return new Response(JSON.stringify([
+        { id: 'k1', customer: 'Улжан 1', expires_at: later },
+        { id: 'k2', customer: 'Улжан 2', expires_at: sooner },
+      ]), { status: 200 })
+    }
+    const r = await authed('/api/points/renew', { point_id: 'p1', days: 30, amount: 10000 })
+    global.fetch = real
+    assert.strictEqual(r.status, 200)
+    const out = await r.json()
+    const expect = new Date(new Date(later).getTime() + 30 * 86400000).toISOString()
+    assert.strictEqual(out.expires_at, expect, 'продление от самой поздней даты точки')
+    assert.strictEqual(out.count, 2)
+    assert.ok(patched.url.includes('point_id=eq.p1'), 'сдвигаются все кассы точки одним запросом')
+    assert.strictEqual(patched.body.expires_at, expect)
+    assert.strictEqual(journal.length, 2, 'в истории — у каждой кассы')
+    assert.deepStrictEqual(journal.map(j => j.amount), [10000, null], 'сумма — один раз')
+    assert.ok(journal[1].days >= 59, 'отстававшая касса дотянута до общей даты')
+  }
+  {
+    const real = global.fetch
+    global.fetch = async () => new Response('[]', { status: 200 })
+    const empty = await authed('/api/points/renew', { point_id: 'p1', days: 30 })
+    global.fetch = real
+    assert.strictEqual(empty.status, 404, 'точка без касс — отказ, а не тихий успех')
+  }
+  assert.strictEqual((await authed('/api/points/renew', { point_id: 'p1' })).status, 400, 'без дней — отказ')
+  assert.strictEqual((await authed('/api/points/save', { name: '  ' })).status, 400, 'точка без названия — отказ')
+
+  // Восстановление облачной копии: разрешение ограничено по времени (не
+  // дольше 3 суток), и каждое действие с ключом пишется в журнал.
+  {
+    const real = global.fetch
+    const writes = []
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (init?.method === 'PATCH' || init?.method === 'POST') writes.push({ u, body: JSON.parse(init.body) })
+      if (u.includes('venue_keys')) return new Response(JSON.stringify([{ venue_id: 'XUTD', venue_key: 'k'.repeat(20), updated_at: '2026-11-24' }]), { status: 200 })
+      return new Response(init?.method ? null : '[]', { status: init?.method ? 204 : 200 })
+    }
+    const a = await authed('/api/keys/allow', { license_id: 'L1', hours: 500 })
+    assert.strictEqual(a.status, 200)
+    const until = new Date((await a.json()).restore_until).getTime()
+    assert.ok(until - Date.now() <= 72 * 3600000 + 5000, 'не дольше трёх суток')
+    assert.ok(writes.some(w => w.u.includes('licenses?id=eq.L1') && w.body.restore_until), 'срок разрешения записан у лицензии')
+    assert.ok(writes.some(w => w.u.includes('key_audit') && w.body.action === 'allow'), 'разрешение — в журнале')
+    const rv = await authed('/api/keys/reveal', { license_id: 'L1' })
+    const body = await rv.json()
+    global.fetch = real
+    assert.strictEqual(body.keys[0].venue_id, 'XUTD')
+    assert.ok(writes.some(w => w.u.includes('key_audit') && w.body.action === 'reveal'), 'просмотр ключа — в журнале')
+  }
+  assert.strictEqual((await authed('/api/keys/allow', {})).status, 400, 'без лицензии — отказ')
+
   // Колонки contact/hidden добавляются отдельными ALTER. Пока их нет, Supabase
   // отвечает «PGRST204 column ... does not exist» — владельцу это не говорит
   // ничего. Подменяем fetch и проверяем, что наружу уходит инструкция.
