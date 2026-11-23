@@ -51,6 +51,24 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
     } catch (e) { toast.err(e.message) } finally { setBusy(false) }
   }
 
+  // Смена компьютера: лицензия отвязывается от старого железа, клиент вводит
+  // тот же код на новом. Срок, цена, точка, история и ключ восстановления
+  // остаются — раньше выдавали новую лицензию и всё это теряли.
+  const unbind = async () => {
+    if (!await confirmDialog({
+      title: 'Перенести на новый компьютер',
+      message: `Лицензия «${c.customer}» отвяжется от текущего компьютера. Клиент вводит тот же код активации на новом — и касса заработает там. Старый компьютер, если он жив, перестанет работать, как только новый активируется.`,
+      confirmText: 'Отвязать',
+    })) return
+    setBusy(true)
+    try {
+      await api('license/unbind', { id: c.id })
+      navigator.clipboard?.writeText(c.subject).catch(() => {})
+      toast.ok('Отвязана. Код активации скопирован — отправьте клиенту')
+      onChanged()
+    } catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
+
   // Уход с карточки терял набранную заметку молча. Предупреждаем.
   const dirty = notes !== (c.notes || '')
   const leave = async () => {
@@ -207,6 +225,7 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
               <button className="btn ghost" disabled={busy} onClick={() => setHidden(!c.hidden)}>
                 {c.hidden ? 'Вернуть в список' : 'Скрыть'}
               </button>
+              {c.machine_id && <button className="btn ghost" disabled={busy} onClick={unbind}>Перенести на новый компьютер</button>}
             </div>
           )}
         </div>
@@ -215,7 +234,7 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
 
         {!trial && <PointBlock c={c} points={points} licenses={licenses} kaspiPhone={kaspiPhone} onChanged={onChanged} />}
 
-        {!trial && <RestoreBlock c={c} onChanged={onChanged} />}
+        {!trial && <RestoreBlock c={c} licenses={licenses} onChanged={onChanged} />}
 
         {!trial && (
           <div className="card">
@@ -694,10 +713,25 @@ function PointRenewModal({ point, members, kaspiPhone, onClose, onDone }) {
 // копию, она сдаёт сама. Клиент поставил программу заново и активировал ту
 // же лицензию — владелец разрешает здесь восстановление, касса забирает
 // ключ и свою копию (Настройки → Бэкапы → «Восстановить через разработчика»).
-const AUDIT_RU = { allow: 'разрешено восстановление', reveal: 'просмотр ключа', fetch: 'касса забрала ключ', deposit_new: 'касса сдала ключ', deposit_conflict: 'пришёл другой ключ — оставлен прежний' }
-function RestoreBlock({ c, onChanged }) {
+const AUDIT_RU = { allow: 'разрешено восстановление', reveal: 'просмотр ключа', fetch: 'касса забрала ключ', deposit_new: 'касса сдала ключ', deposit_conflict: 'пришёл другой ключ — оставлен прежний',
+  unbind: 'отвязана от компьютера', keys_copied_in: 'ключи перенесены сюда', keys_copied_out: 'ключи перенесены на другую лицензию' }
+function RestoreBlock({ c, licenses = [], onChanged }) {
   const [busy, setBusy] = useState(false)
   const [shown, setShown] = useState(null)
+  const [from, setFrom] = useState('')
+  // Откуда можно взять ключи: другие лицензии, у которых ключ сдан
+  const donors = licenses.filter(l => l.id !== c.id && l.key_at)
+  const copyKeys = async () => {
+    const d = donors.find(l => l.id === from)
+    if (!d || !await confirmDialog({
+      title: 'Перенести ключи',
+      message: `Ключи восстановления «${d.customer}» скопируются лицензии «${c.customer}». Делайте так, только если это одна и та же касса на новом компьютере.`,
+      confirmText: 'Перенести',
+    })) return
+    setBusy(true)
+    try { await api('keys/copy', { from_id: d.id, to_id: c.id }); toast.ok('Ключи перенесены'); setFrom(''); onChanged() }
+    catch (e) { toast.err(e.message) } finally { setBusy(false) }
+  }
   const allowed = c.restore_until && new Date(c.restore_until).getTime() > Date.now()
 
   const allow = async () => {
@@ -729,6 +763,17 @@ function RestoreBlock({ c, onChanged }) {
         <button className="btn" disabled={busy || !c.key_at} onClick={allow}>Разрешить восстановление (24 ч)</button>
         <button className="btn ghost" disabled={busy || !c.key_at} onClick={reveal}>Показать ключ</button>
       </div>
+      {/* Новую лицензию уже выдали по заявке с нового компьютера — ключ лежит
+          у старой. Без переноса восстановление ответило бы «ключ не сдан». */}
+      {donors.length > 0 && (
+        <div className="row" style={{ marginTop: 10 }}>
+          <select value={from} onChange={e => setFrom(e.target.value)}>
+            <option value="">Ключи с другой лицензии…</option>
+            {donors.map(l => <option key={l.id} value={l.id}>{l.customer}</option>)}
+          </select>
+          <button className="btn ghost" disabled={busy || !from} onClick={copyKeys}>Перенести ключи</button>
+        </div>
+      )}
       {shown && (
         <Modal title="Ключ восстановления" onClose={() => setShown(null)}>
           <div className="muted2">Просмотр записан в журнал. Ключ открывает облачную копию базы клиента — никому не пересылайте.</div>
