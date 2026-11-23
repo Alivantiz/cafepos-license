@@ -424,7 +424,7 @@ async function testViewsRender() {
   const { default: App } = await import(pathToFileURL(out).href)
   fs.unlinkSync(out)
 
-  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'aliases', 'invoices']) {
+  for (const view of ['summary', 'clients', 'trials', 'requests', 'catalog', 'aliases', 'invoices', 'pay']) {
     globalThis.location = { hash: '#/' + view, href: 'https://x.test/#/' + view }
     const html = renderToString(React.createElement(App))
     assert.ok(html.includes('iMag'), `вкладка «${view}» отрисовалась`)
@@ -1394,6 +1394,106 @@ async function testPushCheckRoute() {
 }
 
 
+// ── Реквизиты оплаты лицензии ─────────────────────────────────────────
+// Касса без лицензии берёт цену и Kaspi QR без пароля — значит наружу должно
+// уходить ровно то, что клиент и так видит на экране, и ничего из соседних
+// ключей mon_settings. Сохранение — только под паролем и только чистое.
+async function testPayInfoRoute() {
+  const tmp = path.join(os.tmpdir(), 'imag_panel_pay_test_' + Date.now() + '.mjs')
+  fs.copyFileSync(WORKER_PATH, tmp)
+  let worker
+  try { worker = (await import(pathToFileURL(tmp).href)).default } finally { fs.unlinkSync(tmp) }
+  const ENV = { PANEL_PASSWORD: 'secret', SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'k',
+    MONITOR_SUPABASE_URL: 'https://mon.test', MONITOR_SUPABASE_SERVICE_ROLE_KEY: 'mk' }
+  const get = () => worker.fetch(new Request('https://x.test/api/pay-info'), ENV)
+  const post = (body, key = 'secret') => worker.fetch(new Request('https://x.test/api/pay-info', {
+    method: 'POST', headers: key ? { 'x-panel-key': key } : {}, body: JSON.stringify(body),
+  }), ENV)
+  const QR = 'https://qr.kaspi.kz/1117901981537202655411295603746268576476'
+  const good = { price: 8000, kaspi_qr_url: QR, phone: '+7 (706) 406-03-03', whatsapp: '', holder: 'Руслан И.', note: '' }
+
+  const real = global.fetch
+  try {
+    // Публичное чтение: без пароля, только белый список полей, с кэшем.
+    let asked = ''
+    global.fetch = async (url) => {
+      asked = String(url)
+      return new Response(JSON.stringify([{
+        value: { price: 8000, kaspi_qr_url: QR, phone: '77064060303', whatsapp: '77064060303',
+          holder: 'Руслан И.', note: null, secret: 'нельзя', ai_topups: [1] },
+        updated_at: '2026-10-15T10:00:00Z',
+      }]), { status: 200 })
+    }
+    const r = await get()
+    assert.strictEqual(r.status, 200, 'GET без пароля отдаёт реквизиты')
+    assert.strictEqual(r.headers.get('Cache-Control'), 'public, max-age=300', 'кэш пять минут')
+    assert.ok(asked.includes('key=eq.license_pay'), 'читаем ровно один ключ, а не всю таблицу настроек')
+    const d = await r.json()
+    assert.deepStrictEqual(Object.keys(d).sort(),
+      ['holder', 'kaspi_qr_url', 'note', 'phone', 'price', 'updated_at', 'whatsapp'], 'наружу только белый список')
+    assert.strictEqual(d.price, 8000)
+    assert.strictEqual(d.kaspi_qr_url, QR)
+
+    // Чужая ссылка, попавшая в базу руками, наружу не уходит.
+    global.fetch = async () => new Response(JSON.stringify([{
+      value: { price: 8000, kaspi_qr_url: 'https://evil.test/pay', phone: '77064060303' }, updated_at: null,
+    }]), { status: 200 })
+    assert.strictEqual((await (await get()).json()).kaspi_qr_url, null, 'не-Kaspi ссылку не отдаём')
+
+    // Не задано — 404, касса покажет свои встроенные реквизиты.
+    global.fetch = async () => new Response('[]', { status: 200 })
+    const none = await get()
+    assert.strictEqual(none.status, 404, 'реквизитов нет — 404')
+    assert.ok((await none.json()).error, 'с понятной ошибкой')
+
+    // Сохранение — под паролем.
+    let wrote = null
+    global.fetch = async (url, init) => {
+      if (init?.method === 'POST') { wrote = { url: String(url), body: JSON.parse(init.body) }; return new Response(null, { status: 201 }) }
+      return new Response('[]', { status: 200 })
+    }
+    assert.strictEqual((await post(good, null)).status, 401, 'без пароля сохранить нельзя')
+    assert.strictEqual((await post(good, 'wrong')).status, 401, 'с чужим паролем тоже')
+    assert.strictEqual(wrote, null, 'и в базу ничего не ушло')
+
+    // Валидация: каждая ошибка отсекается до базы.
+    const bad = [
+      [{ ...good, price: 0 }, 'нулевая цена'],
+      [{ ...good, price: 8000.5 }, 'дробная цена'],
+      [{ ...good, price: 10_000_001 }, 'цена больше потолка'],
+      [{ ...good, price: 'дорого' }, 'цена словами'],
+      [{ ...good, kaspi_qr_url: 'https://evil.test/qr' }, 'не-Kaspi ссылка'],
+      [{ ...good, kaspi_qr_url: 'http://qr.kaspi.kz/123' }, 'Kaspi по http'],
+      [{ ...good, phone: '87064060303' }, 'телефон с 8'],
+      [{ ...good, phone: '706406030' }, 'короткий телефон'],
+      [{ ...good, whatsapp: '123' }, 'кривой WhatsApp'],
+      [{ ...good, note: 'х'.repeat(301) }, 'длинный текст'],
+    ]
+    for (const [body, what] of bad) {
+      const r = await post(body)
+      assert.strictEqual(r.status, 400, `${what} — отказ`)
+      assert.ok(/[а-я]/i.test((await r.json()).error), `${what} — ошибка по-русски`)
+    }
+    assert.strictEqual(wrote, null, 'ни одна кривая форма до базы не дошла')
+
+    // Чистая форма: телефон без мусора, WhatsApp по умолчанию = телефон, лишнее отброшено.
+    const ok = await post({ ...good, extra: 'мусор' })
+    assert.strictEqual(ok.status, 200, 'нормальная форма сохраняется')
+    assert.ok(wrote.url.includes('mon_settings?on_conflict=key'), 'upsert по ключу')
+    assert.strictEqual(wrote.body[0].key, 'license_pay')
+    assert.deepStrictEqual(wrote.body[0].value, {
+      price: 8000, kaspi_qr_url: QR, phone: '77064060303', whatsapp: '77064060303', holder: 'Руслан И.', note: null,
+    }, 'в базу — только проверенные поля')
+    assert.strictEqual((await ok.json()).info.whatsapp, '77064060303')
+
+    // Пустая ссылка допустима: тогда касса просто предлагает перевод по номеру.
+    assert.strictEqual((await post({ ...good, kaspi_qr_url: '' })).status, 200, 'без QR тоже можно')
+    assert.strictEqual(wrote.body[0].value.kaspi_qr_url, null)
+    assert.strictEqual((await post({ ...good, kaspi_qr_url: 'https://pay.kaspi.kz/pay/abc123' })).status, 200, 'pay.kaspi.kz принимается')
+  } finally { global.fetch = real }
+  console.log('реквизиты оплаты: OK')
+}
+
 // Сводка на телефоне владельца: причина в блоке «требует внимания» — это
 // текст, который он читает перед звонком клиенту. Касса, не пробившая ни
 // одного чека, писала «нет продаж null дн».
@@ -1726,6 +1826,7 @@ try {
   await testTrialsMerge()
   await testPushCrypto()
   await testPushCheckRoute()
+  await testPayInfoRoute()
   testPushEvents()
   testUsageWindows()
   await testViewsRender()

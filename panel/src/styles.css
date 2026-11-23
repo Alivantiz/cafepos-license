@@ -406,3 +406,19 @@ tr.seen td { opacity: .45; }
 }
 /* Фото в карточке — кнопка: по нему смотрят цифры на бумаге. */
 .photo-open { cursor: zoom-in; display: block; padding: 0; border: 0; background: none; }
+
+/* ── Оплата лицензии: форма слева, превью экрана кассы справа ─────────── */
+.payinfo { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; max-width: 980px; }
+.payform { display: flex; flex-direction: column; gap: 12px; }
+.payform label { display: flex; flex-direction: column; gap: 4px; color: var(--mut); font-size: 13px; }
+.paysteps { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.paystep { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+/* QR всегда на белом: тёмный QR на тёмной теме телефон не считывает. */
+.qrtile { background: #fff; border-radius: 10px; padding: 6px; width: 148px; height: 148px; }
+.qrtile img { width: 100%; height: 100%; display: block; }
+@media (max-width: 860px) {
+  .payinfo { grid-template-columns: 1fr; }
+}
+@media (max-width: 420px) {
+  .paysteps { grid-template-columns: 1fr; }
+}

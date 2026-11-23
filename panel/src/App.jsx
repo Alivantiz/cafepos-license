@@ -9,6 +9,7 @@ import Requests, { pendingCount } from './views/Requests'
 import Catalog from './views/Catalog'
 import Aliases from './views/Aliases'
 import Invoices from './views/Invoices'
+import PayInfo from './views/PayInfo'
 import { brokenCount } from './views/Cloud'
 import { PushSettings } from './push'
 import TabBar, { SettingsIcon } from './tabbar'
@@ -19,6 +20,7 @@ const DEFAULT_PRICE = 8000
 const LABELS = {
   summary: 'Сводка', clients: 'Клиенты', trials: 'Пробные', requests: 'Заявки',
   invoices: 'Накладные', catalog: 'Каталог', aliases: 'Названия',
+  pay: 'Оплата лицензии',
 }
 
 // Разделов восемь, а МЕСТ — четыре. Восемь вкладок на телефоне не помещаются,
@@ -37,6 +39,9 @@ const GROUPS = [
   { id: 'goods', label: 'Товары', views: ['invoices', 'catalog', 'aliases'] },
 ]
 const groupOf = (view) => GROUPS.find(g => g.views.includes(view)) || GROUPS[0]
+// «Оплата лицензии» — настройка, которую трогают раз в полгода: пятой
+// вкладкой она не стала, а открывается из «Настроек» (и снизу бокового меню).
+const inGroup = (view) => GROUPS.some(g => g.views.includes(view))
 
 export default function App() {
   const [authed, setAuthed] = useState(!!pw())
@@ -274,6 +279,8 @@ function Panel() {
           )
         })}
         <div style={{ marginTop: 'auto' }}>
+          <button className={'nav' + (view === 'pay' && !current ? ' active' : '')}
+            onClick={() => goto('pay')}>{LABELS.pay}</button>
           <button className="nav" onClick={() => setSettings(true)}>Настройки</button>
         </div>
       </aside>
@@ -286,7 +293,8 @@ function Panel() {
           {/* У места из одного экрана — обычный заголовок. Где экранов
               несколько, заголовок ЗАМЕНЯЕТСЯ переключателем: он и так называет
               раздел, а вторая строка сдвинула бы прилипшие панели вкладок. */}
-          {!current && (groupOf(view).views.length > 1
+          {!current && !inGroup(view) && <h1>{LABELS[view] || groupOf(view).label}</h1>}
+          {!current && inGroup(view) && (groupOf(view).views.length > 1
             ? <div className="subtabs">
                 {groupOf(view).views.map(v => (
                   <button key={v} className={'seg' + (v === view ? ' on' : '')}
@@ -354,11 +362,12 @@ function Panel() {
           <Aliases onReload={setViewReload} onCounts={setAliasCount} />
         )}
         {!current && view === 'invoices' && <Invoices onReload={setViewReload} />}
+        {!current && view === 'pay' && <PayInfo />}
       </main>
 
       {/* Места под большим пальцем. Ровно те же четыре, что и в боковом меню
           на большом экране — иначе это два разных приложения. */}
-      <TabBar active={current ? null : groupOf(view).id}
+      <TabBar active={current || !inGroup(view) ? null : groupOf(view).id}
         tabs={GROUPS.map(g => ({ id: g.id, label: g.label, badge: GROUP_BADGE[g.id], urgent: g.urgent }))}
         onPick={(id) => goto(GROUPS.find(g => g.id === id).views[0])} />
       </div>
@@ -367,6 +376,9 @@ function Panel() {
         <Modal title="Настройки" onClose={() => setSettings(false)}>
           <h3 style={{ margin: '4px 0 0' }}>Уведомления</h3>
           <PushSettings />
+          <h3 style={{ margin: '14px 0 0' }}>{LABELS.pay}</h3>
+          <div className="muted2">Цена, Kaspi QR и контакты на экране активации кассы</div>
+          <button className="btn" onClick={() => { setSettings(false); goto('pay') }}>Открыть</button>
           <div className="row" style={{ gap: 8, marginTop: 18 }}>
             <button className="btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
