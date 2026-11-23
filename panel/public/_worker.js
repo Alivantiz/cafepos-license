@@ -1159,6 +1159,45 @@ export default {
         return json({ ok: true, restore_until: until })
       }
 
+      // Клиент сменил компьютер: лицензия привязана к коду старого железа, и тот
+      // же код активации на новом не примется (machine_mismatch). Раньше
+      // выдавали новую лицензию — и теряли и историю, и ключ восстановления,
+      // который лежит у старой. Отвязываем: клиент вводит тот же код на новом
+      // компьютере, и лицензия привязывается к нему (activate: machine_id пуст).
+      if (pathname === '/api/license/unbind') {
+        const { id } = await request.json()
+        if (!id) return json({ error: 'Нужен id лицензии' }, 400)
+        const r = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: { ...db.headers, Prefer: 'return=minimal' }, body: JSON.stringify({ machine_id: null }) })
+        if (!r.ok) return json({ error: `Supabase: ${r.status} ${await r.text()}` }, 502)
+        await sbFetch(`${db.url}/rest/v1/key_audit`, {
+          method: 'POST', headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({ license_id: id, action: 'unbind', note: 'отвязана от компьютера для переноса' }) }).catch(() => {})
+        return json({ ok: true })
+      }
+
+      // Новую лицензию уже выдали (по заявке с нового компьютера) — ключи
+      // старой копируются ей, чтобы восстановление нашло облачную копию.
+      if (pathname === '/api/keys/copy') {
+        const { from_id, to_id } = await request.json()
+        if (!from_id || !to_id || from_id === to_id) return json({ error: 'Нужны две разные лицензии' }, 400)
+        const kr = await sbFetch(`${db.url}/rest/v1/venue_keys?license_id=eq.${encodeURIComponent(from_id)}&select=venue_id,venue_key,app_version`, { headers: db.headers })
+        if (!kr.ok) return json({ error: `Supabase: ${kr.status} ${await kr.text()}` }, 502)
+        const keys = await kr.json()
+        if (!keys.length) return json({ error: 'У той лицензии ключ не сдан' }, 404)
+        const ins = await sbFetch(`${db.url}/rest/v1/venue_keys?on_conflict=license_id,venue_id`, {
+          method: 'POST', headers: { ...db.headers, Prefer: 'return=minimal,resolution=ignore-duplicates' },
+          body: JSON.stringify(keys.map(k => ({ license_id: to_id, venue_id: k.venue_id, venue_key: k.venue_key, app_version: k.app_version ?? null }))) })
+        if (!ins.ok) return json({ error: `Supabase: ${ins.status} ${await ins.text()}` }, 502)
+        await sbFetch(`${db.url}/rest/v1/key_audit`, {
+          method: 'POST', headers: { ...db.headers, Prefer: 'return=minimal' },
+          body: JSON.stringify([
+            { license_id: to_id, action: 'keys_copied_in', note: `с лицензии ${from_id}` },
+            { license_id: from_id, action: 'keys_copied_out', note: `на лицензию ${to_id}` },
+          ]) }).catch(() => {})
+        return json({ ok: true, count: keys.length })
+      }
+
       if (pathname === '/api/keys/reveal') {
         const { license_id } = await request.json()
         if (!license_id) return json({ error: 'Нужен id лицензии' }, 400)

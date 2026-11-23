@@ -244,6 +244,34 @@ async function testServerRoutes() {
   }
   assert.strictEqual((await authed('/api/keys/allow', {})).status, 400, 'без лицензии — отказ')
 
+  // Смена компьютера: отвязка — отдельной кнопкой и с записью в журнал;
+  // через обычное редактирование привязку по-прежнему не поменять.
+  {
+    const real = global.fetch
+    const writes = []
+    global.fetch = async (url, init) => { writes.push({ u: String(url), m: init?.method, body: init?.body ? JSON.parse(init.body) : null }); return new Response(null, { status: 204 }) }
+    const r = await authed('/api/license/unbind', { id: 'L1' })
+    global.fetch = real
+    assert.strictEqual(r.status, 200)
+    assert.ok(writes.some(w => w.m === 'PATCH' && w.u.includes('licenses?id=eq.L1') && w.body.machine_id === null), 'привязка снята')
+    assert.ok(writes.some(w => w.u.includes('key_audit') && w.body.action === 'unbind'), 'отвязка — в журнале')
+  }
+  {
+    const real = global.fetch
+    let inserted = null
+    global.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.includes('venue_keys?license_id=eq.OLD')) return new Response(JSON.stringify([{ venue_id: 'XUTD', venue_key: 'k'.repeat(20) }]), { status: 200 })
+      if (u.includes('venue_keys?on_conflict')) { inserted = JSON.parse(init.body); return new Response(null, { status: 201 }) }
+      return new Response(null, { status: 201 })
+    }
+    const r = await authed('/api/keys/copy', { from_id: 'OLD', to_id: 'NEW' })
+    global.fetch = real
+    assert.strictEqual(r.status, 200)
+    assert.deepStrictEqual(inserted.map(k => [k.license_id, k.venue_id]), [['NEW', 'XUTD']], 'ключ старой лицензии — у новой')
+  }
+  assert.strictEqual((await authed('/api/keys/copy', { from_id: 'A', to_id: 'A' })).status, 400, 'сама в себя — отказ')
+
   // Колонки contact/hidden добавляются отдельными ALTER. Пока их нет, Supabase
   // отвечает «PGRST204 column ... does not exist» — владельцу это не говорит
   // ничего. Подменяем fetch и проверяем, что наружу уходит инструкция.
