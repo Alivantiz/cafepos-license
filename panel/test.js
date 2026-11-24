@@ -125,6 +125,11 @@ async function testServerRoutes() {
   const editBadTerm = await authed('/api/edit', { id: 'x', terminals: 0 })
   assert.strictEqual(editBadTerm.status, 400, 'ноль терминалов — отказ')
 
+  for (const bad of [-1, 51, 'много']) {
+    const r = await authed('/api/edit', { id: 'x', phones: bad })
+    assert.equal(r.status, 400, `телефонов ${bad} — отказ`)
+    assert.match((await r.json()).error, /Мобильных устройств/)
+  }
   const editBadHidden = await authed('/api/edit', { id: 'x', hidden: 'да' })
   assert.strictEqual(editBadHidden.status, 400, 'hidden строкой — отказ')
 

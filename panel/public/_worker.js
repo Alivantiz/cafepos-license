@@ -935,7 +935,9 @@ export default {
           'cmd', 'cmd_requested_at', 'cmd_done_at', 'cmd_result',
           // Точки и восстановление облачной копии (24.11.2026) — в конце
           // списка: если SQL ещё не выполнен, отступ выбросит только их
-          'point_id', 'restore_until']
+          'point_id', 'restore_until',
+          // Лимит мобильных устройств точки (24.11.2026)
+          'phones']
         const licenses_ = (cols) => sbFetch(
           `${db.url}/rest/v1/licenses?select=${cols}&order=created_at.desc`, { headers: db.headers })
         let [licR, trialR, dailyR, stateR, renewR] = await Promise.all([
@@ -1447,6 +1449,13 @@ export default {
           if (!Number.isFinite(n) || n < 1) return json({ error: 'Терминалов — целое число от 1' }, 400)
           patch.terminals = Math.floor(n)
         }
+        // Телефоны и планшеты точки — касса получит число в лицензии при
+        // следующей проверке. 0 — мобильные устройства точке не положены.
+        if ('phones' in body) {
+          const n = Number(body.phones)
+          if (!Number.isFinite(n) || n < 0 || n > 50) return json({ error: 'Мобильных устройств — целое число от 0 до 50' }, 400)
+          patch.phones = Math.floor(n)
+        }
         // Цена ОДНОГО продления, а не «в месяц»: кто-то платит помесячно, кто-то
         // за год — приводить это к общему периоду значит гадать. Панель ставит
         // сумму в календарь платежей ровно в тот день, когда лицензия истекает.
@@ -1476,7 +1485,21 @@ export default {
           body: JSON.stringify(p)
         })
         const r = await patchLic(patch)
-        if (r.ok) return json({ ok: true })
+        if (r.ok) {
+          // Лимит — на точку: ставим его всем кассам точки, иначе каждая
+          // считала бы по своему числу
+          if ('phones' in patch) {
+            const pr = await sbFetch(`${db.url}/rest/v1/licenses?id=eq.${encodeURIComponent(id)}&select=point_id`, { headers: db.headers })
+            const pointId = pr.ok ? (await pr.json())?.[0]?.point_id : null
+            if (pointId) {
+              const r3 = await sbFetch(`${db.url}/rest/v1/licenses?point_id=eq.${encodeURIComponent(pointId)}`, {
+                method: 'PATCH', headers: { ...db.headers, Prefer: 'return=minimal' }, body: JSON.stringify({ phones: patch.phones }),
+              })
+              if (!r3.ok) return json({ ok: true, warning: 'Сохранено у этой кассы, но не у остальных касс точки — повторите.' })
+            }
+          }
+          return json({ ok: true })
+        }
         // Колонка city добавлена ALTER-ом позже остальных. Пока SQL не выполнен,
         // PATCH с ней падает ЦЕЛИКОМ — и правка имени, телефона и цены пропадает
         // заодно с городом, хотя к городу отношения не имеет. Сохраняем всё
@@ -1491,7 +1514,7 @@ export default {
             })
           }
         }
-        return json({ error: await sqlHint(r, ['contact', 'hidden', 'price', 'snoozed_until', 'city']) }, 502)
+        return json({ error: await sqlHint(r, ['contact', 'hidden', 'price', 'snoozed_until', 'city', 'phones']) }, 502)
       }
 
       // --- Вкладка «Облако»: живы ли облачные функции ------------------------
