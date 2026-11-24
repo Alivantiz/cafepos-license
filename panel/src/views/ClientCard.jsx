@@ -666,6 +666,10 @@ function PointRenewModal({ point, members, kaspiPhone, onClose, onDone }) {
   const [amount, setAmount] = useState(sum || '')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  // Чем закончилось продление: окно остаётся открытым (текст клиенту), а
+  // кассы точки уже обновились — подсказка без этого считала СЛЕДУЮЩЕЕ
+  // продление и показывала дату на n дней дальше той, что записана
+  const [doneTo, setDoneTo] = useState(null)
   const n = Number(days) || 0
   const latest = Math.max(Date.now(), ...members.map(m => m.expires_at ? new Date(m.expires_at).getTime() : 0))
 
@@ -673,6 +677,7 @@ function PointRenewModal({ point, members, kaspiPhone, onClose, onDone }) {
     setBusy(true)
     try {
       const r = await api('points/renew', { point_id: point.id, days: n, amount: amount === '' ? null : Number(amount) })
+      setDoneTo(r.expires_at)
       setMsg(`Здравствуйте! Подписка iMag на ${r.count} ${r.count === 1 ? 'кассу' : 'кассы'} продлена до ${fmtDate(r.expires_at)}.`
         + (kaspiPhone ? ` Оплата на Kaspi: ${kaspiPhone}.` : ''))
       toast.ok(`Точка продлена до ${fmtDate(r.expires_at)}`)
@@ -693,7 +698,8 @@ function PointRenewModal({ point, members, kaspiPhone, onClose, onDone }) {
         <input type="number" min="0" value={amount} onChange={e => setAmount(e.target.value)} placeholder="необязательно" />
       </label>
       <div className="muted2">
-        {n > 0 ? `Все кассы точки — до ${fmtDate(new Date(latest + n * 86400000))}` : 'Укажите число дней'}
+        {doneTo ? `Продлено: все кассы точки — до ${fmtDate(doneTo)}`
+          : n > 0 ? `Все кассы точки — до ${fmtDate(new Date(latest + n * 86400000))}` : 'Укажите число дней'}
       </div>
       {msg && <>
         <textarea readOnly rows={3} value={msg} />
@@ -703,7 +709,7 @@ function PointRenewModal({ point, members, kaspiPhone, onClose, onDone }) {
       </>}
       <div className="row">
         <button className="btn ghost spacer" onClick={onClose}>Закрыть</button>
-        <button className="btn pri" disabled={busy || n <= 0} onClick={go}>{busy ? 'Секунду…' : 'Продлить'}</button>
+        <button className="btn pri" disabled={busy || n <= 0 || !!doneTo} onClick={go}>{busy ? 'Секунду…' : doneTo ? 'Продлено' : 'Продлить'}</button>
       </div>
     </Modal>
   )
