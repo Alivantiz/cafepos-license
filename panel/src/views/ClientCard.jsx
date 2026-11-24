@@ -196,6 +196,7 @@ export default function ClientCard({ c, kaspiPhone, cities, onBack, onChanged, o
                 {c.machine_id || 'не привязана'}
                 {c.machine_id && <> <CopyBtn text={c.machine_id} title="Скопировать код компьютера" /></>}</dd>
               <dt className="muted2">Терминалов</dt><dd style={{ margin: 0 }}>{c.terminals ?? 1}</dd>
+              <dt className="muted2">Телефонов и планшетов</dt><dd style={{ margin: 0 }}>{c.phones ?? 1}{c.point_id ? ' на точку' : ''}</dd>
               <dt className="muted2">Цена продления</dt>
               <dd style={{ margin: 0 }}>{c.price ? money(c.price) : <span className="muted2">не указана</span>}</dd>
               <dt className="muted2">Заведена</dt><dd style={{ margin: 0 }}>{fmtDate(c.created_at)}</dd>
@@ -486,7 +487,7 @@ function SnoozeModal({ c, onClose, onDone }) {
 function EditModal({ c, cities, onClose, onDone }) {
   const [f, setF] = useState({
     customer: c.customer || '', contact: c.contact || '', terminals: c.terminals ?? 1,
-    price: c.price ?? '', city: c.city || '',
+    price: c.price ?? '', city: c.city || '', phones: c.phones ?? 1,
   })
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF(v => ({ ...v, [k]: e.target.value }))
@@ -497,6 +498,9 @@ function EditModal({ c, cities, onClose, onDone }) {
       const r = await api('edit', {
         id: c.id, customer: f.customer, contact: f.contact, terminals: Number(f.terminals),
         price: f.price === '' ? null : Number(f.price), city: f.city,
+        // Только если поменяли: пока колонки phones в базе нет, лишнее поле
+        // уронило бы всё сохранение
+        ...(Number(f.phones) !== (c.phones ?? 1) && { phones: Number(f.phones) }),
       })
       // Частичное сохранение обязано быть видно: молчаливое «Сохранено» после
       // того, как город не записался, — худший исход.
@@ -516,6 +520,9 @@ function EditModal({ c, cities, onClose, onDone }) {
         <datalist id="cities-dl">{(cities || []).map(x => <option key={x} value={x} />)}</datalist>
       </label>
       <label>Терминалов<input type="number" min="1" value={f.terminals} onChange={set('terminals')} /></label>
+      {/* Лимит — на всю точку: панель ставит его всем кассам точки, касса
+          получает число в лицензии при следующей проверке (до 15 минут) */}
+      <label>Телефонов и планшетов{c.point_id ? ' на точку' : ''}<input type="number" min="0" max="50" value={f.phones} onChange={set('phones')} /></label>
       {/* Цена одного продления, а не «в месяц»: кто-то платит за месяц, кто-то
           за год — приводить к общему периоду значит гадать за клиента. */}
       <label>Цена продления, ₸
